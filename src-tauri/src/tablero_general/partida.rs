@@ -5,12 +5,14 @@
 use std::path::Path;
 use std::sync::{Mutex, MutexGuard};
 use tauri::{AppHandle, Manager, State};
+use tauri_plugin_opener::OpenerExt;
 
 use crate::tablero_general::almacen::{bloquear, Almacen};
 use crate::tablero_general::estado::{self, DeltaPartida, EstadoPartida};
 use crate::tablero_general::imagenes;
 use crate::tablero_general::modelos::*;
 use crate::tablero_general::archivos;
+use std::collections::HashSet;
 
 pub struct AppState {
     pub estado: Mutex<EstadoPartida>,
@@ -21,6 +23,33 @@ impl AppState {
     pub fn lock(&self) -> MutexGuard<'_, EstadoPartida> {
         bloquear(&self.estado)
     }
+}
+
+/// Tarea en segundo plano: espera 2 segundos tras arrancar la app y purga
+/// silenciosamente cualquier archivo huérfano en un hilo de fondo sin tocar la UI.
+pub fn iniciar_limpieza_huerfanos(app_handle: AppHandle) {
+    tauri::async_runtime::spawn(async move {
+        // Pausa de cortesía para que la interfaz cargue y renderice primero
+        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+
+        if let Some(state) = app_handle.try_state::<AppState>() {
+            let dir = state.almacen.dir().to_path_buf();
+            
+            // Obtenemos en microsegundos el conjunto de rutas válidas
+            let archivos_validos: HashSet<String> = {
+                let est = state.lock();
+                est.banco_entidades
+                    .iter()
+                    .flat_map(|e| e.archivos_adjuntos.iter().flatten().cloned())
+                    .collect()
+            };
+
+            // Ejecuta el barrido de disco en un hilo de bloqueo fuera del hilo principal
+            let _ = tauri::async_runtime::spawn_blocking(move || {
+                archivos::purgar_archivos_no_referenciados(&dir, &archivos_validos);
+            }).await;
+        }
+    });
 }
 
 // ========================================================
@@ -321,3 +350,33 @@ pub fn renombrar_archivo_adjunto(
     archivos::renombrar(state.almacen.dir(), adjunto, &nuevo_nombre)
 }
 
+#[tauri::command]
+pub fn abrir_archivo_en_sistema(
+    app: tauri::AppHandle,
+    ruta_relativa: String,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    let path = state.almacen.dir().join(&ruta_relativa);
+    if !path.exists() {
+        return Err(format!("El archivo no existe en: {}", path.display()));
+    }
+
+    app.opener()
+        .open_path(path.to_string_lossy(), None::<&str>)
+        .map_err(|e| format!("No se pudo abrir el archivo: {e}"))
+}
+
+/// Elimina de disco los archivos que se crearon en la ventana pero cuya edición se canceló
+#[tauri::command]
+pub fn descartar_archivos_borrador(
+    rutas: Vec<String>,
+    state: State<'_, AppState>,
+) {
+    let dir = state.almacen.dir();
+    for ruta in rutas {
+        let destino = dir.join(&ruta);
+        if destino.is_file() {
+            let _ = std::fs::remove_file(destino);
+        }
+    }
+}

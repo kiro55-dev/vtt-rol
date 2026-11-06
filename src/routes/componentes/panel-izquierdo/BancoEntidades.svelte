@@ -12,7 +12,7 @@
   // Filtros
   let busqueda = $state("");
   let filtroZona = $state<"todos" | "actual">("todos");
-  let filtroTipo = $state<"todos" | "Enemigo" | "NPC">("todos");
+  let filtroTipo = $state<"todos" | "Enemigo" | "NPC" | "Jugador">("todos");
 
   // Control de qué filas están visibles en el scroll para descargar imágenes
   let visibles = $state<Record<number, boolean>>({});
@@ -20,7 +20,6 @@
   // Filtrado combinado: Nombre + Filtro de Tipo + Filtro de Zona original
   let entidadesFiltradas = $derived(
     partida.banco.filter((e) => {
-      if (e.tipo === "Jugador") return false;
       const coincideNombre = e.nombre.toLowerCase().includes(busqueda.toLowerCase());
       const coincideZona = filtroZona === "todos" || e.zona_id === partida.zonaId;
       const coincideTipo = filtroTipo === "todos" || e.tipo === filtroTipo;
@@ -143,6 +142,13 @@
         >
           NPCs
         </button>
+        <button
+          type="button"
+          class:activo={filtroTipo === "Jugador"}
+          onclick={() => (filtroTipo = "Jugador")}
+        >
+          Jugadores
+        </button>
       </div>
     </div>
   </div>
@@ -166,10 +172,16 @@
               <img src={mini} alt="" class="img-rombo" draggable="false" />
             {/if}
           </div>
-        {:else}
+        {:else if item.tipo === "Enemigo"}
           <div class="contenedor-cuadrado">
             {#if estaEnPantalla && mini}
               <img src={mini} alt="" class="img-cuadrado" draggable="false" />
+            {/if}
+          </div>
+        {:else}
+          <div class="contenedor-circulo">
+            {#if estaEnPantalla && mini}
+              <img src={mini} alt="" class="img-circulo" draggable="false" />
             {/if}
           </div>
         {/if}
@@ -335,7 +347,26 @@
     object-fit: cover;
     pointer-events: none;
   }
-
+  .contenedor-circulo {
+    width: 18px;
+    height: 18px;
+    border: 2px solid #078c09;
+    border-radius: 50%;
+    overflow: hidden;
+    background: #23e612;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+    margin-left: 2px;
+    margin-right: 2px;
+  }
+  .img-circulo {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    pointer-events: none;
+  }
   .texto-recortado {
     display: block;
     overflow: hidden;

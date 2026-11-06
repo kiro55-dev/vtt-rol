@@ -31,7 +31,12 @@ pub enum DeltaPartida {
     MapaBorrado(Mapa),
     EntidadCreada(Entidad),
     EntidadBorrada(Entidad),
-    EntidadModificada(Entidad),
+    EntidadModificada(Entidad)
+    /* 
+    InstanciaCreada(),
+    InstanciaModificada(),
+    InstanciaBorrada()
+    */
 }
 
 /// Línea de deltas.jsonl al LEER.

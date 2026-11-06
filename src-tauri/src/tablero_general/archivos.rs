@@ -1,6 +1,7 @@
 // src-tauri/src/tablero_general/archivos.rs
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::collections::HashSet;
 
 use crate::tablero_general::modelos::{ArchivoAdjunto, Entidad};
 
@@ -206,5 +207,36 @@ pub fn limpiar_todos_los_adjuntos(dir_datos: &Path, entidad: &Entidad, banco: &[
     if entidad.id != 0 {
         let carpeta = dir_datos.join(format!("archivos/entidad_{}", entidad.id));
         let _ = fs::remove_dir(&carpeta);
+    }
+}
+
+/// Recorre recursivamente <dir_datos>/archivos y elimina los archivos que no estén en `archivos_validos`
+pub fn purgar_archivos_no_referenciados(dir_datos: &Path, archivos_validos: &HashSet<String>) {
+    let carpeta_archivos = dir_datos.join("archivos");
+    if !carpeta_archivos.is_dir() {
+        return;
+    }
+
+    purgar_directorio_recursivo(dir_datos, &carpeta_archivos, archivos_validos);
+}
+
+fn purgar_directorio_recursivo(dir_datos: &Path, actual: &Path, validos: &HashSet<String>) {
+    let Ok(entradas) = fs::read_dir(actual) else { return; };
+
+    for entrada in entradas.flatten() {
+        let path = entrada.path();
+        if path.is_dir() {
+            purgar_directorio_recursivo(dir_datos, &path, validos);
+            // Si el subdirectorio quedó vacío tras la purga, se elimina
+            let _ = fs::remove_dir(&path);
+        } else if path.is_file() {
+            if let Ok(rel) = path.strip_prefix(dir_datos) {
+                let rel_str = rel.to_string_lossy().replace('\\', "/");
+                // Si ninguna ficha del banco referencia esta ruta, es basura de un cuelgue/cierre forzado
+                if !validos.contains(&rel_str) {
+                    let _ = fs::remove_file(&path);
+                }
+            }
+        }
     }
 }

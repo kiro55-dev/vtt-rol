@@ -13,7 +13,8 @@ use tablero_general::partida::{
     obtener_dir_datos, obtener_historial_personal, obtener_historial_tiradas,
     obtener_instancias_activas, obtener_mapas_zona, obtener_zonas, crear_entidad, borrar_entidad,
     modificar_entidad, importar_archivo, guardar_archivo_texto, leer_archivo_texto,
-    crear_documento_texto, renombrar_archivo_adjunto,
+    crear_documento_texto, renombrar_archivo_adjunto, abrir_archivo_en_sistema,
+    descartar_archivos_borrador, iniciar_limpieza_huerfanos
 };
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -52,6 +53,7 @@ pub fn run() {
                 almacen,
             });
             iniciar_autoguardado(app.handle().clone());
+            iniciar_limpieza_huerfanos(app.handle().clone());
             Ok(())
         })
         .on_window_event(|window, event| {
@@ -84,6 +86,8 @@ pub fn run() {
             leer_archivo_texto,
             crear_documento_texto,
             renombrar_archivo_adjunto,
+            abrir_archivo_en_sistema,
+            descartar_archivos_borrador,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

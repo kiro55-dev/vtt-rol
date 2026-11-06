@@ -2,5 +2,5 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 fn main() {
-    vtt_rol_lib::run()
+    vtt_rol_lib::run();
 }

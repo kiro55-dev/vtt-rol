@@ -7,12 +7,25 @@
   import { partida, type Entidad } from "$lib/partida.svelte";
   import { importarImagen, urlDeImagen } from "$lib/imagenes";
 
+
   interface ArchivoAdjunto {
     ruta: string;
     entidad_archivo: Entidad;
   }
 
+   // Función para abrir el archivo con la app predeterminada del sistema
+  async function abrirEnSistema(rutaRelativa: string) {
+    try {
+      await invoke("abrir_archivo_en_sistema", { rutaRelativa });
+    } catch (err) {
+      console.error("Error al abrir archivo con el visor del sistema:", err);
+    }
+  }
+
   let { entidad }: { entidad: Entidad } = $props();
+
+  // Registro de archivos creados/importados durante esta sesión de edición
+  let archivosCreadosEnSesion = $state<string[]>([]);
 
   const EXTENSIONES_IMAGEN = ["png", "jpg", "jpeg", "webp", "gif", "bmp", "avif", "svg"];
   const ES_IMAGEN = new RegExp(`\\.(${EXTENSIONES_IMAGEN.join("|")})$`, "i");
@@ -32,6 +45,68 @@
   let barraTabs = $state<HTMLDivElement | null>(null);
   let puedeScrollIzq = $state(false);
   let puedeScrollDer = $state(false);
+
+  // Gestión de cuerpo X por Y
+  let cuerpoX = $state(1);
+  let cuerpoY = $state(1);
+
+  // Inicializar dimensiones del cuerpo a partir de la entidad
+  if (typeof entidad.cuerpo === "object" && entidad.cuerpo !== null && "Grande" in entidad.cuerpo) {
+    cuerpoX = entidad.cuerpo.Grande[0] ?? 1;
+    cuerpoY = entidad.cuerpo.Grande[1] ?? 1;
+  } else {
+    cuerpoX = 1;
+    cuerpoY = 1;
+  }
+
+  function actualizarCuerpo() {
+    cuerpoX = Math.max(1, Math.round(Number(cuerpoX) || 1));
+    cuerpoY = Math.max(1, Math.round(Number(cuerpoY) || 1));
+    if (cuerpoX === 1 && cuerpoY === 1) {
+      entidad.cuerpo = "Pequenio";
+    } else {
+      entidad.cuerpo = { Grande: [cuerpoX, cuerpoY] };
+    }
+  }
+
+  // --- Handlers de Rueda de Ratón (al pasar por encima) ---
+  function alRuedaVida(e: WheelEvent) {
+    e.preventDefault();
+    const delta = e.deltaY < 0 ? 1 : -1;
+    entidad.vida_max = Math.max(0, (Number(entidad.vida_max) || 0) + delta);
+  }
+
+  function alRuedaArmadura(e: WheelEvent) {
+    e.preventDefault();
+    const delta = e.deltaY < 0 ? 1 : -1;
+    entidad.armadura = Math.max(0, (Number(entidad.armadura) || 0) + delta);
+  }
+
+  function alRuedaVelocidad(e: WheelEvent) {
+    e.preventDefault();
+    const delta = e.deltaY < 0 ? 1 : -1;
+    entidad.velocidad = Math.max(0, (Number(entidad.velocidad) || 0) + delta);
+  }
+
+  function alRuedaRango(e: WheelEvent) {
+    e.preventDefault();
+    const delta = e.deltaY < 0 ? 1 : -1;
+    entidad.rango_arma = Math.max(0, (Number(entidad.rango_arma) || 0) + delta);
+  }
+
+  function alRuedaCuerpoX(e: WheelEvent) {
+    e.preventDefault();
+    const delta = e.deltaY < 0 ? 1 : -1;
+    cuerpoX = Math.max(1, cuerpoX + delta);
+    actualizarCuerpo();
+  }
+
+  function alRuedaCuerpoY(e: WheelEvent) {
+    e.preventDefault();
+    const delta = e.deltaY < 0 ? 1 : -1;
+    cuerpoY = Math.max(1, cuerpoY + delta);
+    actualizarCuerpo();
+  }
 
   function nombreLimpio(ruta: string | null | undefined): string {
     if (!ruta) return "Documento_1.txt";
@@ -92,14 +167,12 @@
     }
   }
 
-  // Creación desde Rust con nombre limpio secuencial
+  // Crear .txt manual
   async function crearNuevoTxt() {
     try {
-      const nuevoAdjunto = await invoke<ArchivoAdjunto>("crear_documento_texto", {
-        entidad
-      });
-
+      const nuevoAdjunto = await invoke<ArchivoAdjunto>("crear_documento_texto", { entidad });
       entidad.archivos_adjuntos.push(nuevoAdjunto.ruta);
+      archivosCreadosEnSesion.push(nuevoAdjunto.ruta); // <- Registrado como creado en sesión
       textosArchivos[nuevoAdjunto.ruta] = "";
       await tick();
       cargarContenidoPestana(entidad.archivos_adjuntos.length - 1);
@@ -109,7 +182,18 @@
     }
   }
 
-  // Renombrar con doble clic
+  // Cancelar: borra los archivos creados en esta sesión y cierra
+  async function cancelarYDescartar() {
+    if (archivosCreadosEnSesion.length > 0) {
+      try {
+        await invoke("descartar_archivos_borrador", { rutas: archivosCreadosEnSesion });
+      } catch (err) {
+        console.error("Error al descartar archivos de borrador:", err);
+      }
+    }
+    partida.cerrarEditorEntidad();
+  }
+
   function iniciarRenombrado(indice: number, ruta: string) {
     editandoTabIndice = indice;
     textoEdicionTab = nombreLimpio(ruta);
@@ -133,7 +217,6 @@
 
       entidad.archivos_adjuntos[indice] = adjuntoActualizado.ruta;
 
-      // Transferir contenido en memoria a la nueva ruta
       if (textosArchivos[rutaVieja] !== undefined) {
         textosArchivos[adjuntoActualizado.ruta] = textosArchivos[rutaVieja];
         delete textosArchivos[rutaVieja];
@@ -151,7 +234,12 @@
     comprobarScroll();
   }
 
+  // Guardar: consolida los cambios (ya no son borradores a descartar)
   async function guardarTodo() {
+    archivosCreadosEnSesion = []; // Vaciamos para que no se eliminen al cerrar
+
+    actualizarCuerpo();
+
     for (const [ruta, contenido] of Object.entries(textosArchivos)) {
       try {
         await invoke("guardar_archivo_texto", {
@@ -165,13 +253,13 @@
     await partida.guardarEntidad(entidad);
   }
 
-  function alTeclearVentana(e: KeyboardEvent) {
+   function alTeclearVentana(e: KeyboardEvent) {
     if (e.key === "Enter") {
       if ((e.target as HTMLElement)?.tagName === "TEXTAREA" || editandoTabIndice !== null) return;
       e.preventDefault();
       guardarTodo();
     } else if (e.key === "Escape") {
-      partida.cerrarEditorEntidad();
+      cancelarYDescartar();
     }
   }
 
@@ -183,7 +271,7 @@
     const origenY = pos.y;
 
     const alMover = (ev: PointerEvent) => {
-      pos.x = Math.max(10, Math.min(window.innerWidth - 460, origenX + (ev.clientX - inicioX)));
+      pos.x = Math.max(10, Math.min(window.innerWidth - 500, origenX + (ev.clientX - inicioX)));
       pos.y = Math.max(10, Math.min(window.innerHeight - 300, origenY + (ev.clientY - inicioY)));
     };
     const alSoltar = () => {
@@ -246,6 +334,7 @@
                   origen: r
                 });
                 entidad.archivos_adjuntos.push(adjunto.ruta);
+                archivosCreadosEnSesion.push(adjunto.ruta);
               } catch (err) {
                 console.error("Error al importar adjunto:", err);
               }
@@ -272,16 +361,18 @@
 <svelte:window onkeydown={alTeclearVentana} />
 
 <div class="ventana-flotante" style="left: {pos.x}px; top: {pos.y}px;">
+  <!-- Cabecera movible -->
   <div class="cabecera-flotante" role="presentation" onpointerdown={iniciarArrastre}>
     <span class="icono-drag">⋮⋮</span>
     <span class="titulo-ventana">
       {entidad.id === 0 ? "Nueva Ficha" : `Ficha: ${entidad.nombre}`}
     </span>
-    <button type="button" class="btn-cerrar" onclick={() => partida.cerrarEditorEntidad()}>✕</button>
+    <button type="button" class="btn-cerrar" onclick={cancelarYDescartar}>✕</button>
   </div>
 
   <div class="cuerpo-ficha">
     <div class="fila-superior">
+      <!-- Caja de Foto -->
       <div
         class="caja-foto"
         role="button"
@@ -299,17 +390,36 @@
         {/if}
       </div>
 
+      <!-- Datos de la ficha -->
       <div class="columna-campos">
         <div class="campo-fila">
           <label for="f-nombre">Nombre:</label>
           <input id="f-nombre" type="text" class="input-texto" bind:value={entidad.nombre} />
         </div>
 
+        <!-- Fila de Vida y Armadura con Rueda de Ratón -->
         <div class="campo-fila fila-stats">
-          <label>Vida max: <input type="number" class="input-num" bind:value={entidad.vida_max} /></label>
-          <label>Armadura: <input type="number" class="input-num" bind:value={entidad.armadura} /></label>
+          <label title="Rueda del ratón para subir/bajar">
+            Vida max:
+            <input
+              type="number"
+              class="input-num"
+              bind:value={entidad.vida_max}
+              onwheel={alRuedaVida}
+            />
+          </label>
+          <label title="Rueda del ratón para subir/bajar">
+            Armadura:
+            <input
+              type="number"
+              class="input-num"
+              bind:value={entidad.armadura}
+              onwheel={alRuedaArmadura}
+            />
+          </label>
         </div>
 
+        <!-- Fila con los checks de visibilidad -->
         <div class="campo-fila fila-checks">
           <label class="check-publico">
             <span>Hacer pública la vida</span>
@@ -321,6 +431,56 @@
           </label>
         </div>
 
+        <!-- Fila de Velocidad y Rango de Arma con Rueda de Ratón -->
+        <div class="campo-fila fila-stats">
+          <label title="Rueda del ratón para subir/bajar">
+            Velocidad:
+            <input
+              type="number"
+              class="input-num"
+              bind:value={entidad.velocidad}
+              onwheel={alRuedaVelocidad}
+            />
+            <span class="sufijo">m</span>
+          </label>
+          <label title="Rueda del ratón para subir/bajar">
+            Rango arma:
+            <input
+              type="number"
+              class="input-num"
+              bind:value={entidad.rango_arma}
+              onwheel={alRuedaRango}
+            />
+            <span class="sufijo">m</span>
+          </label>
+        </div>
+
+        <!-- Fila de Cuerpo (X por Y) con Rueda de Ratón independiente -->
+        <div class="campo-fila fila-cuerpo">
+          <label>Cuerpo:</label>
+          <div class="cuerpo-inputs" title="Rueda del ratón sobre cada número para ajustar dimensiones (metros/casillas)">
+            <input
+              type="number"
+              class="input-num input-cuerpo"
+              min="1"
+              bind:value={cuerpoX}
+              oninput={actualizarCuerpo}
+              onwheel={alRuedaCuerpoX}
+            />
+            <span class="separador-x">×</span>
+            <input
+              type="number"
+              class="input-num input-cuerpo"
+              min="1"
+              bind:value={cuerpoY}
+              oninput={actualizarCuerpo}
+              onwheel={alRuedaCuerpoY}
+            />
+            <span class="sufijo">m</span>
+          </div>
+        </div>
+
+        <!-- Tipo y Único -->
         <div class="campo-fila">
           <label for="f-tipo">Tipo:</label>
           <select id="f-tipo" class="select-general" bind:value={entidad.tipo}>
@@ -335,6 +495,7 @@
           </label>
         </div>
 
+        <!-- Zona asociada -->
         <div class="campo-fila">
           <label for="f-zona">Zona asociada:</label>
           <select id="f-zona" class="select-general" bind:value={entidad.zona_id}>
@@ -416,6 +577,7 @@
         <button type="button" class="btn-anadir-adjunto" onclick={crearNuevoTxt} title="Crear documento .txt">+</button>
       </div>
 
+      <!-- Visor de contenido -->
       <div class="visor-archivo">
         {#if entidad.archivos_adjuntos.length === 0}
           <div class="archivo-placeholder">
@@ -429,9 +591,19 @@
             oninput={alModificarTexto}
           ></textarea>
         {:else}
+          {@const rutaArchivo = entidad.archivos_adjuntos[pestanaActiva]}
           <div class="archivo-placeholder">
-            <span>📎 {nombreLimpio(entidad.archivos_adjuntos[pestanaActiva])}</span>
+            <span class="nombre-archivo-centro">{nombreLimpio(rutaArchivo)}</span>
             <small>(Archivo no editable como texto)</small>
+            {#if rutaArchivo}
+              <button
+                type="button"
+                class="btn-abrir-sistema"
+                onclick={() => abrirEnSistema(rutaArchivo)}
+              >
+                Abrir en el visor del sistema
+              </button>
+            {/if}
           </div>
         {/if}
       </div>
@@ -444,7 +616,7 @@
         </button>
       {/if}
       <div class="botones-derecha">
-        <button type="button" class="btn-cancelar" onclick={() => partida.cerrarEditorEntidad()}>
+        <button type="button" class="btn-cancelar" onclick={cancelarYDescartar}>
           Cancelar
         </button>
         <button type="button" class="btn-guardar" onclick={guardarTodo}>
@@ -458,7 +630,7 @@
 <style>
   .ventana-flotante {
     position: fixed;
-    width: 460px;
+    width: 480px;
     background: #18181b;
     border: 1px solid #3f3f46;
     border-radius: 8px;
@@ -486,12 +658,12 @@
   .btn-cerrar { background: none; border: none; color: #a1a1aa; cursor: pointer; font-size: 13px; }
   .btn-cerrar:hover { color: white; }
 
-  .cuerpo-ficha { padding: 10px; display: flex; flex-direction: column; gap: 10px; }
-  .fila-superior { display: flex; gap: 10px; }
+  .cuerpo-ficha { padding: 10px; display: flex; flex-direction: column; gap: 8px; }
+  .fila-superior { display: flex; gap: 10px; align-items: flex-start; }
 
   .caja-foto {
-    width: 105px;
-    height: 105px;
+    width: 110px;
+    height: 110px;
     background: #09090b;
     border: 1px dashed #52525b;
     border-radius: 6px;
@@ -509,9 +681,9 @@
 
   .columna-campos { flex: 1; display: flex; flex-direction: column; gap: 4px; }
   .campo-fila { display: flex; align-items: center; gap: 6px; }
-  .campo-fila label { color: #a1a1aa; font-size: 10px; }
-  .fila-stats { display: flex; gap: 12px; }
-  
+  .campo-fila label { color: #a1a1aa; font-size: 10px; display: flex; align-items: center; gap: 4px; }
+  .fila-stats { display: flex; gap: 10px; }
+
   .fila-checks {
     display: flex;
     gap: 12px;
@@ -533,8 +705,16 @@
   }
   .input-num {
     width: 44px; background: #09090b; border: 1px solid #3f3f46; color: white;
-    padding: 2px 4px; border-radius: 4px; font-size: 11px; margin-left: 4px;
+    padding: 2px 4px; border-radius: 4px; font-size: 11px;
   }
+  .sufijo { color: #71717a; font-size: 10px; }
+
+  /* Fila de cuerpo X x Y */
+  .fila-cuerpo { display: flex; align-items: center; gap: 6px; }
+  .cuerpo-inputs { display: flex; align-items: center; gap: 4px; }
+  .input-cuerpo { width: 34px; text-align: center; }
+  .separador-x { color: #71717a; font-weight: bold; font-size: 11px; }
+
   .select-general {
     background: #09090b; border: 1px solid #3f3f46; color: white;
     padding: 2px 4px; border-radius: 4px; font-size: 10px;
@@ -578,7 +758,7 @@
     flex-shrink: 0;
   }
   .btn-pestana.activa { background: #111113; color: white; font-weight: bold; }
-  
+
   .nombre-tab {
     cursor: pointer;
   }
@@ -620,15 +800,23 @@
   }
   .btn-anadir-adjunto:hover { color: white; background: #27272a; }
 
-  .visor-archivo { height: 105px; padding: 4px; }
+  .visor-archivo { height: 100px; padding: 4px; }
   .editor-texto {
     width: 100%; height: 100%; background: transparent; border: none;
     color: #e4e4e7; font-family: inherit; font-size: 11px; resize: none; outline: none;
     box-sizing: border-box;
   }
   .archivo-placeholder {
-    height: 100%; display: flex; flex-direction: column; align-items: center;
-    justify-content: center; color: #71717a; gap: 4px; text-align: center; font-size: 11px;
+    height: 100%;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    color: #a1a1aa;
+    gap: 4px;
+    text-align: center;
+    font-size: 11px;
+    user-select: none;
   }
 
   .pie-acciones { display: flex; justify-content: space-between; align-items: center; }
@@ -642,4 +830,37 @@
   .btn-cancelar:hover { background: #3f3f46; }
   .btn-guardar:hover { background: #1d4ed8; }
   .btn-borrar:hover { background: #991b1b; }
+
+  .btn-abrir-sistema:hover {
+    background: #3b82f6;
+    border-color: #60a5fa;
+    color: white;
+  }
+  .nombre-archivo-centro {
+    color: #f4f4f5;
+    font-weight: 500;
+  }
+
+  .archivo-placeholder small {
+    color: #71717a;
+    font-size: 10px;
+  }
+
+  .btn-abrir-sistema {
+    margin-top: 4px;
+    background: #27272a;
+    border: 1px solid #3f3f46;
+    color: #60a5fa;
+    padding: 4px 10px;
+    border-radius: 4px;
+    font-size: 10px;
+    font-weight: 500;
+    cursor: pointer;
+    transition: background 0.15s ease, color 0.15s ease;
+  }
+
+  .btn-abrir-sistema:hover {
+    background: #3f3f46;
+    color: white;
+  }
 </style>
