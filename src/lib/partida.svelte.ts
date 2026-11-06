@@ -36,15 +36,16 @@ export interface Entidad {
   nombre: string;
   tipo: TipoEntidad;
   vida_max: number;
+  vida_es_publica: boolean;
   armadura: number;
+  armadura_es_publica: boolean;
   velocidad: number;
   rango_arma: number;
   cuerpo: Cuerpo;
   zona_id: number;
-  foto_url?: string | null;
-  es_publico?: boolean;
-  archivos_adjuntos?: (string | null)[];
-  es_unico?: boolean;
+  foto_url: string | null;
+  archivos_adjuntos: (string | null)[];
+  es_unico: boolean;
 }
 
 export interface Instancia {
@@ -376,6 +377,70 @@ class Partida {
       document.activeElement.blur();
     }
   }
+
+  /** Ficha que se está editando en la ventana flotante (null = ventana cerrada) */
+  entidadEnEdicion = $state<Entidad | null>(null);
+
+  // ------------------------------------------------------------------
+  // Ventana flotante y persistencia de Entidades
+  // ------------------------------------------------------------------
+
+  abrirEditorEntidad(entidad?: Entidad | null, fotoUrl: string | null = null) {
+    if (entidad) {
+      // Clonamos para no mutar el estado en vivo hasta pulsar Guardar
+      this.entidadEnEdicion = structuredClone($state.snapshot(entidad));
+    } else {
+      // Nueva entidad por defecto
+      const zonaDefecto = this.zonaId ?? this.zonasOrdenadas[0]?.id ?? 1;
+      this.entidadEnEdicion = {
+        id: 0,
+        nombre: "Nueva Ficha",
+        tipo: "Enemigo",
+        vida_max: 10,
+        vida_es_publica: false,
+        armadura: 10,
+        armadura_es_publica: false,
+        velocidad: 6,
+        rango_arma: 1,
+        cuerpo: "Pequenio",
+        zona_id: zonaDefecto,
+        foto_url: fotoUrl,
+        archivos_adjuntos: [],
+        es_unico: false
+      };
+    }
+  }
+
+  cerrarEditorEntidad() {
+    this.entidadEnEdicion = null;
+  }
+
+  async guardarEntidad(entidad: Entidad) {
+    try {
+      if (entidad.id === 0) {
+        await invoke<Entidad>("crear_entidad", { entidad });
+      } else {
+        await invoke("modificar_entidad", { entidad });
+      }
+      await this.recargarEntidades();
+      this.cerrarEditorEntidad();
+    } catch (err) {
+      console.error("Error al guardar entidad en Rust:", err);
+    }
+  }
+
+  async borrarEntidad(entidad: Entidad) {
+    try {
+      await invoke("borrar_entidad", { entidad });
+      await this.recargarEntidades();
+      if (this.entidadEnEdicion?.id === entidad.id) {
+        this.cerrarEditorEntidad();
+      }
+    } catch (err) {
+      console.error("Error al borrar entidad en Rust:", err);
+    }
+  }
+
 }
 
 export const partida = new Partida();

@@ -5,3 +5,4 @@ pub mod estado;
 pub mod imagenes;
 pub mod modelos;
 pub mod partida;
+pub mod archivos;

@@ -10,6 +10,7 @@ use crate::tablero_general::almacen::{bloquear, Almacen};
 use crate::tablero_general::estado::{self, DeltaPartida, EstadoPartida};
 use crate::tablero_general::imagenes;
 use crate::tablero_general::modelos::*;
+use crate::tablero_general::archivos;
 
 pub struct AppState {
     pub estado: Mutex<EstadoPartida>,
@@ -241,3 +242,82 @@ pub async fn importar_imagen(origen: String, state: State<'_, AppState>) -> Resu
         .await
         .map_err(|e| format!("La importación falló: {e}"))?
 }
+
+/// Registra una nueva entidad en el banco.
+/// Calcula el siguiente ID disponible dentro del mismo lock para evitar colisiones
+/// concurrentes y devuelve la entidad con su ID definitivo asignado.
+#[tauri::command]
+pub fn crear_entidad(mut entidad: Entidad, state: State<'_, AppState>) -> Entidad {
+    let mut est = state.lock();
+    let id = est.banco_entidades.iter().map(|e| e.id).max().unwrap_or(0) + 1;
+    entidad.id = id;
+
+    registrar(&mut est, &state.almacen, DeltaPartida::EntidadCreada(entidad.clone()));
+    entidad
+}
+
+#[tauri::command]
+pub fn modificar_entidad(entidad: Entidad, state: State<'_, AppState>) {
+    {
+        let est = state.lock();
+        if let Some(anterior) = est.banco_entidades.iter().find(|e| e.id == entidad.id) {
+            archivos::limpiar_desasociados(state.almacen.dir(), anterior, &entidad, &est.banco_entidades);
+        }
+    }
+    procesar_delta(&state, DeltaPartida::EntidadModificada(entidad));
+}
+
+#[tauri::command]
+pub fn borrar_entidad(entidad: Entidad, state: State<'_, AppState>) {
+    {
+        let est = state.lock();
+        archivos::limpiar_todos_los_adjuntos(state.almacen.dir(), &entidad, &est.banco_entidades);
+    }
+    procesar_delta(&state, DeltaPartida::EntidadBorrada(entidad));
+}
+
+#[tauri::command]
+pub async fn importar_archivo(
+    adjunto: ArchivoAdjunto,
+    origen: String,
+    state: State<'_, AppState>,
+) -> Result<ArchivoAdjunto, String> {
+    let dir = state.almacen.dir().to_path_buf();
+    tauri::async_runtime::spawn_blocking(move || {
+        archivos::importar(&dir, adjunto.entidad_archivo, Path::new(&origen))
+    })
+    .await
+    .map_err(|e| format!("Fallo al importar archivo: {e}"))?
+}
+
+#[tauri::command]
+pub fn guardar_archivo_texto(
+    adjunto: ArchivoAdjunto,
+    contenido: String,
+    state: State<'_, AppState>,
+) -> Result<ArchivoAdjunto, String> {
+    archivos::guardar_texto(state.almacen.dir(), adjunto, &contenido)
+}
+
+#[tauri::command]
+pub fn leer_archivo_texto(ruta_relativa: String, state: State<'_, AppState>) -> Result<String, String> {
+    archivos::leer_texto(state.almacen.dir(), &ruta_relativa)
+}
+
+#[tauri::command]
+pub fn crear_documento_texto(
+    entidad: Entidad,
+    state: State<'_, AppState>,
+) -> Result<ArchivoAdjunto, String> {
+    archivos::crear_documento_texto(state.almacen.dir(), entidad)
+}
+
+#[tauri::command]
+pub fn renombrar_archivo_adjunto(
+    adjunto: ArchivoAdjunto,
+    nuevo_nombre: String,
+    state: State<'_, AppState>,
+) -> Result<ArchivoAdjunto, String> {
+    archivos::renombrar(state.almacen.dir(), adjunto, &nuevo_nombre)
+}
+

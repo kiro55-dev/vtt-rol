@@ -107,3 +107,9 @@ pub struct Tiradas {
     pub comando: String,
     pub hora: String,
 }
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct ArchivoAdjunto {
+    pub ruta: String,
+    pub entidad_archivo: Entidad,
+}

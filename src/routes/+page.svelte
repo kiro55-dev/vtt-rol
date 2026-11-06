@@ -9,8 +9,7 @@
   import Tablero from "./componentes/Tablero.svelte";
   import BarraRejilla from "./componentes/BarraRejilla.svelte";
   import BarraDados from "./componentes/BarraDados.svelte";
-  import ModalFicha from "./componentes/ModalFicha.svelte";
-
+  import VentanaFicha from "./componentes/VentanaFicha.svelte";
   let fichaParaEditar = $state<any>(null); // por ahora nadie abre el modal; se tipará con Entidad/Instancia
 
   onMount(async () => {
@@ -46,12 +45,9 @@
 
   <PanelDerecho />
 
-  {#if fichaParaEditar}
-    <ModalFicha
-      bind:entidad={fichaParaEditar}
-      zonas={partida.zonas}
-      onCerrar={() => (fichaParaEditar = null)}
-    />
+  <!-- Ventana flotante no bloqueante -->
+  {#if partida.entidadEnEdicion}
+    <VentanaFicha entidad={partida.entidadEnEdicion} />
   {/if}
 </div>
 

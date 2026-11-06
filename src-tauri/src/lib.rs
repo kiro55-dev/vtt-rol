@@ -8,10 +8,12 @@ use tablero_general::almacen::Almacen;
 use tablero_general::dados::tirar_dado;
 use tablero_general::estado;
 use tablero_general::partida::{
-    borrar_mapa, compactar_partida, crear_mapa, crear_zona, eliminar_zona, importar_imagen,
+    AppState, borrar_mapa, compactar_partida, crear_mapa, crear_zona, eliminar_zona, importar_imagen,
     iniciar_autoguardado, modificar_mapa, modificar_zona, obtener_banco_entidades,
     obtener_dir_datos, obtener_historial_personal, obtener_historial_tiradas,
-    obtener_instancias_activas, obtener_mapas_zona, obtener_zonas, AppState,
+    obtener_instancias_activas, obtener_mapas_zona, obtener_zonas, crear_entidad, borrar_entidad,
+    modificar_entidad, importar_archivo, guardar_archivo_texto, leer_archivo_texto,
+    crear_documento_texto, renombrar_archivo_adjunto,
 };
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -74,6 +76,14 @@ pub fn run() {
             borrar_mapa,
             obtener_dir_datos,
             importar_imagen,
+            crear_entidad, 
+            borrar_entidad,
+            modificar_entidad,
+            importar_archivo, 
+            guardar_archivo_texto, 
+            leer_archivo_texto,
+            crear_documento_texto,
+            renombrar_archivo_adjunto,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

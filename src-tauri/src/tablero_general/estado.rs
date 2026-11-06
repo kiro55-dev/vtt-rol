@@ -29,6 +29,9 @@ pub enum DeltaPartida {
     MapaCreado(Zona, Mapa),
     MapaModificado(Mapa),
     MapaBorrado(Mapa),
+    EntidadCreada(Entidad),
+    EntidadBorrada(Entidad),
+    EntidadModificada(Entidad),
 }
 
 /// Línea de deltas.jsonl al LEER.
@@ -186,6 +189,33 @@ impl EstadoPartida {
                     }
                 });
             }
+            DeltaPartida::EntidadCreada(entidad) => {
+                if let Some(pos) = self.banco_entidades.iter().position(|e| e.id == entidad.id) {
+                    self.banco_entidades[pos] = entidad.clone();
+                } else {
+                    self.banco_entidades.push(entidad.clone());
+                }
+            }
+            DeltaPartida::EntidadModificada(entidad) => {
+                // 1. Actualizamos la plantilla base en el banco de entidades
+                if let Some(pos) = self.banco_entidades.iter().position(|e| e.id == entidad.id) {
+                    self.banco_entidades[pos] = entidad.clone();
+                }
+
+                // 2. Sincronizamos la información base en todas las instancias activas de esta entidad
+                for inst in self.instancias_activas.iter_mut() {
+                    if inst.base.id == entidad.id {
+                        inst.base = entidad.clone();
+                    }
+                }
+            }
+            DeltaPartida::EntidadBorrada(entidad) => {
+                // 1. La eliminamos del banco de entidades
+                self.banco_entidades.retain(|e| e.id != entidad.id);
+
+                // 2. Se eliminan todas las instancias asociadas en el tablero/activas
+                self.instancias_activas.retain(|inst| inst.base.id != entidad.id);
+            }
         }
     }
 
@@ -308,13 +338,14 @@ mod tests {
                 nombre: "Orco".into(),
                 tipo: TipoEntidad::Enemigo,
                 vida_max: 20,
+                vida_es_publica: true,
                 armadura: 1,
+                armadura_es_publica: false,
                 velocidad: 6,
                 rango_arma: 1,
                 cuerpo: Cuerpo::Pequenio,
                 zona_id: 1,
                 foto_url: None,
-                es_publico: false,
                 archivos_adjuntos: vec![],
                 es_unico: false,
             },
