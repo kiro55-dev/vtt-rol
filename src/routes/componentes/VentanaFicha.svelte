@@ -24,13 +24,23 @@
 
   let { entidad }: { entidad: Entidad } = $props();
 
+  // Evita doble clic en Guardar y muestra errores de validación locales
+  let guardando = $state(false);
+  let errorLocal = $state("");
+  const error = $derived(errorLocal || partida.errorEditor);
+
   // Registro de archivos creados/importados durante esta sesión de edición
-  let archivosCreadosEnSesion = $state<string[]>([]);
+  // La foto con la que nace un borrador (ficha arrastrada desde una imagen) también es de esta sesión
+  // svelte-ignore state_referenced_locally
+  let archivosCreadosEnSesion = $state<string[]>(
+    partida.editorEsBorrador && entidad.foto_url ? [entidad.foto_url] : []
+  );
 
   const EXTENSIONES_IMAGEN = ["png", "jpg", "jpeg", "webp", "gif", "bmp", "avif", "svg"];
   const ES_IMAGEN = new RegExp(`\\.(${EXTENSIONES_IMAGEN.join("|")})$`, "i");
 
   let pos = $state({ x: 260, y: 70 });
+  let ventana = $state<HTMLDivElement | null>(null);
   let pestanaActiva = $state<number>(0);
 
   // Textos cargados en memoria
@@ -150,7 +160,8 @@
       try {
         const contenido = await invoke<string>("leer_archivo_texto", { rutaRelativa: ruta });
         textosArchivos[ruta] = contenido;
-        textoActual = contenido;
+        // Si mientras se leía se cambió de pestaña, no pisar el texto de la nueva
+        if (entidad.archivos_adjuntos[pestanaActiva] === ruta) textoActual = contenido;
       } catch (err) {
         console.error("Error al leer texto:", err);
         textoActual = "";
@@ -170,7 +181,7 @@
   // Crear .txt manual
   async function crearNuevoTxt() {
     try {
-      const nuevoAdjunto = await invoke<ArchivoAdjunto>("crear_documento_texto", { entidad });
+      const nuevoAdjunto = await invoke<ArchivoAdjunto>("crear_documento_texto", { entidad: $state.snapshot(entidad) });
       entidad.archivos_adjuntos.push(nuevoAdjunto.ruta);
       archivosCreadosEnSesion.push(nuevoAdjunto.ruta); // <- Registrado como creado en sesión
       textosArchivos[nuevoAdjunto.ruta] = "";
@@ -178,20 +189,29 @@
       cargarContenidoPestana(entidad.archivos_adjuntos.length - 1);
       comprobarScroll();
     } catch (err) {
-      console.error("Error al crear documento en Rust:", err);
+      errorLocal = `No se pudo crear el documento: ${err}`;
     }
   }
 
-  // Cancelar: borra los archivos creados en esta sesión y cierra
+  // Cancelar: Rust descarta los archivos creados en esta sesión (y, si la ficha era nueva, su
+  // carpeta y su id reservado). Nunca toca archivos que la ficha guardada ya tenía.
   async function cancelarYDescartar() {
-    if (archivosCreadosEnSesion.length > 0) {
+    if (guardando) return;
+    await partida.cancelarEditorEntidad($state.snapshot(archivosCreadosEnSesion));
+  }
+
+  async function borrarFicha() {
+    if (guardando) return;
+    const sesion = $state.snapshot(archivosCreadosEnSesion);
+    await partida.borrarEntidad(entidad);
+    // Lo que se creó en esta sesión y la ficha guardada nunca llegó a referenciar
+    if (!partida.entidadEnEdicion && sesion.length > 0) {
       try {
-        await invoke("descartar_archivos_borrador", { rutas: archivosCreadosEnSesion });
+        await invoke("descartar_archivos_borrador", { rutas: sesion });
       } catch (err) {
-        console.error("Error al descartar archivos de borrador:", err);
+        console.error("Error al descartar archivos:", err);
       }
     }
-    partida.cerrarEditorEntidad();
   }
 
   function iniciarRenombrado(indice: number, ruta: string) {
@@ -211,46 +231,93 @@
 
     try {
       const adjuntoActualizado = await invoke<ArchivoAdjunto>("renombrar_archivo_adjunto", {
-        adjunto: { ruta: rutaVieja, entidad_archivo: entidad },
+        adjunto: { ruta: rutaVieja, entidad_archivo: $state.snapshot(entidad) },
         nuevoNombre
       });
 
       entidad.archivos_adjuntos[indice] = adjuntoActualizado.ruta;
+
+      // Si el original pertenece a la ficha ya guardada, Rust lo COPIÓ (no se pierde si se
+      // cancela): la copia es un archivo nuevo de esta sesión. Si lo habíamos creado en esta
+      // sesión, se movió: sustituimos su entrada.
+      const k = archivosCreadosEnSesion.indexOf(rutaVieja);
+      if (k >= 0) archivosCreadosEnSesion[k] = adjuntoActualizado.ruta;
+      else archivosCreadosEnSesion.push(adjuntoActualizado.ruta);
 
       if (textosArchivos[rutaVieja] !== undefined) {
         textosArchivos[adjuntoActualizado.ruta] = textosArchivos[rutaVieja];
         delete textosArchivos[rutaVieja];
       }
     } catch (err) {
-      console.error("Error al renombrar archivo en Rust:", err);
+      errorLocal = `No se pudo renombrar: ${err}`;
     }
   }
 
   function desasociarAdjunto(indice: number) {
     const [eliminado] = entidad.archivos_adjuntos.splice(indice, 1);
     if (eliminado) delete textosArchivos[eliminado];
-    pestanaActiva = Math.max(0, pestanaActiva - 1);
+    // Si se quita una pestaña anterior a la activa, la activa sigue siendo la misma ficha
+    if (indice < pestanaActiva) pestanaActiva -= 1;
+    pestanaActiva = Math.max(0, Math.min(pestanaActiva, entidad.archivos_adjuntos.length - 1));
     cargarContenidoPestana(pestanaActiva);
     comprobarScroll();
   }
 
-  // Guardar: consolida los cambios (ya no son borradores a descartar)
-  async function guardarTodo() {
-    archivosCreadosEnSesion = []; // Vaciamos para que no se eliminen al cerrar
+  // Número entero dentro del rango de i16 que usa Rust
+  function entero(v: unknown, nombre: string, min = 0): number {
+    const n = typeof v === "number" ? v : Number(v);
+    if (v === null || v === "" || !Number.isInteger(n)) throw new Error(`${nombre}: debe ser un número entero`);
+    if (n < min) throw new Error(`${nombre}: no puede ser menor que ${min}`);
+    if (n > 32767) throw new Error(`${nombre}: no puede pasar de 32767`);
+    return n;
+  }
 
+  function validar() {
+    if (!entidad.nombre?.trim()) throw new Error("La ficha necesita un nombre");
+    entidad.vida_max = entero(entidad.vida_max, "Vida");
+    entidad.armadura = entero(entidad.armadura, "Armadura");
+    entidad.velocidad = entero(entidad.velocidad, "Velocidad");
+    entidad.rango_arma = entero(entidad.rango_arma, "Rango");
+    cuerpoX = entero(cuerpoX, "Cuerpo X", 1);
+    cuerpoY = entero(cuerpoY, "Cuerpo Y", 1);
+    if (cuerpoX > 255 || cuerpoY > 255) throw new Error("El cuerpo no puede pasar de 255");
     actualizarCuerpo();
+  }
 
-    for (const [ruta, contenido] of Object.entries(textosArchivos)) {
-      try {
+  // Guardar: valida, escribe los textos y la ficha. Si algo falla, la ventana sigue abierta
+  // con el motivo a la vista y NO se descarta nada.
+  async function guardarTodo() {
+    if (guardando) return;
+    guardando = true;
+    errorLocal = "";
+    try {
+      validar();
+
+      for (const [ruta, contenido] of Object.entries(textosArchivos)) {
+        if (!entidad.archivos_adjuntos.includes(ruta)) continue; // pestaña desasociada
         await invoke("guardar_archivo_texto", {
-          adjunto: { ruta, entidad_archivo: entidad },
+          adjunto: { ruta, entidad_archivo: $state.snapshot(entidad) },
           contenido
         });
-      } catch (err) {
-        console.error("Error al guardar texto:", err);
       }
+
+      const sesion = $state.snapshot(archivosCreadosEnSesion);
+      if (await partida.guardarEntidad(entidad)) {
+        // Fotos/archivos de esta sesión que al final no se usaron (cambió de foto, desasoció
+        // un archivo...). Rust nunca borra lo que la partida referencia.
+        if (sesion.length > 0) {
+          try {
+            await invoke("descartar_archivos_borrador", { rutas: sesion });
+          } catch (err) {
+            console.error("Error al limpiar archivos sobrantes:", err);
+          }
+        }
+      }
+    } catch (err) {
+      errorLocal = err instanceof Error ? err.message : String(err);
+    } finally {
+      guardando = false;
     }
-    await partida.guardarEntidad(entidad);
   }
 
    function alTeclearVentana(e: KeyboardEvent) {
@@ -290,11 +357,22 @@
       filters: [{ name: "Imágenes", extensions: EXTENSIONES_IMAGEN }]
     });
     if (typeof ruta === "string") {
-      entidad.foto_url = await importarImagen(ruta);
+      await ponerFoto(ruta);
+    }
+  }
+
+  async function ponerFoto(origen: string) {
+    try {
+      const nueva = await importarImagen(origen);
+      entidad.foto_url = nueva;
+      if (!archivosCreadosEnSesion.includes(nueva)) archivosCreadosEnSesion.push(nueva);
+    } catch (err) {
+      errorLocal = `No se pudo importar la imagen: ${err}`;
     }
   }
 
   onMount(() => {
+    ventana?.focus(); // para que Enter/Escape funcionen sin tocar la ventana con el ratón
     if (entidad.archivos_adjuntos.length > 0) {
       cargarContenidoPestana(0);
     }
@@ -320,7 +398,7 @@
           if (el?.closest(".caja-foto")) {
             const rutaImg = rutas.find((r) => ES_IMAGEN.test(r));
             if (rutaImg) {
-              entidad.foto_url = await importarImagen(rutaImg);
+              await ponerFoto(rutaImg);
             }
             return;
           }
@@ -330,13 +408,13 @@
             for (const r of rutas) {
               try {
                 const adjunto = await invoke<ArchivoAdjunto>("importar_archivo", {
-                  adjunto: { ruta: "", entidad_archivo: entidad },
+                  adjunto: { ruta: "", entidad_archivo: $state.snapshot(entidad) },
                   origen: r
                 });
                 entidad.archivos_adjuntos.push(adjunto.ruta);
                 archivosCreadosEnSesion.push(adjunto.ruta);
               } catch (err) {
-                console.error("Error al importar adjunto:", err);
+                errorLocal = `No se pudo importar «${r}»: ${err}`;
               }
             }
             await tick();
@@ -358,14 +436,21 @@
   });
 </script>
 
-<svelte:window onkeydown={alTeclearVentana} />
-
-<div class="ventana-flotante" style="left: {pos.x}px; top: {pos.y}px;">
+<!-- svelte-ignore a11y_no_noninteractive_tabindex -->
+<div
+  class="ventana-flotante"
+  style="left: {pos.x}px; top: {pos.y}px;"
+  role="dialog"
+  aria-label="Ficha"
+  tabindex="-1"
+  onkeydown={alTeclearVentana}
+  bind:this={ventana}
+>
   <!-- Cabecera movible -->
   <div class="cabecera-flotante" role="presentation" onpointerdown={iniciarArrastre}>
     <span class="icono-drag">⋮⋮</span>
     <span class="titulo-ventana">
-      {entidad.id === 0 ? "Nueva Ficha" : `Ficha: ${entidad.nombre}`}
+      {partida.editorEsBorrador ? "Nueva Ficha" : `Ficha: ${entidad.nombre}`}
     </span>
     <button type="button" class="btn-cerrar" onclick={cancelarYDescartar}>✕</button>
   </div>
@@ -609,9 +694,13 @@
       </div>
     </div>
 
+    {#if error}
+      <p class="error-ficha" role="alert">{error}</p>
+    {/if}
+
     <div class="pie-acciones">
-      {#if entidad.id !== 0}
-        <button type="button" class="btn-borrar" onclick={() => partida.borrarEntidad(entidad)}>
+      {#if !partida.editorEsBorrador}
+        <button type="button" class="btn-borrar" onclick={borrarFicha} disabled={guardando}>
           Borrar
         </button>
       {/if}
@@ -619,7 +708,7 @@
         <button type="button" class="btn-cancelar" onclick={cancelarYDescartar}>
           Cancelar
         </button>
-        <button type="button" class="btn-guardar" onclick={guardarTodo}>
+        <button type="button" class="btn-guardar" onclick={guardarTodo} disabled={guardando}>
           Guardar
         </button>
       </div>
@@ -819,6 +908,7 @@
     user-select: none;
   }
 
+  .error-ficha { margin: 0 0 6px; color: #f87171; font-size: 12px; }
   .pie-acciones { display: flex; justify-content: space-between; align-items: center; }
   .botones-derecha { display: flex; gap: 6px; margin-left: auto; }
   .btn-cancelar, .btn-guardar, .btn-borrar {

@@ -1,97 +1,69 @@
 // src/lib/miniaturas.svelte.ts
 //
-// Miniaturas de los mapas para el panel izquierdo. Se cachean por la RUTA de la imagen (que
-// es el hash de su contenido): una imagen nueva siempre tiene miniatura nueva, dos mapas con
-// la misma imagen la comparten, y nunca hay que "invalidar" nada.
-import { urlDeImagen } from "$lib/imagenes";
+// Miniaturas de mapas y fichas. Las genera Rust UNA vez (WebP al 90 %) y las guarda en
+// <datos>/miniaturas/...; aquí solo se pide la ruta y se carga como cualquier imagen.
+// Se cachean por la RUTA de la imagen original (que es el hash de su contenido), así que
+// no hay nada que invalidar.
+//
+// Memoria: lo que se guarda aquí es solo una ruta (unos bytes). Los píxeles los gestiona el
+// webview, que descarta las imágenes de las filas que se desmontan al salir de pantalla
+// (BancoEntidades solo pinta el <img> de las filas visibles). Por eso no hay límite ni LRU.
+import { invoke } from "@tauri-apps/api/core";
+import { alImportarImagen, urlDeImagen } from "$lib/imagenes";
 
-// Configuración de resolución de fichas (fácil de ajustar)
-export const RES_FICHA = { ancho: 48, alto: 48 };
-const MAX_MINIATURAS_FICHA_CACHE = 15; // Límite para no saturar memoria RAM
-
-async function generar(src: string, ancho: number, alto: number): Promise<string> {
-  if (!src) return "";
-  return new Promise((resolve) => {
-    const img = new Image();
-    img.crossOrigin = "anonymous";
-    img.onload = () => {
-      const canvas = document.createElement("canvas");
-      canvas.width = ancho;
-      canvas.height = alto;
-      const ctx = canvas.getContext("2d");
-      if (!ctx) return resolve("");
-      ctx.drawImage(img, 0, 0, ancho, alto);
-      resolve(canvas.toDataURL("image/webp", 0.9));
-    };
-    img.onerror = () => resolve("");
-    img.src = src;
-  });
-}
+type Tipo = "ficha" | "mapa";
 
 class Miniaturas {
-  // Mapas (Record reactivo)
+  // ruta original -> URL de la miniatura (o de la original si no se pudo reducir)
   #mapas = $state<Record<string, string>>({});
-  #pedidasMapas = new Set<string>();
-
-  // Fichas (Record reactivo nativo en Svelte 5 para que la asignación despierte la interfaz)
   #fichas = $state<Record<string, string>>({});
-  #pedidasFichas = new Set<string>();
-  #ordenLRU: string[] = [];
+  // Peticiones en curso o ya resueltas (también las fallidas, para no repetirlas en bucle)
+  #pedidas = new Set<string>();
 
-  // --- Mapas ---
+  /** Miniatura de un mapa ("" mientras no esté lista). Solo lee; pedirla es `asegurar`. */
   de(ruta: string | null | undefined): string {
     return ruta ? (this.#mapas[ruta] ?? "") : "";
   }
 
-  asegurar(ruta: string | null | undefined) {
-    if (!ruta || this.#pedidasMapas.has(ruta)) return;
-    this.#pedidasMapas.add(ruta);
-    generar(urlDeImagen(ruta), 64, 36).then((mini) => {
-      if (mini) this.#mapas[ruta] = mini;
-    });
+  /** Miniatura de una ficha ("" mientras no esté lista). No lanza peticiones. */
+  deFicha(ruta: string | null | undefined): string {
+    return ruta ? (this.#fichas[ruta] ?? "") : "";
   }
 
-  // --- Fichas ---
-  deFicha(ruta: string | null | undefined): string {
-    if (!ruta) return "";
-    const mini = this.#fichas[ruta];
-    if (mini) return mini;
-
-    // Si aún no se ha pedido, la pide automáticamente
-    this.asegurarFicha(ruta);
-    return "";
+  asegurar(ruta: string | null | undefined) {
+    this.#pedir(ruta, "mapa");
   }
 
   asegurarFicha(ruta: string | null | undefined) {
-    if (!ruta || this.#pedidasFichas.has(ruta) || this.#fichas[ruta]) return;
-    this.#pedidasFichas.add(ruta);
-
-    generar(urlDeImagen(ruta), RES_FICHA.ancho, RES_FICHA.alto).then((mini) => {
-      this.#pedidasFichas.delete(ruta);
-      if (!mini) return;
-
-      // Gestión de memoria LRU
-      this.#ordenLRU = this.#ordenLRU.filter((r) => r !== ruta);
-      this.#ordenLRU.push(ruta);
-
-      if (this.#ordenLRU.length > MAX_MINIATURAS_FICHA_CACHE) {
-        const expirar = this.#ordenLRU.shift();
-        if (expirar && expirar !== ruta) {
-          delete this.#fichas[expirar];
-        }
-      }
-
-      // Esta asignación directa activa inmediatamente la reactividad de Svelte 5
-      this.#fichas[ruta] = mini;
-    });
+    this.#pedir(ruta, "ficha");
   }
 
-  descargarFicha(ruta: string | null | undefined) {
-    if (!ruta) return;
+  /** La imagen se acaba de (re)importar: su miniatura pudo haberse borrado, se vuelve a pedir. */
+  olvidar(ruta: string) {
+    this.#pedidas.delete(`mapa:${ruta}`);
+    this.#pedidas.delete(`ficha:${ruta}`);
+    delete this.#mapas[ruta];
     delete this.#fichas[ruta];
-    this.#pedidasFichas.delete(ruta);
-    this.#ordenLRU = this.#ordenLRU.filter((r) => r !== ruta);
+  }
+
+  #pedir(ruta: string | null | undefined, tipo: Tipo) {
+    if (!ruta) return;
+    const clave = `${tipo}:${ruta}`;
+    if (this.#pedidas.has(clave)) return;
+    this.#pedidas.add(clave);
+
+    const destino = tipo === "mapa" ? this.#mapas : this.#fichas;
+    invoke<string | null>("obtener_miniatura", { ruta, tipo })
+      .then((mini) => {
+        // null = formato que no se puede reducir (svg, avif...) -> se usa la original
+        destino[ruta] = urlDeImagen(mini ?? ruta);
+      })
+      .catch((err) => {
+        console.warn("No se pudo obtener la miniatura de", ruta, err);
+        destino[ruta] = urlDeImagen(ruta);
+      });
   }
 }
 
 export const miniaturas = new Miniaturas();
+alImportarImagen((ruta) => miniaturas.olvidar(ruta));

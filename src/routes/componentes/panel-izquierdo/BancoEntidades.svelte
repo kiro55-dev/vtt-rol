@@ -1,6 +1,7 @@
 <!-- src/routes/componentes/panel-izquierdo/BancoEntidades.svelte -->
 <script lang="ts">
   import { onMount } from "svelte";
+  import { invoke } from "@tauri-apps/api/core";
   import { getCurrentWebview } from "@tauri-apps/api/webview";
   import { partida } from "$lib/partida.svelte";
   import { miniaturas } from "$lib/miniaturas.svelte";
@@ -26,6 +27,14 @@
       return coincideNombre && coincideZona && coincideTipo;
     })
   );
+
+  // Pide la miniatura de las fichas visibles (también si su foto cambia al guardar).
+  // Las filas que salen de pantalla dejan de pintar su <img>, así que el webview libera esos píxeles.
+  $effect(() => {
+    for (const e of entidadesFiltradas) {
+      if (visibles[e.id] && e.foto_url) miniaturas.asegurarFicha(e.foto_url);
+    }
+  });
 
   // IntersectionObserver: desmonta la imagen si la fila sale del scroll
   function vigilarVisibilidad(node: HTMLElement, id: number) {
@@ -70,8 +79,14 @@
           const el = document.elementFromPoint(x / escala, y / escala);
 
           if (el?.closest(".banco")) {
+            // Con una ficha ya abierta se ignora el drop (no se importa nada que quede huérfano)
+            if (partida.entidadEnEdicion) return;
             const fotoUrl = await importarImagen(ruta);
-            partida.abrirEditorEntidad(null, fotoUrl);
+            await partida.abrirEditorEntidad(null, fotoUrl);
+            if (!partida.entidadEnEdicion) {
+              // No se pudo abrir el borrador: la imagen recién importada no la usa nadie
+              invoke("descartar_archivos_borrador", { rutas: [fotoUrl] }).catch(() => {});
+            }
           }
         })
         .then((fn) => (desmontado ? fn() : (unlisten = fn)))

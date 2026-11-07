@@ -385,59 +385,97 @@ class Partida {
   // Ventana flotante y persistencia de Entidades
   // ------------------------------------------------------------------
 
-  abrirEditorEntidad(entidad?: Entidad | null, fotoUrl: string | null = null) {
-    if (entidad) {
-      // Clonamos para no mutar el estado en vivo hasta pulsar Guardar
-      this.entidadEnEdicion = structuredClone($state.snapshot(entidad));
-    } else {
-      // Nueva entidad por defecto
-      const zonaDefecto = this.zonaId ?? this.zonasOrdenadas[0]?.id ?? 1;
-      this.entidadEnEdicion = {
-        id: 0,
-        nombre: "Nueva Ficha",
-        tipo: "Enemigo",
-        vida_max: 10,
-        vida_es_publica: false,
-        armadura: 10,
-        armadura_es_publica: false,
-        velocidad: 6,
-        rango_arma: 1,
-        cuerpo: "Pequenio",
-        zona_id: zonaDefecto,
-        foto_url: fotoUrl,
-        archivos_adjuntos: [],
-        es_unico: false
-      };
+  /** true mientras se edita una ficha NUEVA: ya tiene su id real (reservado en Rust) pero aún no está guardada */
+  editorEsBorrador = $state(false);
+  /** Mensaje de error de la última operación del editor (se muestra en la ventana) */
+  errorEditor = $state("");
+
+  /**
+   * Abre la ventana de una ficha. Con `entidad` edita una existente (sobre una copia);
+   * sin ella crea un borrador: Rust reserva el id real en ese instante, así los archivos
+   * que se adjunten ya viven en su carpeta definitiva (archivos/entidad_<id>).
+   * Si ya hay una ventana abierta se ignora la petición (hay que guardar o cancelar antes).
+   */
+  async abrirEditorEntidad(entidad?: Entidad | null, fotoUrl: string | null = null) {
+    if (this.entidadEnEdicion || this.#abriendo) return;
+    this.#abriendo = true;
+    this.errorEditor = "";
+    try {
+      if (entidad) {
+        // Clonamos para no mutar el estado en vivo hasta pulsar Guardar
+        this.entidadEnEdicion = structuredClone($state.snapshot(entidad));
+        this.editorEsBorrador = false;
+      } else {
+        const zonaDefecto = this.zonaId ?? this.zonasOrdenadas[0]?.id ?? 1;
+        const borrador = await invoke<Entidad>("iniciar_borrador_entidad", {
+          zonaId: zonaDefecto,
+          fotoUrl
+        });
+        this.entidadEnEdicion = borrador;
+        this.editorEsBorrador = true;
+      }
+    } catch (err) {
+      console.error("No se pudo abrir la ficha:", err);
+    } finally {
+      this.#abriendo = false;
+    }
+  }
+  #abriendo = false;
+
+  /** Cierra la ventana sin guardar. `rutas` = archivos/imágenes que se crearon en esta sesión. */
+  async cancelarEditorEntidad(rutas: string[] = []) {
+    const e = this.entidadEnEdicion;
+    if (!e) return;
+    const eraBorrador = this.editorEsBorrador;
+    this.entidadEnEdicion = null;
+    this.editorEsBorrador = false;
+    this.errorEditor = "";
+    try {
+      if (eraBorrador) {
+        await invoke("cancelar_borrador_entidad", { id: e.id, rutas });
+      } else if (rutas.length > 0) {
+        await invoke("descartar_archivos_borrador", { rutas });
+      }
+    } catch (err) {
+      console.error("Error al descartar el borrador:", err);
     }
   }
 
+  /** Cierra la ventana tras guardar (no descarta nada) */
   cerrarEditorEntidad() {
     this.entidadEnEdicion = null;
+    this.editorEsBorrador = false;
+    this.errorEditor = "";
   }
 
-  async guardarEntidad(entidad: Entidad) {
+  /** Guarda la ficha. Devuelve true si Rust la aceptó; si no, deja el motivo en `errorEditor`. */
+  async guardarEntidad(entidad: Entidad): Promise<boolean> {
+    this.errorEditor = "";
     try {
-      if (entidad.id === 0) {
-        await invoke<Entidad>("crear_entidad", { entidad });
+      const plano = $state.snapshot(entidad) as Entidad;
+      if (this.editorEsBorrador) {
+        await invoke<Entidad>("crear_entidad", { entidad: plano });
       } else {
-        await invoke("modificar_entidad", { entidad });
+        await invoke("modificar_entidad", { entidad: plano });
       }
       await this.recargarEntidades();
       this.cerrarEditorEntidad();
+      return true;
     } catch (err) {
-      console.error("Error al guardar entidad en Rust:", err);
+      this.errorEditor = String(err);
+      return false;
     }
   }
 
   async borrarEntidad(entidad: Entidad) {
     try {
-      await invoke("borrar_entidad", { entidad });
+      await invoke("borrar_entidad", { entidad: $state.snapshot(entidad) });
       await this.recargarEntidades();
       if (this.entidadEnEdicion?.id === entidad.id) {
         this.cerrarEditorEntidad();
       }
     } catch (err) {
-      console.error("Error al borrar entidad en Rust:", err);
+      this.errorEditor = String(err);
     }
   }
 

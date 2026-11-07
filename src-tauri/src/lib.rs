@@ -1,20 +1,19 @@
 // src-tauri/src/lib.rs
 mod tablero_general;
 
-use std::sync::Mutex;
 use tauri::Manager;
 
 use tablero_general::almacen::Almacen;
 use tablero_general::dados::tirar_dado;
 use tablero_general::estado;
 use tablero_general::partida::{
-    AppState, borrar_mapa, compactar_partida, crear_mapa, crear_zona, eliminar_zona, importar_imagen,
-    iniciar_autoguardado, modificar_mapa, modificar_zona, obtener_banco_entidades,
-    obtener_dir_datos, obtener_historial_personal, obtener_historial_tiradas,
-    obtener_instancias_activas, obtener_mapas_zona, obtener_zonas, crear_entidad, borrar_entidad,
-    modificar_entidad, importar_archivo, guardar_archivo_texto, leer_archivo_texto,
-    crear_documento_texto, renombrar_archivo_adjunto, abrir_archivo_en_sistema,
-    descartar_archivos_borrador, iniciar_limpieza_huerfanos
+    AppState, abrir_archivo_en_sistema, borrar_entidad, borrar_mapa, cancelar_borrador_entidad,
+    compactar_partida, crear_documento_texto, crear_entidad, crear_mapa, crear_zona,
+    descartar_archivos_borrador, eliminar_zona, guardar_archivo_texto, importar_archivo,
+    importar_imagen, iniciar_autoguardado, iniciar_borrador_entidad, leer_archivo_texto,
+    modificar_entidad, modificar_mapa, modificar_zona, obtener_banco_entidades, obtener_dir_datos,
+    obtener_historial_personal, obtener_historial_tiradas, obtener_instancias_activas,
+    obtener_mapas_zona, obtener_miniatura, obtener_zonas, renombrar_archivo_adjunto,
 };
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -48,12 +47,8 @@ pub fn run() {
                 }
             }
 
-            app.manage(AppState {
-                estado: Mutex::new(estado_inicial),
-                almacen,
-            });
+            app.manage(AppState::nuevo(estado_inicial, almacen));
             iniciar_autoguardado(app.handle().clone());
-            iniciar_limpieza_huerfanos(app.handle().clone());
             Ok(())
         })
         .on_window_event(|window, event| {
@@ -78,16 +73,19 @@ pub fn run() {
             borrar_mapa,
             obtener_dir_datos,
             importar_imagen,
-            crear_entidad, 
+            crear_entidad,
             borrar_entidad,
             modificar_entidad,
-            importar_archivo, 
-            guardar_archivo_texto, 
+            importar_archivo,
+            guardar_archivo_texto,
             leer_archivo_texto,
             crear_documento_texto,
             renombrar_archivo_adjunto,
             abrir_archivo_en_sistema,
             descartar_archivos_borrador,
+            iniciar_borrador_entidad,
+            cancelar_borrador_entidad,
+            obtener_miniatura,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

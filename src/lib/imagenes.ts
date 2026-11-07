@@ -17,8 +17,18 @@ export async function iniciarImagenes(): Promise<void> {
 const YA_ES_URL = /^(https?:|data:|blob:|asset:)/i;
 
 /** Copia una imagen del sistema a la carpeta de datos de la app. Devuelve la ruta relativa a guardar. */
-export function importarImagen(origen: string): Promise<string> {
-  return invoke<string>("importar_imagen", { origen });
+export async function importarImagen(origen: string): Promise<string> {
+  const ruta = await invoke<string>("importar_imagen", { origen });
+  // Si esta imagen se borró antes y vuelve a importarse, su miniatura se borró con ella:
+  // quien tenga cacheada su miniatura debe olvidarla para pedirla de nuevo.
+  for (const cb of alImportar) cb(ruta);
+  return ruta;
+}
+
+const alImportar: Array<(ruta: string) => void> = [];
+/** Registra un aviso que se ejecuta cada vez que se importa una imagen. */
+export function alImportarImagen(cb: (ruta: string) => void) {
+  alImportar.push(cb);
 }
 
 /** Ruta guardada en el mapa -> URL que el <img>/canvas puede cargar. "" si no hay imagen. */
