@@ -912,6 +912,9 @@ mod tests_partidas {
         let nombre = partidas::crear(&state.raiz, "  Tercera ").unwrap();
         cambiar_de_partida(&state, &nombre).unwrap();
         assert_eq!(nombre_partida_actual(&state), "Tercera");
+        // Sus parámetros ya están en su partida.json, no solo en memoria
+        let guardado = std::fs::read_to_string(partidas::ruta_partida(&state.raiz, "Tercera").join("partida.json")).unwrap();
+        assert!(guardado.contains("Rango arma"));
         assert_eq!(state.lock().definiciones_parametros.len(), 4);
         assert!(partidas::crear(&state.raiz, "tercera").is_err(), "repetida");
     }

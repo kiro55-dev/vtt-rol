@@ -107,12 +107,15 @@ pub struct InformeCarga {
     pub deltas_ya_incluidos: usize,
     pub lineas_invalidas: usize,
     pub partida_corrupta_respaldada_en: Option<PathBuf>,
+    /// No había `partida.json` (partida recién creada) o era ilegible: se empieza con el estado de serie.
+    pub partida_nueva: bool,
 }
 
 impl InformeCarga {
-    /// Si hay deltas por consolidar o líneas basura conviene reescribir el snapshot al arrancar.
+    /// Si hay deltas por consolidar, líneas basura o la partida es nueva (así sus parámetros de serie
+    /// quedan escritos en su `partida.json` desde el principio) conviene reescribir el snapshot.
     pub fn conviene_compactar(&self) -> bool {
-        self.deltas_aplicados > 0 || self.deltas_ya_incluidos > 0 || self.lineas_invalidas > 0
+        self.deltas_aplicados > 0 || self.deltas_ya_incluidos > 0 || self.lineas_invalidas > 0 || self.partida_nueva
     }
 }
 
@@ -314,12 +317,16 @@ pub fn cargar(almacen: &Almacen) -> Result<(EstadoPartida, InformeCarga), String
         .leer_partida()
         .map_err(|e| format!("no se pudo leer partida.json: {e}"))?
     {
-        None => EstadoPartida::default(),
+        None => {
+            informe.partida_nueva = true;
+            EstadoPartida::default()
+        }
         Some(json) => match serde_json::from_str::<EstadoPartida>(&json) {
             Ok(e) => e,
             Err(err) => {
                 eprintln!("[partida] partida.json ilegible ({err}); se aparta y se empieza vacío");
                 informe.partida_corrupta_respaldada_en = almacen.respaldar_partida_corrupta();
+                informe.partida_nueva = true;
                 EstadoPartida::default()
             }
         },
@@ -493,6 +500,21 @@ mod tests {
         assert_eq!(p.valor, ValorParametro::Numero(20), "el valor de la ficha no cambia");
         assert!(p.publico, "la visibilidad fija se aplica");
         assert!(e.instancias_activas[0].valores_actuales.is_empty());
+    }
+
+    #[test]
+    fn una_partida_recien_creada_conviene_compactarla_para_escribir_sus_parametros() {
+        let a = Almacen::abrir(dir_temporal("recien_creada")).unwrap();
+        let (e, informe) = cargar(&a).unwrap();
+        assert!(informe.partida_nueva && informe.conviene_compactar());
+        compactar(&a, &e).unwrap();
+
+        let guardado = a.leer_partida().unwrap().expect("ahora existe partida.json");
+        for clave in ["Vida", "Armadura", "Velocidad", "Rango arma"] {
+            assert!(guardado.contains(clave), "falta {clave} en partida.json");
+        }
+        // La siguiente carga ya no es "nueva"
+        assert!(!cargar(&a).unwrap().1.conviene_compactar());
     }
 
     fn vida(e: &EstadoPartida) -> i16 {

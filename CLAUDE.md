@@ -36,7 +36,7 @@ All game state lives in Rust (`AppState` in [partida.rs](src-tauri/src/tablero_g
 ### Persistence: snapshot + delta log (event sourcing)
 Module split in `src-tauri/src/tablero_general/`:
 - [almacen.rs](src-tauri/src/tablero_general/almacen.rs): raw disk I/O only, with no Tauri or model knowledge. Everything lives under the app data dir (`app_data_dir()`, e.g. `%APPDATA%\com.vttrol.app`), never the working directory. Each game (partida) is a folder `<app data>/partidas/<name>/` and `Almacen` works on ONE at a time (`dir()` returns a copy of the path; `cambiar_dir` switches it). Files in a game folder: `partida.json` (snapshot), `deltas.jsonl` (append-only log), `historial_personal.txt`, `imagenes/`, `archivos/entidad_<id>/`, `miniaturas/<tipo>/`.
-- [partidas.rs](src-tauri/src/tablero_general/partidas.rs): the folders of the games (list, create, name validation, last opened in `<app data>/config.json`, and the one-time move of the old single-game layout into `Partida 1`). No state, so `cargo test` covers it.
+- [partidas.rs](src-tauri/src/tablero_general/partidas.rs): the folders of the games (list, create, name validation, last opened in `<app data>/config.json`, and the one-time move of the old single-game layout into `Partida 1`, which renames items one by one with retries and keeps a `partidas/.migrando` marker until done, so an interrupted run resumes; never rename a folder that contains the others, it fails on Windows if anything has it open). No state, so `cargo test` covers it.
 - [estado.rs](src-tauri/src/tablero_general/estado.rs): `EstadoPartida` + the `DeltaPartida` enum + `aplicar_delta`. It has no Tauri dependency, so `cargo test` covers it.
 - [partida.rs](src-tauri/src/tablero_general/partida.rs): Tauri commands and `AppState`.
 

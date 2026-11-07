@@ -13,7 +13,8 @@ use std::path::{Path, PathBuf};
 use crate::tablero_general::archivos::RESERVADOS_WINDOWS;
 
 const CARPETA: &str = "partidas";
-const CARPETA_TMP: &str = "partidas.migrando";
+/// Archivo vacío dentro de `partidas/` mientras una migración está a medias.
+const MARCA: &str = ".migrando";
 const CONFIG: &str = "config.json";
 const MAX_NOMBRE: usize = 40;
 const PROHIBIDOS: &str = "\\/:*?\"<>|";
@@ -126,28 +127,56 @@ pub fn elegir_inicial(raiz: &Path) -> Result<(String, bool), String> {
 // Migración del formato antiguo (una sola partida suelta en la raíz)
 // ------------------------------------------------------------------
 
+/// Mueve un archivo o carpeta. En Windows un antivirus, el indexador o el Explorador pueden tener
+/// algo abierto un instante y hacer fallar el renombrado: se reintenta unas veces antes de rendirse.
+fn mover(desde: &Path, hasta: &Path) -> std::io::Result<()> {
+    // Una carpeta vacía en el destino (p. ej. `imagenes/` creada al abrir la partida) no estorba
+    if hasta.is_dir() {
+        let _ = fs::remove_dir(hasta);
+    }
+    let mut intento = 0;
+    loop {
+        match fs::rename(desde, hasta) {
+            Ok(()) => return Ok(()),
+            Err(e) if intento >= 4 => return Err(e),
+            Err(_) => {
+                intento += 1;
+                std::thread::sleep(std::time::Duration::from_millis(250 * intento));
+            }
+        }
+    }
+}
+
 /// Si hay datos del formato antiguo en la raíz y todavía no existe `partidas/`, los MUEVE a
 /// `partidas/Partida 1/` (sin copiar: mismo volumen, instantáneo y sin duplicar imágenes).
-/// Se hace dentro de `partidas.migrando/` y solo al final se renombra a `partidas/`, así un corte a
-/// mitad se retoma en el siguiente arranque sin perder nada. Devuelve si migró algo.
+///
+/// Solo se renombran los elementos sueltos, nunca una carpeta que ya contenga a los demás. Una
+/// marca (`partidas/.migrando`) dura hasta el final: si algo falla o se corta, el siguiente arranque
+/// ve la marca y sigue con lo que quede en la raíz. Devuelve si migró algo.
 pub fn migrar_formato_antiguo(raiz: &Path) -> Result<bool, String> {
-    if carpeta_partidas(raiz).exists() {
-        return Ok(false);
-    }
-    let tmp = raiz.join(CARPETA_TMP);
+    let carpeta = carpeta_partidas(raiz);
+    let marca = carpeta.join(MARCA);
     let pendientes: Vec<&str> = DATOS_ANTIGUOS.iter().copied().filter(|n| raiz.join(n).exists()).collect();
-    if pendientes.is_empty() && !tmp.exists() {
+
+    let retomando = marca.exists();
+    if !retomando && (carpeta.exists() || pendientes.is_empty()) {
         return Ok(false);
     }
 
-    let destino = tmp.join(PRIMERA);
+    let destino = carpeta.join(PRIMERA);
     fs::create_dir_all(&destino).map_err(|e| format!("No se pudo preparar la migración: {e}"))?;
+    fs::write(&marca, "").map_err(|e| format!("No se pudo preparar la migración: {e}"))?;
     for nombre in pendientes {
-        fs::rename(raiz.join(nombre), destino.join(nombre))
-            .map_err(|e| format!("No se pudo mover «{nombre}» a la carpeta de la partida: {e}"))?;
+        mover(&raiz.join(nombre), &destino.join(nombre)).map_err(|e| {
+            format!(
+                "No se pudo mover «{nombre}» a la carpeta de la partida: {e}. Cierra lo que tenga abierta \
+                 la carpeta {} y vuelve a abrir la app: se retomará donde se quedó.",
+                raiz.display()
+            )
+        })?;
     }
     fs::create_dir_all(destino.join("imagenes")).map_err(|e| e.to_string())?;
-    fs::rename(&tmp, carpeta_partidas(raiz)).map_err(|e| format!("No se pudo terminar la migración: {e}"))?;
+    let _ = fs::remove_file(&marca);
     Ok(true)
 }
 
@@ -214,7 +243,7 @@ mod tests {
         assert!(p.join("partida.json").is_file() && p.join("archivos/entidad_1").is_dir());
         assert!(!r.join("partida.json").exists() && !r.join("imagenes").exists(), "se mueven, no se copian");
         assert!(r.join("copia.zip").is_file(), "lo que no es de la partida no se toca");
-        assert!(!r.join("partidas.migrando").exists());
+        assert!(!r.join("partidas").join(".migrando").exists(), "la marca se quita al acabar");
         assert_eq!(listar(&r), [PRIMERA]);
 
         // Segunda vez: ya existe partidas/, no hace nada aunque aparezcan archivos sueltos
@@ -226,15 +255,33 @@ mod tests {
     #[test]
     fn la_migracion_se_retoma_si_se_corto_a_mitad() {
         let r = raiz("p_migrar_corte");
-        // Corte tras mover partida.json pero antes de mover imagenes y de renombrar la carpeta
-        fs::create_dir_all(r.join("partidas.migrando").join(PRIMERA)).unwrap();
-        fs::write(r.join("partidas.migrando").join(PRIMERA).join("partida.json"), "{}").unwrap();
+        // Corte tras mover partida.json pero antes de mover imagenes: queda la marca en partidas/
+        let p = r.join("partidas").join(PRIMERA);
+        fs::create_dir_all(&p).unwrap();
+        fs::write(p.join("partida.json"), "{}").unwrap();
+        fs::write(r.join("partidas").join(".migrando"), "").unwrap();
         fs::create_dir_all(r.join("imagenes")).unwrap();
         fs::write(r.join("imagenes/a.png"), "img").unwrap();
+        // Y la app, al abrir esa partida a medias, ya creó su imagenes/ vacía
+        fs::create_dir_all(p.join("imagenes")).unwrap();
 
         assert!(migrar_formato_antiguo(&r).unwrap());
-        let p = r.join("partidas").join(PRIMERA);
         assert!(p.join("partida.json").is_file() && p.join("imagenes/a.png").is_file());
+        assert!(!r.join("imagenes").exists());
+        assert!(!r.join("partidas").join(".migrando").exists());
+        // Y ya no vuelve a hacer nada
+        assert!(!migrar_formato_antiguo(&r).unwrap());
+    }
+
+    #[test]
+    fn la_migracion_no_renombra_ninguna_carpeta_que_contenga_a_las_demas() {
+        // Lo que falló en Windows: renombrar al final la carpeta entera. Ahora `partidas/` nace
+        // con ese nombre y solo se mueven los elementos sueltos.
+        let r = raiz("p_migrar_sin_tmp");
+        fs::write(r.join("partida.json"), "{}").unwrap();
+        migrar_formato_antiguo(&r).unwrap();
+        let nombres: Vec<_> = fs::read_dir(&r).unwrap().flatten().map(|e| e.file_name()).collect();
+        assert_eq!(nombres, ["partidas"]);
     }
 
     #[test]
