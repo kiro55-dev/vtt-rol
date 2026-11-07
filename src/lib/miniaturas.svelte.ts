@@ -46,6 +46,13 @@ class Miniaturas {
     delete this.#fichas[ruta];
   }
 
+  /** Se cambió de partida: las URLs guardadas apuntan a la carpeta de la anterior, se empieza de cero. */
+  limpiar() {
+    this.#pedidas.clear();
+    this.#mapas = {};
+    this.#fichas = {};
+  }
+
   #pedir(ruta: string | null | undefined, tipo: Tipo) {
     if (!ruta) return;
     const clave = `${tipo}:${ruta}`;

@@ -155,8 +155,7 @@ mod tests {
     }
     fn ficha(id: u16, zona: u16, foto: Option<&str>, adj: &[&str], unica: bool) -> Entidad {
         Entidad {
-            id, nombre: format!("F{id}"), tipo: TipoEntidad::Enemigo, vida_max: 10, vida_es_publica: false, armadura: 10,
-            armadura_es_publica: false, velocidad: 6, rango_arma: 1, cuerpo: Cuerpo::Pequenio, zona_id: zona,
+            id, nombre: format!("F{id}"), tipo: TipoEntidad::Enemigo, parametros: vec![], cuerpo: Cuerpo::Pequenio, zona_id: zona,
             foto_url: foto.map(String::from), archivos_adjuntos: adj.iter().map(|s| Some(s.to_string())).collect(), es_unico: unica,
         }
     }
@@ -352,7 +351,7 @@ mod tests {
     fn solo_los_cambios_que_pueden_liberar_algo_se_vigilan() {
         assert!(afecta_a_recursos(&DeltaPartida::MapaBorrado(mapa(1, 1, None))));
         assert!(afecta_a_recursos(&DeltaPartida::EntidadModificada(ficha(1, 1, None, &[], false))));
-        assert!(!afecta_a_recursos(&DeltaPartida::VidaModificada { id_instancia: 1, delta: 1 }));
+        assert!(!afecta_a_recursos(&DeltaPartida::ValorActualModificado { id_instancia: 1, id_definicion: 1, delta: 1 }));
         assert!(!afecta_a_recursos(&DeltaPartida::ZonaCreada(zona(1))));
     }
 }

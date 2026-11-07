@@ -8,7 +8,7 @@
 // renombrado...). Al cancelar se descartan; al guardar se descarta lo que al final no se usó.
 // Rust nunca borra lo que la partida guardada referencia, así que pasarle de más no es peligroso.
 import { invoke } from "@tauri-apps/api/core";
-import { partida, type Entidad } from "$lib/partida.svelte";
+import { partida, type DefinicionParametro, type Entidad, type Parametro } from "$lib/partida.svelte";
 import { importarImagen } from "$lib/imagenes";
 
 interface ArchivoAdjunto {
@@ -37,10 +37,30 @@ function entero(v: unknown, nombre: string, min = 0): number {
   return n;
 }
 
+const esNumerico = (d: DefinicionParametro) => "Numero" in d.valor_por_defecto;
+
+/**
+ * Igual que `normalizar_parametros` en Rust: un parámetro por definición y en su orden, con el
+ * valor por defecto en los que falten, y `publico` según la visibilidad si esta es fija.
+ */
+export function normalizarParametros(defs: DefinicionParametro[], parametros: Parametro[]): Parametro[] {
+  return defs.map((d) => {
+    const p = parametros.find((x) => x.id_definicion === d.id) ?? {
+      id_definicion: d.id,
+      valor: structuredClone(d.valor_por_defecto),
+      publico: false
+    };
+    if (d.visibilidad === "SiemprePublico") p.publico = true;
+    else if (d.visibilidad === "SiemprePrivado") p.publico = false;
+    return p;
+  });
+}
+
 export class EditorFicha {
   /** La ficha que se edita (en la app, el mismo objeto reactivo que `partida.entidadEnEdicion`). */
   readonly entidad: Entidad;
   readonly esBorrador: boolean;
+  readonly definiciones: DefinicionParametro[];
 
   /** true mientras se guarda o se borra: los botones se desactivan y no se puede cancelar. */
   guardando = $state(false);
@@ -55,11 +75,57 @@ export class EditorFicha {
   #modificados = new Set<string>();
   #sesion: string[] = [];
 
-  constructor(entidad: Entidad, esBorrador: boolean) {
+  constructor(entidad: Entidad, esBorrador: boolean, definiciones: DefinicionParametro[] = partida.definiciones) {
     this.entidad = entidad;
     this.esBorrador = esBorrador;
+    this.definiciones = definiciones;
+    // Sin definiciones (no se pudieron leer) no se toca nada, para no perder los valores de la ficha
+    if (definiciones.length > 0) entidad.parametros = normalizarParametros(definiciones, entidad.parametros ?? []);
     // La foto con la que nace un borrador (ficha creada arrastrando una imagen) es de esta sesión
     if (esBorrador && entidad.foto_url) this.#sesion.push(entidad.foto_url);
+  }
+
+  // ------------------------------------------------------------------
+  // Parámetros (vida, armadura... los define la partida)
+  // ------------------------------------------------------------------
+
+  /** Cómo los pinta la ventana: los numéricos de dos en dos y los de texto de uno en uno. */
+  get campos(): { numericos: DefinicionParametro[][]; textos: DefinicionParametro[] } {
+    const nums = this.definiciones.filter(esNumerico);
+    const numericos: DefinicionParametro[][] = [];
+    for (let i = 0; i < nums.length; i += 2) numericos.push(nums.slice(i, i + 2));
+    return { numericos, textos: this.definiciones.filter((d) => !esNumerico(d)) };
+  }
+
+  #parametro(id: number): Parametro | undefined {
+    return this.entidad.parametros.find((p) => p.id_definicion === id);
+  }
+
+  numero(id: number): number {
+    const v = this.#parametro(id)?.valor;
+    return v && "Numero" in v ? v.Numero : 0;
+  }
+  /** Guarda lo que haya en el campo tal cual (aunque esté vacío): `guardar` lo valida. */
+  ponerNumero(id: number, n: number) {
+    const p = this.#parametro(id);
+    if (p) p.valor = { Numero: n };
+  }
+
+  texto(id: number): string {
+    const v = this.#parametro(id)?.valor;
+    return v && "Texto" in v ? v.Texto : "";
+  }
+  ponerTexto(id: number, t: string) {
+    const p = this.#parametro(id);
+    if (p) p.valor = { Texto: t };
+  }
+
+  esPublico(id: number): boolean {
+    return this.#parametro(id)?.publico ?? false;
+  }
+  ponerPublico(id: number, publico: boolean) {
+    const p = this.#parametro(id);
+    if (p) p.publico = publico;
   }
 
   /** Último error de la ventana (validación, archivos) o de Rust al guardar o borrar. */
@@ -240,10 +306,9 @@ export class EditorFicha {
   #validar() {
     const e = this.entidad;
     if (!e.nombre?.trim()) throw new Error("La ficha necesita un nombre");
-    e.vida_max = entero(e.vida_max, "Vida");
-    e.armadura = entero(e.armadura, "Armadura");
-    e.velocidad = entero(e.velocidad, "Velocidad");
-    e.rango_arma = entero(e.rango_arma, "Rango");
+    for (const d of this.definiciones.filter(esNumerico)) {
+      this.ponerNumero(d.id, entero(this.numero(d.id), d.clave));
+    }
     this.#ponerCuerpo(this.cuerpoX, this.cuerpoY);
   }
 

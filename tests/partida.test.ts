@@ -19,9 +19,20 @@ function crearBackend() {
     mapas: [mapa(1, 1, 0), mapa(2, 1, 1), mapa(3, 2, 0), mapa(4, 3, 0)],
     banco: [{ id: 1, nombre: "Orco", zona_id: 1 }, { id: 2, nombre: "Lobo", zona_id: 2 }],
     instancias: [
-      { id_instancia: 1, id_mapa: 1, vida_actual: 10, base: { nombre: "Orco", tipo: "Enemigo", vida_max: 18 } },
-      { id_instancia: 2, id_mapa: 3, vida_actual: 5, base: { nombre: "Lobo", tipo: "Enemigo", vida_max: 9 } }
+      {
+        id_instancia: 1, id_mapa: 1, valores_actuales: [{ id_definicion: 1, valor: 10 }],
+        base: { nombre: "Orco", tipo: "Enemigo", parametros: [{ id_definicion: 1, valor: { Numero: 18 }, publico: false }] }
+      },
+      {
+        id_instancia: 2, id_mapa: 3, valores_actuales: [] as { id_definicion: number; valor: number }[],
+        base: { nombre: "Lobo", tipo: "Enemigo", parametros: [{ id_definicion: 1, valor: { Numero: 5 }, publico: false }] }
+      }
     ],
+    definiciones: [
+      { id: 1, clave: "Vida", valor_por_defecto: { Numero: 10 }, tiene_maximo: true, representar_mapa: null, visibilidad: "Variable", unidad: null }
+    ],
+    partidas: ["A", "B"] as string[],
+    actual: "A",
     llamadas: [] as { cmd: string; args: Args }[],
     invoke: async (cmd: string, args: Args = {}): Promise<any> => {
       b.llamadas.push({ cmd, args: clon(args) });
@@ -31,6 +42,28 @@ function crearBackend() {
         case "obtener_banco_entidades": return clon(b.banco);
         case "obtener_instancias_activas": return clon(b.instancias);
         case "obtener_dir_datos": return "/datos";
+        case "obtener_definiciones_parametros": return clon(b.definiciones);
+        case "crear_definicion_parametro": {
+          if (b.definiciones.some((d) => d.clave === args.definicion.clave)) throw "Ya existe un parámetro llamado";
+          const d = { ...clon(args.definicion), id: Math.max(...b.definiciones.map((x) => x.id)) + 1 };
+          b.definiciones.push(d);
+          return clon(d);
+        }
+        case "modificar_definicion_parametro": b.definiciones = b.definiciones.map((d) => (d.id === args.definicion.id ? clon(args.definicion) : d)); return;
+        case "obtener_partidas": return { actual: b.actual, partidas: [...b.partidas] };
+        case "abrir_partida": case "crear_partida": {
+          const existe = b.partidas.includes(args.nombre);
+          if (cmd === "abrir_partida" && !existe) throw "Esa partida no existe";
+          if (cmd === "crear_partida" && existe) throw "Ya existe una partida llamada «" + args.nombre + "»";
+          if (!existe) b.partidas.push(args.nombre);
+          // Imita a Rust: la otra partida tiene sus propios datos (aquí, solo una zona y sin mapas)
+          b.actual = args.nombre;
+          b.zonas = [{ id: 9, nombre: "Otra", orden: 0 }];
+          b.mapas = []; b.banco = []; b.instancias = [];
+          return;
+        }
+        case "borrar_definicion_parametro": b.definiciones = b.definiciones.filter((d) => d.id !== args.id); return;
+        case "reordenar_definiciones_parametros": b.definiciones.sort((x, y) => args.ids.indexOf(x.id) - args.ids.indexOf(y.id)); return;
         case "importar_imagen": return "imagenes/" + String(args.origen).split("/").pop();
         case "crear_zona": {
           const z = { id: Math.max(...b.zonas.map((x) => x.id)) + 1, nombre: "nueva", orden: b.zonas.length };
@@ -210,6 +243,50 @@ describe("rejilla y cambios de mapa", () => {
   });
 });
 
+describe("partidas", () => {
+  it("cambiar guarda primero la rejilla pendiente y después deja solo lo de la otra partida", async () => {
+    const partida = await nuevoStore();
+    partida.rejilla.tamano = 120;
+    partida.marcarRejillaModificada();
+    partida.seleccionarInstancia(partida.instancias[0]);
+
+    await partida.cambiarPartida("B");
+
+    const orden = backend.llamadas.map((l) => l.cmd);
+    expect(orden.indexOf("modificar_mapa")).toBeGreaterThan(-1);
+    expect(orden.indexOf("modificar_mapa")).toBeLessThan(orden.indexOf("abrir_partida"));
+    expect(backend.llamadas.find((l) => l.cmd === "modificar_mapa")!.args.mapa.rejilla).toBe(120);
+
+    expect(partida.partidas.actual).toBe("B");
+    expect(partida.zonas.map((z) => z.id)).toEqual([9]);
+    expect(partida.mapaActual).toBeNull();
+    expect(partida.mapas).toEqual([]);
+    expect(partida.banco).toEqual([]);
+    expect(partida.instancias).toEqual([]);
+    expect(partida.instanciaSeleccionada).toBeNull();
+    expect(partida.rejilla.tamano).toBe(50); // la de serie, no la del mapa de la otra partida
+    // Sin timers colgados: la rejilla de la partida anterior no se escribe 5 s después en la nueva
+    await vi.advanceTimersByTimeAsync(6_000);
+    expect(llamadas("modificar_mapa")).toHaveLength(1);
+  });
+
+  it("crearPartida abre la nueva y recarga la lista", async () => {
+    const partida = await nuevoStore();
+    await partida.crearPartida("Campaña");
+    expect(partida.partidas).toEqual({ actual: "Campaña", lista: ["A", "B", "Campaña"] });
+    expect(partida.definiciones).toHaveLength(1); // se volvieron a leer
+  });
+
+  it("si Rust falla, el error llega a quien llama y la partida abierta sigue intacta", async () => {
+    const partida = await nuevoStore();
+    await expect(partida.crearPartida("B")).rejects.toMatch("Ya existe");
+    await expect(partida.cambiarPartida("Z")).rejects.toMatch("no existe");
+    expect(partida.zonas.map((z) => z.id)).toEqual([1, 2, 3]);
+    expect(partida.mapaActual?.id).toBe(1);
+    expect(partida.partidas.actual).toBe("A");
+  });
+});
+
 describe("mapas y reordenación", () => {
   it("borrar el mapa abierto abre el siguiente; si era el último, el anterior", async () => {
     const partida = await nuevoStore();
@@ -261,12 +338,58 @@ describe("fichas: selección y vida", () => {
     expect(partida.instanciaSeleccionada).toBeNull();
   });
 
-  it("modificarVida (placeholder) cambia la vida de la ficha y se refleja en la seleccionada", async () => {
+  it("modificarValorActual (placeholder) cambia la vida de la ficha y se refleja en la seleccionada", async () => {
     const partida = await nuevoStore();
+    const { valorActual } = await import("$lib/partida.svelte");
+    const vidas = () => partida.instancias.map((i) => valorActual(i, 1));
+
     partida.seleccionarInstancia(partida.instancias[0]);
-    partida.modificarVida(1, -3);
-    expect(partida.instanciaSeleccionada?.vida_actual).toBe(7);
-    partida.modificarVida(99, 5); // id inexistente: no hace nada ni falla
-    expect(partida.instancias.map((i) => i.vida_actual)).toEqual([7, 5]);
+    partida.modificarValorActual(1, 1, -3);
+    expect(valorActual(partida.instanciaSeleccionada!, 1)).toBe(7);
+    partida.modificarValorActual(99, 1, 5); // id inexistente: no hace nada ni falla
+    expect(vidas()).toEqual([7, 5]);
+    // Una instancia que aún no tenía valor actual parte del de su ficha
+    partida.modificarValorActual(2, 1, -1);
+    expect(vidas()).toEqual([7, 4]);
+  });
+
+  it("carga las definiciones de los parámetros al arrancar", async () => {
+    const partida = await nuevoStore();
+    expect(partida.definiciones.map((d) => d.clave)).toEqual(["Vida"]);
+  });
+
+  describe("parámetros de la partida", () => {
+    const nueva = (clave: string) => ({
+      clave, valor_por_defecto: { Numero: 3 }, tiene_maximo: false, representar_mapa: null,
+      visibilidad: "Variable" as const, unidad: null
+    });
+
+    it("crear, reordenar y borrar recargan las definiciones y las fichas", async () => {
+      const partida = await nuevoStore();
+      await partida.crearDefinicion(nueva("Cordura"));
+      await partida.crearDefinicion(nueva("Maná"));
+      expect(partida.definiciones.map((d) => d.clave)).toEqual(["Vida", "Cordura", "Maná"]);
+
+      await partida.reordenarDefiniciones([3, 1, 2]);
+      expect(partida.definiciones.map((d) => d.clave)).toEqual(["Maná", "Vida", "Cordura"]);
+
+      const antes = llamadas("obtener_banco_entidades").length;
+      await partida.borrarDefinicion(1);
+      expect(partida.definiciones.map((d) => d.clave)).toEqual(["Maná", "Cordura"]);
+      expect(llamadas("obtener_banco_entidades").length).toBe(antes + 1); // Rust cambió las fichas
+    });
+
+    it("modificarDefinicion manda la definición con su id y recarga", async () => {
+      const partida = await nuevoStore();
+      await partida.modificarDefinicion({ ...partida.definiciones[0], clave: "Puntos de vida", unidad: "pv" });
+      expect(partida.definiciones[0]).toMatchObject({ id: 1, clave: "Puntos de vida", unidad: "pv" });
+      expect(llamadas("modificar_definicion_parametro")[0].args.definicion.id).toBe(1);
+    });
+
+    it("si Rust rechaza el cambio, el error llega a quien llama y todo se vuelve a leer", async () => {
+      const partida = await nuevoStore();
+      await expect(partida.crearDefinicion(nueva("Vida"))).rejects.toMatch("Ya existe");
+      expect(partida.definiciones).toHaveLength(1);
+    });
   });
 });

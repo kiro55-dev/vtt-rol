@@ -5,6 +5,7 @@ pub mod dados;
 pub mod estado;
 pub mod imagenes;
 pub mod miniaturas;
+pub mod partidas;
 pub mod modelos;
 pub mod partida;
 pub mod recursos;

@@ -83,6 +83,7 @@ class Tiradas {
   async cargar() {
     const guardadas = await invoke<{ hora: string; comando: string; total: number }[]>("obtener_historial_tiradas");
     this.historial = guardadas.map((t) => ({ hora: t.hora, comando: t.comando, total: t.total }));
+    this.#salirDelHistorial(); // los comandos anteriores (↑ ↓) también son de la partida abierta
   }
 
   // ------------------------------------------------------------------

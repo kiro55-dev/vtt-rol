@@ -12,7 +12,7 @@
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
-use std::sync::{Mutex, MutexGuard};
+use std::sync::{Mutex, MutexGuard, RwLock};
 
 const PARTIDA: &str = "partida.json";
 const PARTIDA_TMP: &str = "partida.json.tmp";
@@ -27,7 +27,8 @@ pub fn bloquear<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
 }
 
 pub struct Almacen {
-    dir: PathBuf,
+    /// Carpeta de la partida abierta. Cambia al alternar de partida (`cambiar_dir`).
+    dir: RwLock<PathBuf>,
     /// Archivo de deltas abierto en modo append. Se abre la primera vez que hace falta.
     deltas: Mutex<Option<File>>,
     /// Serializa lectura+escritura del historial personal.
@@ -39,14 +40,27 @@ impl Almacen {
         let dir = dir.into();
         fs::create_dir_all(dir.join(IMAGENES))?;
         Ok(Self {
-            dir,
+            dir: RwLock::new(dir),
             deltas: Mutex::new(None),
             historial: Mutex::new(()),
         })
     }
 
-    pub fn dir(&self) -> &Path {
-        &self.dir
+    /// Copia de la ruta actual: no se devuelve una referencia porque puede cambiar al alternar de partida.
+    pub fn dir(&self) -> PathBuf {
+        self.dir.read().unwrap_or_else(|e| e.into_inner()).clone()
+    }
+
+    /// Pasa a trabajar con la carpeta de otra partida. Suelta el archivo de deltas abierto (si no,
+    /// el siguiente cambio se escribiría en la partida anterior). Quien llama debe tener cogido el
+    /// lock del estado, y haber guardado antes la partida que se deja.
+    pub fn cambiar_dir(&self, nuevo: impl Into<PathBuf>) -> io::Result<()> {
+        let nuevo = nuevo.into();
+        fs::create_dir_all(nuevo.join(IMAGENES))?;
+        let mut deltas = bloquear(&self.deltas);
+        *deltas = None;
+        *self.dir.write().unwrap_or_else(|e| e.into_inner()) = nuevo;
+        Ok(())
     }
 
     // ------------------------------------------------------------------
@@ -55,7 +69,7 @@ impl Almacen {
 
     /// `Ok(None)` si todavía no existe (primera ejecución). Cualquier otro error se propaga.
     pub fn leer_partida(&self) -> io::Result<Option<String>> {
-        match fs::read(self.dir.join(PARTIDA)) {
+        match fs::read(self.dir().join(PARTIDA)) {
             Ok(bytes) => Ok(Some(String::from_utf8_lossy(&bytes).into_owned())),
             Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(None),
             Err(e) => Err(e),
@@ -65,13 +79,13 @@ impl Almacen {
     /// Escritura atómica: archivo temporal + fsync + rename. Si se corta la luz a mitad,
     /// `partida.json` sigue siendo la versión anterior completa.
     pub fn escribir_partida(&self, json: &str) -> io::Result<()> {
-        let tmp = self.dir.join(PARTIDA_TMP);
+        let tmp = self.dir().join(PARTIDA_TMP);
         {
             let mut f = File::create(&tmp)?;
             f.write_all(json.as_bytes())?;
             f.sync_all()?;
         }
-        fs::rename(&tmp, self.dir.join(PARTIDA))
+        fs::rename(&tmp, self.dir().join(PARTIDA))
     }
 
     /// Aparta un `partida.json` ilegible para no sobrescribirlo en la siguiente compactación.
@@ -80,8 +94,8 @@ impl Almacen {
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_secs())
             .unwrap_or(0);
-        let destino = self.dir.join(format!("partida.corrupta-{marca}.json"));
-        fs::rename(self.dir.join(PARTIDA), &destino).ok().map(|_| destino)
+        let destino = self.dir().join(format!("partida.corrupta-{marca}.json"));
+        fs::rename(self.dir().join(PARTIDA), &destino).ok().map(|_| destino)
     }
 
     // ------------------------------------------------------------------
@@ -89,7 +103,7 @@ impl Almacen {
     // ------------------------------------------------------------------
 
     pub fn leer_deltas(&self) -> io::Result<Vec<String>> {
-        match fs::read(self.dir.join(DELTAS)) {
+        match fs::read(self.dir().join(DELTAS)) {
             Ok(bytes) => Ok(String::from_utf8_lossy(&bytes)
                 .lines()
                 .map(|l| l.to_string())
@@ -105,7 +119,7 @@ impl Almacen {
         let mut guardia = bloquear(&self.deltas);
 
         if guardia.is_none() {
-            let ruta = self.dir.join(DELTAS);
+            let ruta = self.dir().join(DELTAS);
             let mut f = OpenOptions::new().create(true).append(true).open(&ruta)?;
 
             // Si la app se cerró a mitad de una línea, el archivo no acaba en '\n':
@@ -144,7 +158,7 @@ impl Almacen {
     pub fn vaciar_deltas(&self) -> io::Result<()> {
         let mut guardia = bloquear(&self.deltas);
         *guardia = None;
-        File::create(self.dir.join(DELTAS)).map(|_| ())
+        File::create(self.dir().join(DELTAS)).map(|_| ())
     }
 
     // ------------------------------------------------------------------
@@ -152,7 +166,7 @@ impl Almacen {
     // ------------------------------------------------------------------
 
     fn leer_historial_interno(&self) -> Vec<String> {
-        fs::read(self.dir.join(HISTORIAL))
+        fs::read(self.dir().join(HISTORIAL))
             .map(|b| {
                 String::from_utf8_lossy(&b)
                     .lines()
@@ -187,7 +201,7 @@ impl Almacen {
 
         let mut salida = lineas.join("\n");
         salida.push('\n');
-        if let Err(e) = fs::write(self.dir.join(HISTORIAL), salida) {
+        if let Err(e) = fs::write(self.dir().join(HISTORIAL), salida) {
             eprintln!("[almacen] no se pudo guardar el historial personal: {e}");
         }
     }
@@ -199,15 +213,15 @@ impl Almacen {
     /// Copia los archivos antiguos al directorio de datos, SOLO si aquí todavía no hay partida.
     /// No borra los originales. Devuelve los nombres copiados.
     pub fn migrar_desde(&self, origen: &Path) -> Vec<&'static str> {
-        let ya_hay_datos = self.dir.join(PARTIDA).exists() || self.dir.join(DELTAS).exists();
-        if ya_hay_datos || origen == self.dir {
+        let ya_hay_datos = self.dir().join(PARTIDA).exists() || self.dir().join(DELTAS).exists();
+        if ya_hay_datos || origen == self.dir() {
             return Vec::new();
         }
 
         let mut copiados = Vec::new();
         for nombre in [PARTIDA, DELTAS, HISTORIAL] {
             let desde = origen.join(nombre);
-            if desde.is_file() && fs::copy(&desde, self.dir.join(nombre)).is_ok() {
+            if desde.is_file() && fs::copy(&desde, self.dir().join(nombre)).is_ok() {
                 copiados.push(nombre);
             }
         }

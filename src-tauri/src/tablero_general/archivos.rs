@@ -15,7 +15,7 @@ use crate::tablero_general::modelos::{ArchivoAdjunto, Entidad};
 
 const MAX_BYTES_ARCHIVO: u64 = 150 * 1024 * 1024; // 150 MB
 const MAX_LONGITUD_NOMBRE: usize = 120;
-const RESERVADOS_WINDOWS: [&str; 22] = [
+pub const RESERVADOS_WINDOWS: [&str; 22] = [
     "con", "prn", "aux", "nul", "com1", "com2", "com3", "com4", "com5", "com6", "com7", "com8", "com9", "lpt1",
     "lpt2", "lpt3", "lpt4", "lpt5", "lpt6", "lpt7", "lpt8", "lpt9",
 ];
@@ -294,8 +294,7 @@ mod tests {
 
     pub fn entidad(id: u16, adj: &[&str]) -> Entidad {
         Entidad {
-            id, nombre: "Orco".into(), tipo: TipoEntidad::Enemigo, vida_max: 10, vida_es_publica: false,
-            armadura: 10, armadura_es_publica: false, velocidad: 6, rango_arma: 1, cuerpo: Cuerpo::Pequenio,
+            id, nombre: "Orco".into(), tipo: TipoEntidad::Enemigo, parametros: vec![], cuerpo: Cuerpo::Pequenio,
             zona_id: 1, foto_url: None, archivos_adjuntos: adj.iter().map(|s| Some(s.to_string())).collect(), es_unico: false,
         }
     }

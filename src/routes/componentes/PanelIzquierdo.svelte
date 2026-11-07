@@ -1,9 +1,32 @@
 <!-- src/routes/componentes/PanelIzquierdo.svelte -->
 <!-- Solo la estructura del panel: cada parte vive en su componente y lee el estado de `partida`. -->
-<script>
+<script lang="ts">
+  import { partida } from "$lib/partida.svelte";
   import ListaZonas from "./panel-izquierdo/ListaZonas.svelte";
   import ListaMapas from "./panel-izquierdo/ListaMapas.svelte";
   import BancoEntidades from "./panel-izquierdo/BancoEntidades.svelte";
+  import BotonAjustes from "./panel-izquierdo/BotonAjustes.svelte";
+  import VentanaParametros from "./VentanaParametros.svelte";
+  import VentanaPartidas from "./VentanaPartidas.svelte";
+
+  let parametrosAbierto = $state(false);
+  let partidasAbierto = $state(false);
+
+  // Más opciones de configuración se añaden aquí
+  const opciones = $derived([
+    {
+      texto: "Partidas…",
+      accion: () => (partidasAbierto = true),
+      // Una ficha nueva abierta tiene su carpeta en esta partida: no puede acompañarte a otra
+      deshabilitada: partida.entidadEnEdicion ? "Cierra la ficha que tienes abierta" : undefined
+    },
+    {
+      texto: "Editar parámetros de esta partida",
+      accion: () => (parametrosAbierto = true),
+      // Una ficha abierta ya copió los parámetros: se cambian cuando está cerrada
+      deshabilitada: partida.entidadEnEdicion ? "Cierra la ficha que tienes abierta" : undefined
+    }
+  ]);
 </script>
 
 <aside class="panel-izquierdo">
@@ -15,7 +38,19 @@
   <div class="bloque-abajo">
     <BancoEntidades />
   </div>
+
+  <div class="pie">
+    <BotonAjustes {opciones} />
+  </div>
 </aside>
+
+{#if parametrosAbierto}
+  <VentanaParametros onCerrar={() => (parametrosAbierto = false)} />
+{/if}
+
+{#if partidasAbierto}
+  <VentanaPartidas onCerrar={() => (partidasAbierto = false)} />
+{/if}
 
 <style>
   .panel-izquierdo {
@@ -34,4 +69,5 @@
   .bloque-arriba { height: 44%; display: flex; gap: 4px; border-bottom: 1px solid #27272a; padding-bottom: 4px; }
   .subseccion { flex: 1; display: flex; flex-direction: column; overflow: hidden; }
   .bloque-abajo { flex: 1; display: flex; flex-direction: column; overflow: hidden; gap: 5px; }
+  .pie { display: flex; justify-content: flex-start; border-top: 1px solid #27272a; padding-top: 4px; }
 </style>

@@ -1,6 +1,7 @@
 <!-- src/routes/componentes/panel-derecho/ParametrosFicha.svelte -->
 <script lang="ts">
-  import { partida, type Cuerpo } from "$lib/partida.svelte";
+  import { partida, ID_PARAMETRO, numeroDe, valorActual, type Cuerpo } from "$lib/partida.svelte";
+  // Por ahora muestra los parámetros de serie (ids fijos); no los definidos por el usuario.
 
   const textoCuerpo = (c: Cuerpo) => (typeof c === "object" ? `Grande (${c.Grande.join("x")})` : "1x1");
 
@@ -9,10 +10,10 @@
   let parametros = $derived(
     ficha
       ? [
-          { etiqueta: "V (Velocidad)", valor: `${ficha.base.velocidad} m` },
-          { etiqueta: "RA (Rango Arma)", valor: `${ficha.base.rango_arma} m` },
+          { etiqueta: "V (Velocidad)", valor: `${numeroDe(ficha.base, ID_PARAMETRO.velocidad)} m` },
+          { etiqueta: "RA (Rango Arma)", valor: `${numeroDe(ficha.base, ID_PARAMETRO.rangoArma)} m` },
           { etiqueta: "Cuerpo", valor: textoCuerpo(ficha.base.cuerpo) },
-          { etiqueta: "Armadura", valor: String(ficha.base.armadura) }
+          { etiqueta: "Armadura", valor: String(numeroDe(ficha.base, ID_PARAMETRO.armadura)) }
         ]
       : []
   );
@@ -32,9 +33,9 @@
       <div class="param vida">
         <span class="label">Vida:</span>
         <div class="control-vida">
-          <button onclick={() => partida.modificarVida(ficha.id_instancia, -1)}>-</button>
-          <span class="valor-destacado">{ficha.vida_actual} / {ficha.base.vida_max}</span>
-          <button onclick={() => partida.modificarVida(ficha.id_instancia, 1)}>+</button>
+          <button onclick={() => partida.modificarValorActual(ficha.id_instancia, ID_PARAMETRO.vida, -1)}>-</button>
+          <span class="valor-destacado">{valorActual(ficha, ID_PARAMETRO.vida)} / {numeroDe(ficha.base, ID_PARAMETRO.vida)}</span>
+          <button onclick={() => partida.modificarValorActual(ficha.id_instancia, ID_PARAMETRO.vida, 1)}>+</button>
         </div>
       </div>
     </div>

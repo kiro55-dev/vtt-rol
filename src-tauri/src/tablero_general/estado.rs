@@ -22,7 +22,8 @@ use crate::tablero_general::modelos::*;
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub enum DeltaPartida {
     TiradaRealizada(Tiradas),
-    VidaModificada { id_instancia: u16, delta: i16 },
+    /// Cambia el valor actual (p. ej. la vida) de un parámetro con máximo en una instancia.
+    ValorActualModificado { id_instancia: u16, id_definicion: u16, delta: i16 },
     ZonaCreada(Zona),
     ZonaEliminada(Zona),
     ZonaModificada(Zona),
@@ -31,8 +32,16 @@ pub enum DeltaPartida {
     MapaBorrado(Mapa),
     EntidadCreada(Entidad),
     EntidadBorrada(Entidad),
-    EntidadModificada(Entidad)
-    /* 
+    EntidadModificada(Entidad),
+    /// Define un parámetro nuevo (o reemplaza el de ese id). Las fichas lo reciben con su valor por defecto.
+    ParametroCreado(DefinicionParametro),
+    /// Cambia la configuración de un parámetro existente (mismo id). Las fichas conservan sus valores.
+    ParametroModificado(DefinicionParametro),
+    /// Quita un parámetro de la partida y, con él, su valor en todas las fichas e instancias.
+    ParametroBorrado(u16),
+    /// Nuevo orden de los parámetros (ids). Las fichas lo siguen.
+    ParametrosReordenados(Vec<u16>)
+    /*
     InstanciaCreada(),
     InstanciaModificada(),
     InstanciaBorrada()
@@ -56,11 +65,14 @@ struct LineaDeltaRef<'a> {
 // ========================================================
 // 2. ESTADO GENERAL
 // ========================================================
-#[derive(Serialize, Deserialize, Clone, Debug, Default)]
+#[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct EstadoPartida {
     /// Número del último delta ya incluido en este estado.
     #[serde(default)]
     pub ultimo_seq: u64,
+    /// Parámetros comunes a todas las fichas. Las partidas anteriores a ellos arrancan con los de serie.
+    #[serde(default = "parametros_por_defecto")]
+    pub definiciones_parametros: Vec<DefinicionParametro>,
     #[serde(default)]
     pub zonas: Vec<Zona>,
     #[serde(default)]
@@ -71,6 +83,21 @@ pub struct EstadoPartida {
     pub instancias_activas: Vec<Instancia>,
     #[serde(default)]
     pub historial_tiradas: Vec<Tiradas>,
+}
+
+// A mano y no con derive: una partida nueva también nace con los parámetros de serie.
+impl Default for EstadoPartida {
+    fn default() -> Self {
+        Self {
+            ultimo_seq: 0,
+            definiciones_parametros: parametros_por_defecto(),
+            zonas: Vec::new(),
+            mapas: Vec::new(),
+            banco_entidades: Vec::new(),
+            instancias_activas: Vec::new(),
+            historial_tiradas: Vec::new(),
+        }
+    }
 }
 
 /// Qué pasó al cargar la partida (para mostrarlo en el log y en los tests).
@@ -99,13 +126,14 @@ impl EstadoPartida {
                     self.historial_tiradas.pop();
                 }
             }
-            DeltaPartida::VidaModificada { id_instancia, delta } => {
-                if let Some(inst) = self
+            DeltaPartida::ValorActualModificado { id_instancia, id_definicion, delta } => {
+                if let Some(v) = self
                     .instancias_activas
                     .iter_mut()
                     .find(|i| i.id_instancia == *id_instancia)
+                    .and_then(|i| i.valores_actuales.iter_mut().find(|v| v.id_definicion == *id_definicion))
                 {
-                    inst.vida_actual += delta;
+                    v.valor = v.valor.saturating_add(*delta);
                 }
             }
             DeltaPartida::ZonaCreada(zona) => {
@@ -221,6 +249,37 @@ impl EstadoPartida {
                 // 2. Se eliminan todas las instancias asociadas en el tablero/activas
                 self.instancias_activas.retain(|inst| inst.base.id != entidad.id);
             }
+            DeltaPartida::ParametroCreado(def) | DeltaPartida::ParametroModificado(def) => {
+                match self.definiciones_parametros.iter().position(|d| d.id == def.id) {
+                    Some(pos) => self.definiciones_parametros[pos] = def.clone(),
+                    None => self.definiciones_parametros.push(def.clone()),
+                }
+                self.ajustar_a_definiciones();
+            }
+            DeltaPartida::ParametroBorrado(id) => {
+                self.definiciones_parametros.retain(|d| d.id != *id);
+                self.ajustar_a_definiciones();
+            }
+            DeltaPartida::ParametrosReordenados(ids) => {
+                // Los que no aparezcan en la lista (no debería pasar) se quedan al final, en su orden
+                self.definiciones_parametros
+                    .sort_by_key(|d| ids.iter().position(|i| *i == d.id).unwrap_or(usize::MAX));
+                self.ajustar_a_definiciones();
+            }
+        }
+    }
+
+    /// Deja las fichas e instancias acordes con las definiciones: un parámetro por definición y en su
+    /// orden (rellena con el valor por defecto, quita los de definiciones que ya no existen) y solo
+    /// lleva valor actual lo que sigue teniendo máximo.
+    pub fn ajustar_a_definiciones(&mut self) {
+        let defs = self.definiciones_parametros.clone();
+        for e in self.banco_entidades.iter_mut() {
+            normalizar_parametros(&defs, &mut e.parametros);
+        }
+        for i in self.instancias_activas.iter_mut() {
+            normalizar_parametros(&defs, &mut i.base.parametros);
+            i.valores_actuales.retain(|v| defs.iter().any(|d| d.id == v.id_definicion && d.tiene_maximo));
         }
     }
 
@@ -291,6 +350,11 @@ pub fn cargar(almacen: &Almacen) -> Result<(EstadoPartida, InformeCarga), String
         }
     }
 
+    // Fichas de versiones anteriores (o anteriores a un cambio de definiciones): un parámetro
+    // por definición, y la visibilidad fija aplicada. No es un delta: el resultado no cambia de
+    // significado, y se queda guardado en la siguiente compactación.
+    estado.ajustar_a_definiciones();
+
     Ok((estado, informe))
 }
 
@@ -342,22 +406,141 @@ mod tests {
                 id: 1,
                 nombre: "Orco".into(),
                 tipo: TipoEntidad::Enemigo,
-                vida_max: 20,
-                vida_es_publica: true,
-                armadura: 1,
-                armadura_es_publica: false,
-                velocidad: 6,
-                rango_arma: 1,
+                parametros: vec![Parametro { id_definicion: ID_VIDA, valor: ValorParametro::Numero(20), publico: true }],
                 cuerpo: Cuerpo::Pequenio,
                 zona_id: 1,
                 foto_url: None,
                 archivos_adjuntos: vec![],
                 es_unico: false,
             },
-            vida_actual: vida,
+            valores_actuales: vec![ValorActual { id_definicion: ID_VIDA, valor: vida }],
             coordenadas: Coordenada::NoPuesto,
             activo: true,
         }
+    }
+
+    fn cordura() -> DefinicionParametro {
+        DefinicionParametro {
+            id: 5,
+            clave: "Cordura".into(),
+            valor_por_defecto: ValorParametro::Numero(8),
+            tiene_maximo: true,
+            representar_mapa: None,
+            visibilidad: Visibilidad::Variable,
+            unidad: None,
+        }
+    }
+
+    fn claves(e: &EstadoPartida) -> Vec<&str> {
+        e.definiciones_parametros.iter().map(|d| d.clave.as_str()).collect()
+    }
+
+    #[test]
+    fn crear_borrar_y_reordenar_parametros_llega_a_fichas_e_instancias() {
+        let dir = dir_temporal("parametros_cambios");
+
+        {
+            let a = Almacen::abrir(&dir).unwrap();
+            let mut e = EstadoPartida::default();
+            let mut inst = instancia(1, 10);
+            inst.base.parametros = vec![];
+            e.registrar(&a, DeltaPartida::EntidadCreada(inst.base.clone())).unwrap();
+            e.instancias_activas.push(inst);
+            e.ajustar_a_definiciones();
+
+            e.registrar(&a, DeltaPartida::ParametroCreado(cordura())).unwrap();
+            assert_eq!(e.banco_entidades[0].parametros.len(), 5);
+            assert_eq!(e.banco_entidades[0].parametros[4].valor, ValorParametro::Numero(8));
+
+            e.registrar(&a, DeltaPartida::ParametrosReordenados(vec![5, 1, 2, 3, 4])).unwrap();
+            assert_eq!(claves(&e), ["Cordura", "Vida", "Armadura", "Velocidad", "Rango arma"]);
+            let ids_fichas: Vec<u16> = e.banco_entidades[0].parametros.iter().map(|p| p.id_definicion).collect();
+            assert_eq!(ids_fichas, [5, 1, 2, 3, 4], "la ficha sigue el orden de las definiciones");
+
+            // La instancia tenía vida actual: al borrar la vida desaparece también su valor actual
+            e.instancias_activas[0].valores_actuales.push(ValorActual { id_definicion: ID_VIDA, valor: 7 });
+            e.registrar(&a, DeltaPartida::ParametroBorrado(ID_VIDA)).unwrap();
+            assert_eq!(claves(&e), ["Cordura", "Armadura", "Velocidad", "Rango arma"]);
+            assert!(e.banco_entidades[0].parametros.iter().all(|p| p.id_definicion != ID_VIDA));
+            assert!(e.instancias_activas[0].base.parametros.iter().all(|p| p.id_definicion != ID_VIDA));
+            assert!(e.instancias_activas[0].valores_actuales.is_empty());
+        }
+
+        // Recargar desde el log reproduce lo mismo
+        let (e, informe) = cargar(&Almacen::abrir(&dir).unwrap()).unwrap();
+        assert_eq!(informe.deltas_aplicados, 4);
+        assert_eq!(claves(&e), ["Cordura", "Armadura", "Velocidad", "Rango arma"]);
+        assert_eq!(e.banco_entidades[0].parametros.len(), 4);
+    }
+
+    #[test]
+    fn modificar_un_parametro_conserva_valores_y_ajusta_visibilidad_y_maximo() {
+        let a = Almacen::abrir(dir_temporal("parametro_modificado")).unwrap();
+        let mut e = EstadoPartida::default();
+        let mut inst = instancia(1, 7);
+        inst.base.parametros[0].valor = ValorParametro::Numero(20);
+        e.registrar(&a, DeltaPartida::EntidadCreada(inst.base.clone())).unwrap();
+        e.instancias_activas.push(inst);
+
+        let mut vida = e.definiciones_parametros[0].clone();
+        vida.clave = "Puntos de vida".into();
+        vida.tiene_maximo = false; // ya no lleva valor actual aparte
+        vida.visibilidad = Visibilidad::SiemprePublico;
+        e.registrar(&a, DeltaPartida::ParametroModificado(vida)).unwrap();
+
+        assert_eq!(claves(&e)[0], "Puntos de vida");
+        let p = &e.banco_entidades[0].parametros[0];
+        assert_eq!(p.valor, ValorParametro::Numero(20), "el valor de la ficha no cambia");
+        assert!(p.publico, "la visibilidad fija se aplica");
+        assert!(e.instancias_activas[0].valores_actuales.is_empty());
+    }
+
+    fn vida(e: &EstadoPartida) -> i16 {
+        e.instancias_activas[0].valores_actuales[0].valor
+    }
+
+    #[test]
+    fn el_valor_actual_no_desborda_y_un_parametro_inexistente_no_hace_nada() {
+        let mut e = EstadoPartida::default();
+        e.instancias_activas.push(instancia(1, 10));
+        e.aplicar_delta(&DeltaPartida::ValorActualModificado { id_instancia: 1, id_definicion: ID_VIDA, delta: i16::MIN });
+        e.aplicar_delta(&DeltaPartida::ValorActualModificado { id_instancia: 1, id_definicion: ID_VIDA, delta: i16::MIN });
+        assert_eq!(vida(&e), i16::MIN);
+        e.aplicar_delta(&DeltaPartida::ValorActualModificado { id_instancia: 1, id_definicion: 99, delta: 5 });
+        e.aplicar_delta(&DeltaPartida::ValorActualModificado { id_instancia: 9, id_definicion: ID_VIDA, delta: 5 });
+        assert_eq!(vida(&e), i16::MIN);
+    }
+
+    #[test]
+    fn una_partida_nueva_o_antigua_tiene_los_parametros_de_serie() {
+        assert_eq!(EstadoPartida::default().definiciones_parametros.len(), 4);
+
+        let a = Almacen::abrir(dir_temporal("sin_parametros")).unwrap();
+        a.escribir_partida(r#"{"ultimo_seq":0,"zonas":[{"id":1,"nombre":"Z","orden":0}]}"#).unwrap();
+        let (e, _) = cargar(&a).unwrap();
+        let claves: Vec<_> = e.definiciones_parametros.iter().map(|d| d.clave.as_str()).collect();
+        assert_eq!(claves, ["Vida", "Armadura", "Velocidad", "Rango arma"]);
+    }
+
+    #[test]
+    fn una_ficha_antigua_en_el_log_se_carga_con_sus_valores() {
+        let a = Almacen::abrir(dir_temporal("ficha_antigua")).unwrap();
+        a.anadir_delta(
+            r#"{"seq":1,"delta":{"EntidadCreada":{"id":2,"nombre":"Lobo","tipo":"Enemigo","vida_max":9,
+            "vida_es_publica":false,"armadura":1,"armadura_es_publica":true,"velocidad":12,"rango_arma":1,
+            "cuerpo":"Pequenio","zona_id":1}}}"#
+                .replace('\n', " ")
+                .as_str(),
+        )
+        .unwrap();
+        let (e, informe) = cargar(&a).unwrap();
+        assert_eq!(informe.lineas_invalidas, 0);
+        let lobo = &e.banco_entidades[0];
+        assert_eq!(lobo.parametros.len(), 4);
+        assert_eq!(lobo.parametros[0].valor, ValorParametro::Numero(9));
+        assert!(lobo.parametros[1].publico, "la armadura era pública");
+        assert_eq!(lobo.parametros[2].valor, ValorParametro::Numero(12));
+        assert!(lobo.parametros[2].publico, "la velocidad es siempre pública");
     }
 
     #[test]
@@ -383,14 +566,15 @@ mod tests {
         let a = Almacen::abrir(dir_temporal("corte")).unwrap();
         let mut e = EstadoPartida::default();
         e.instancias_activas.push(instancia(1, 10));
-        e.registrar(&a, DeltaPartida::VidaModificada { id_instancia: 1, delta: -3 }).unwrap();
-        assert_eq!(e.instancias_activas[0].vida_actual, 7);
+        e.registrar(&a, DeltaPartida::ValorActualModificado { id_instancia: 1, id_definicion: ID_VIDA, delta: -3 })
+            .unwrap();
+        assert_eq!(vida(&e), 7);
 
         // Simula el corte: el snapshot se escribe, pero deltas.jsonl NO llega a vaciarse.
         a.escribir_partida(&serde_json::to_string(&e).unwrap()).unwrap();
 
         let (e2, informe) = cargar(&a).unwrap();
-        assert_eq!(e2.instancias_activas[0].vida_actual, 7, "la vida no debe bajar dos veces");
+        assert_eq!(vida(&e2), 7, "la vida no debe bajar dos veces");
         assert_eq!(informe.deltas_ya_incluidos, 1);
         assert_eq!(informe.deltas_aplicados, 0);
     }

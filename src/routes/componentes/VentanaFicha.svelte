@@ -7,6 +7,7 @@
   import { EditorFicha } from "$lib/editorFicha.svelte";
   import { ES_IMAGEN } from "$lib/imagenes";
   import { alSoltarArchivos } from "$lib/soltarArchivos";
+  import { moverVentana } from "$lib/moverVentana";
   import CajaFoto from "./ventana-ficha/CajaFoto.svelte";
   import CampoNumero from "./ventana-ficha/CampoNumero.svelte";
   import AdjuntosFicha from "./ventana-ficha/AdjuntosFicha.svelte";
@@ -17,6 +18,8 @@
   // svelte-ignore state_referenced_locally
   const editor = new EditorFicha(entidad, partida.editorEsBorrador);
   const ficha = editor.entidad;
+  // Las definiciones no cambian mientras la ventana está abierta
+  const campos = editor.campos;
 
   let ventana = $state<HTMLDivElement | null>(null);
   let pos = $state({ x: 260, y: 70 });
@@ -31,27 +34,6 @@
     }
   }
 
-  // Mover la ventana arrastrando la cabecera, sin que se salga de la pantalla
-  function arrastrar(e: PointerEvent) {
-    if (e.button !== 0 || (e.target as HTMLElement).closest("button")) return;
-    const dx = e.clientX - pos.x;
-    const dy = e.clientY - pos.y;
-    const ancho = ventana?.offsetWidth ?? 480;
-    const alto = ventana?.offsetHeight ?? 300;
-
-    const mover = (ev: PointerEvent) => {
-      pos.x = Math.max(10, Math.min(window.innerWidth - ancho - 10, ev.clientX - dx));
-      pos.y = Math.max(10, Math.min(window.innerHeight - alto - 10, ev.clientY - dy));
-    };
-    const soltar = () => {
-      window.removeEventListener("pointermove", mover);
-      window.removeEventListener("pointerup", soltar);
-      window.removeEventListener("pointercancel", soltar);
-    };
-    window.addEventListener("pointermove", mover);
-    window.addEventListener("pointerup", soltar);
-    window.addEventListener("pointercancel", soltar);
-  }
 
   onMount(() => {
     ventana?.focus(); // para que Enter/Escape funcionen sin tocar la ventana con el ratón
@@ -78,7 +60,7 @@
   onkeydown={alTeclear}
   bind:this={ventana}
 >
-  <div class="cabecera" role="presentation" onpointerdown={arrastrar}>
+  <div class="cabecera" role="presentation" onpointerdown={(e) => moverVentana(e, pos, ventana)}>
     <span class="icono-drag">⋮⋮</span>
     <span class="titulo">{editor.esBorrador ? "Nueva Ficha" : `Ficha: ${ficha.nombre}`}</span>
     <button type="button" class="btn-cerrar" aria-label="Cerrar" onclick={() => editor.cancelar()}>✕</button>
@@ -94,26 +76,45 @@
           <input id="f-nombre" type="text" class="input-texto" bind:value={ficha.nombre} />
         </div>
 
-        <div class="fila separada">
-          <CampoNumero etiqueta="Vida max:" bind:value={ficha.vida_max} />
-          <CampoNumero etiqueta="Armadura:" bind:value={ficha.armadura} />
-        </div>
+        <!-- Parámetros de la partida: los numéricos de dos en dos y, debajo de cada pareja, las
+             casillas de los que cada ficha puede hacer públicos. Luego los de texto. -->
+        {#each campos.numericos as par}
+          <div class="fila separada">
+            {#each par as d (d.id)}
+              <CampoNumero
+                etiqueta="{d.clave}{d.tiene_maximo ? ' max' : ''}:"
+                sufijo={d.unidad ?? ""}
+                bind:value={() => editor.numero(d.id), (v) => editor.ponerNumero(d.id, v)}
+              />
+            {/each}
+          </div>
 
-        <div class="fila separada">
-          <label class="check">
-            <span>Hacer pública la vida</span>
-            <input type="checkbox" bind:checked={ficha.vida_es_publica} />
-          </label>
-          <label class="check">
-            <span>Hacer pública la armadura</span>
-            <input type="checkbox" bind:checked={ficha.armadura_es_publica} />
-          </label>
-        </div>
+          {#if par.some((d) => d.visibilidad === "Variable")}
+            <div class="fila separada">
+              {#each par.filter((d) => d.visibilidad === "Variable") as d (d.id)}
+                <label class="check">
+                  <span>Hacer pública la {d.clave.toLowerCase()}</span>
+                  <input
+                    type="checkbox"
+                    bind:checked={() => editor.esPublico(d.id), (v) => editor.ponerPublico(d.id, v)}
+                  />
+                </label>
+              {/each}
+            </div>
+          {/if}
+        {/each}
 
-        <div class="fila separada">
-          <CampoNumero etiqueta="Velocidad:" sufijo="m" bind:value={ficha.velocidad} />
-          <CampoNumero etiqueta="Rango arma:" sufijo="m" bind:value={ficha.rango_arma} />
-        </div>
+        {#each campos.textos as d (d.id)}
+          <div class="fila">
+            <label for="f-param-{d.id}">{d.clave}:</label>
+            <input
+              id="f-param-{d.id}"
+              type="text"
+              class="input-texto"
+              bind:value={() => editor.texto(d.id), (v) => editor.ponerTexto(d.id, v)}
+            />
+          </div>
+        {/each}
 
         <div class="fila">
           <span class="etiqueta">Cuerpo:</span>

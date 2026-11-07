@@ -6,12 +6,16 @@ use tauri::Manager;
 use tablero_general::almacen::Almacen;
 use tablero_general::dados::tirar_dado;
 use tablero_general::estado;
+use tablero_general::partidas;
 use tablero_general::partida::{
     AppState, abrir_archivo_en_sistema, borrar_entidad, borrar_mapa, cancelar_borrador_entidad,
-    compactar_partida, crear_documento_texto, crear_entidad, crear_mapa, crear_zona,
+    compactar_partida, borrar_definicion_parametro, modificar_definicion_parametro, crear_definicion_parametro, reordenar_definiciones_parametros,
+    crear_documento_texto, crear_entidad, crear_mapa, crear_zona,
     descartar_archivos_borrador, eliminar_zona, guardar_archivo_texto, importar_archivo,
     importar_imagen, iniciar_autoguardado, iniciar_borrador_entidad, leer_archivo_texto,
-    modificar_entidad, modificar_mapa, modificar_zona, obtener_banco_entidades, obtener_dir_datos,
+    abrir_partida, crear_partida, obtener_partidas,
+    modificar_entidad, modificar_mapa, modificar_zona, obtener_banco_entidades, obtener_definiciones_parametros,
+    obtener_dir_datos,
     obtener_historial_personal, obtener_historial_tiradas, obtener_instancias_activas,
     obtener_mapas_zona, obtener_miniatura, obtener_zonas, renombrar_archivo_adjunto,
 };
@@ -23,19 +27,33 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
             // Todo se guarda en el directorio de datos de la app, nunca en el directorio de trabajo.
-            let dir = app.path().app_data_dir()?;
+            // Cada partida es una carpeta dentro de `<raiz>/partidas/`.
+            let raiz = app.path().app_data_dir()?;
+            std::fs::create_dir_all(&raiz)?;
+
+            // Una sola partida suelta en la raíz (formato antiguo) pasa a ser «Partida 1»
+            if partidas::migrar_formato_antiguo(&raiz)? {
+                eprintln!("[partida] datos antiguos movidos a «{}»", partidas::PRIMERA);
+            }
+            let (nombre, recien_creada) = partidas::elegir_inicial(&raiz)?;
+            partidas::guardar_ultima(&raiz, &nombre);
+            let dir = partidas::ruta_partida(&raiz, &nombre);
             let almacen = Almacen::abrir(&dir)?;
 
             // Solo en desarrollo: trae los archivos que el sistema antiguo dejaba en src-tauri/.
+            // Solo a una partida recién creada: en una existente (o una nueva que crees luego)
+            // mezclaría datos viejos con los tuyos.
             #[cfg(debug_assertions)]
             {
-                if let Ok(cwd) = std::env::current_dir() {
+                if let (true, Ok(cwd)) = (recien_creada, std::env::current_dir()) {
                     let copiados = almacen.migrar_desde(&cwd);
                     if !copiados.is_empty() {
                         eprintln!("[partida] migrados desde {}: {:?}", cwd.display(), copiados);
                     }
                 }
             }
+            #[cfg(not(debug_assertions))]
+            let _ = recien_creada;
 
             let (estado_inicial, informe) = estado::cargar(&almacen)?;
             eprintln!("[partida] datos en {} · {:?}", dir.display(), informe);
@@ -47,7 +65,7 @@ pub fn run() {
                 }
             }
 
-            app.manage(AppState::nuevo(estado_inicial, almacen));
+            app.manage(AppState::nuevo(estado_inicial, almacen, raiz));
             iniciar_autoguardado(app.handle().clone());
             Ok(())
         })
@@ -60,6 +78,14 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             tirar_dado,
             obtener_zonas,
+            obtener_definiciones_parametros,
+            crear_definicion_parametro,
+            borrar_definicion_parametro,
+            modificar_definicion_parametro,
+            reordenar_definiciones_parametros,
+            obtener_partidas,
+            crear_partida,
+            abrir_partida,
             obtener_mapas_zona,
             obtener_banco_entidades,
             obtener_instancias_activas,

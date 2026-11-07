@@ -10,11 +10,22 @@ let partidaFalsa: any;
 
 const llamadasA = (cmd: string) => llamadas.filter((l) => l.cmd === cmd).map((l) => l.args);
 
+// Los mismos que `parametros_por_defecto()` en Rust
+const def = (id: number, clave: string, n: number, visibilidad: string, extra: Record<string, any> = {}) => ({
+  id, clave, valor_por_defecto: { Numero: n }, tiene_maximo: false, representar_mapa: null, visibilidad, unidad: null, ...extra
+});
+const DEFINICIONES = [
+  def(1, "Vida", 10, "Variable", { tiene_maximo: true }),
+  def(2, "Armadura", 10, "Variable"),
+  def(3, "Velocidad", 6, "SiemprePublico", { representar_mapa: { Rombo: [59, 130, 246, 90] }, unidad: "m" }),
+  def(4, "Rango arma", 1, "SiemprePublico", { representar_mapa: { Circulo: [239, 68, 68, 90] }, unidad: "m" })
+];
+
 function entidad(extra: Record<string, any> = {}) {
   return {
-    id: 7, nombre: "Orco", tipo: "Enemigo", vida_max: 10, vida_es_publica: false, armadura: 2,
-    armadura_es_publica: false, velocidad: 6, rango_arma: 1, cuerpo: "Pequenio", zona_id: 1,
-    foto_url: null, archivos_adjuntos: [], es_unico: false, ...extra
+    id: 7, nombre: "Orco", tipo: "Enemigo",
+    parametros: [{ id_definicion: 1, valor: { Numero: 18 }, publico: true }],
+    cuerpo: "Pequenio", zona_id: 1, foto_url: null, archivos_adjuntos: [], es_unico: false, ...extra
   } as any;
 }
 
@@ -37,6 +48,7 @@ async function nuevoEditor(e = entidad(), esBorrador = false) {
   }));
   partidaFalsa = {
     errorEditor: "",
+    definiciones: structuredClone(DEFINICIONES),
     entidadEnEdicion: e,
     guardarEntidad: vi.fn(async () => true),
     cancelarEditorEntidad: vi.fn(async () => {}),
@@ -161,7 +173,7 @@ describe("guardar, cancelar y borrar", () => {
     expect(ed.error).toBe("La ficha necesita un nombre");
 
     ed.entidad.nombre = "Orco";
-    (ed.entidad as any).vida_max = "abc"; // lo que deja un input numérico raro
+    ed.ponerNumero(1, "abc" as any); // lo que deja un input numérico raro
     await ed.guardar();
     expect(ed.error).toBe("Vida: debe ser un número entero");
     expect(llamadasA("guardar_archivo_texto")).toEqual([]);
@@ -174,6 +186,47 @@ describe("guardar, cancelar y borrar", () => {
     await ed.borrar();
     expect(partidaFalsa.borrarEntidad).toHaveBeenCalledOnce();
     expect(llamadasA("descartar_archivos_borrador")).toEqual([{ rutas: [DIR + "Documento_1.txt"] }]);
+  });
+});
+
+describe("parámetros", () => {
+  it("rellena los que faltan con su valor por defecto y en el orden de las definiciones", async () => {
+    const ed = await nuevoEditor();
+    expect(ed.entidad.parametros).toEqual([
+      { id_definicion: 1, valor: { Numero: 18 }, publico: true },
+      { id_definicion: 2, valor: { Numero: 10 }, publico: false },
+      { id_definicion: 3, valor: { Numero: 6 }, publico: true }, // visibilidad fija: siempre público
+      { id_definicion: 4, valor: { Numero: 1 }, publico: true }
+    ]);
+  });
+
+  it("sin definiciones (no se pudieron leer) no toca los parámetros de la ficha", async () => {
+    vi.resetModules();
+    const e = entidad();
+    vi.doMock("$lib/partida.svelte", () => ({ partida: { definiciones: [] } }));
+    const { EditorFicha } = await import("$lib/editorFicha.svelte");
+    new EditorFicha(e, false);
+    expect(e.parametros).toHaveLength(1);
+  });
+
+  it("agrupa los numéricos de dos en dos y deja aparte los de texto", async () => {
+    const ed = await nuevoEditor();
+    expect(ed.campos.numericos.map((par) => par.map((d) => d.clave))).toEqual([
+      ["Vida", "Armadura"],
+      ["Velocidad", "Rango arma"]
+    ]);
+    expect(ed.campos.textos).toEqual([]);
+  });
+
+  it("lee y escribe valores y visibilidad por id de definición", async () => {
+    const ed = await nuevoEditor();
+    ed.ponerNumero(2, 4);
+    ed.ponerPublico(2, true);
+    expect([ed.numero(2), ed.esPublico(2), ed.numero(99)]).toEqual([4, true, 0]);
+    expect(await ed.guardar()).toBe(true);
+    expect(partidaFalsa.guardarEntidad.mock.calls[0][0].parametros[1]).toEqual({
+      id_definicion: 2, valor: { Numero: 4 }, publico: true
+    });
   });
 });
 

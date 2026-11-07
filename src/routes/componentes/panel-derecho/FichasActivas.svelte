@@ -1,6 +1,9 @@
 <!-- src/routes/componentes/panel-derecho/FichasActivas.svelte -->
 <script lang="ts">
-  import { partida } from "$lib/partida.svelte";
+  import { partida, ID_PARAMETRO, numeroDe, valorActual } from "$lib/partida.svelte";
+
+  // Por ahora solo se muestra la vida de serie (parámetro fijo)
+  const vida = (f: (typeof partida.instancias)[number]) => valorActual(f, ID_PARAMETRO.vida);
 
   // Cada grupo se pinta igual; solo cambian el título, el color, el icono y si se muestra la vida máxima.
   const GRUPOS = [
@@ -22,13 +25,13 @@
       <button
         type="button"
         class="fila-ficha"
-        class:muerto={ficha.vida_actual <= 0}
+        class:muerto={vida(ficha) <= 0}
         class:seleccionado={partida.idInstanciaSeleccionada === ficha.id_instancia}
         onclick={() => partida.seleccionarInstancia(ficha)}
       >
         <span class="icono {g.icono}"></span>
         <span class="nombre">{ficha.base.nombre}</span>
-        <span class="pv">{g.mostrarMax ? `${ficha.vida_actual}/${ficha.base.vida_max}` : ficha.vida_actual}</span>
+        <span class="pv">{g.mostrarMax ? `${vida(ficha)}/${numeroDe(ficha.base, ID_PARAMETRO.vida)}` : vida(ficha)}</span>
       </button>
     {/each}
   {/each}

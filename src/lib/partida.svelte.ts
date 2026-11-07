@@ -8,6 +8,7 @@
 // Rust sigue siendo la fuente de verdad: cada método escribe en Rust y vuelve a leer.
 import { invoke } from "@tauri-apps/api/core";
 import { iniciarImagenes, importarImagen } from "$lib/imagenes";
+import { miniaturas } from "$lib/miniaturas.svelte";
 
 export interface Zona {
   id: number;
@@ -31,16 +32,58 @@ export interface Mapa {
 export type TipoEntidad = "Enemigo" | "NPC" | "Jugador";
 export type Cuerpo = "Pequenio" | { Grande: number[] };
 
+// ---- Parámetros (espejo de modelos.rs) ----
+// Partida: DefinicionParametro (comunes a todas las fichas) · Ficha: Parametro (su valor)
+// · Instancia: ValorActual (solo los que tienen máximo, p. ej. la vida)
+export type ValorParametro = { Numero: number } | { Texto: string };
+export type Visibilidad = "SiemprePublico" | "SiemprePrivado" | "Variable";
+/** El array es RGBA */
+export type Forma = { Rombo: number[] } | { Circulo: number[] } | { Cuadrado: number[] } | { BarraVida: number[] };
+
+export interface DefinicionParametro {
+  id: number;
+  clave: string;
+  valor_por_defecto: ValorParametro;
+  tiene_maximo: boolean;
+  representar_mapa: Forma | null;
+  visibilidad: Visibilidad;
+  unidad: string | null;
+}
+
+export interface Parametro {
+  id_definicion: number;
+  valor: ValorParametro;
+  publico: boolean;
+}
+
+export interface ValorActual {
+  id_definicion: number;
+  valor: number;
+}
+
+/** Ids de los parámetros de serie (fijos en Rust: `ID_VIDA`...). */
+export const ID_PARAMETRO = { vida: 1, armadura: 2, velocidad: 3, rangoArma: 4 } as const;
+
+/** Valor numérico de un parámetro de una ficha (0 si no lo tiene o es de texto). */
+export function numeroDe(entidad: Entidad, idDefinicion: number): number {
+  const v = entidad.parametros.find((p) => p.id_definicion === idDefinicion)?.valor;
+  return v && "Numero" in v ? v.Numero : 0;
+}
+
+/** Valor actual de un parámetro con máximo en una instancia (si no lo lleva, el de la ficha). */
+export function valorActual(instancia: Instancia, idDefinicion: number): number {
+  return (
+    instancia.valores_actuales.find((v) => v.id_definicion === idDefinicion)?.valor ??
+    numeroDe(instancia.base, idDefinicion)
+  );
+}
+
 export interface Entidad {
   id: number;
   nombre: string;
   tipo: TipoEntidad;
-  vida_max: number;
-  vida_es_publica: boolean;
-  armadura: number;
-  armadura_es_publica: boolean;
-  velocidad: number;
-  rango_arma: number;
+  /** Uno por definición, en el orden de las definiciones */
+  parametros: Parametro[];
   cuerpo: Cuerpo;
   zona_id: number;
   foto_url: string | null;
@@ -52,7 +95,7 @@ export interface Instancia {
   id_instancia: number;
   id_mapa: number | null;
   base: Entidad;
-  vida_actual: number;
+  valores_actuales: ValorActual[];
   coordenadas: "NoPuesto" | { Localizacion: number[] };
   activo?: boolean;
 }
@@ -67,12 +110,14 @@ export interface Rejilla {
 
 export const LIMITES_REJILLA = { tamanoMin: 5, tamanoMax: 300, grosorMin: 0, grosorMax: 10 } as const;
 
+const REJILLA_DEFECTO: Rejilla = { visible: true, tamano: 50, color: "#ffffff", grosor: 1, opacidad: 0.3 };
+
 // Los cambios de rejilla se agrupan: se guardan 5 s después del último, o antes si hace falta.
 const ESPERA_GUARDADO_MS = 5000;
 
 const porOrden = (a: { orden?: number }, b: { orden?: number }) => (a.orden ?? 0) - (b.orden ?? 0);
 
-function hexARgba(hex: string, opacidad: number): number[] {
+export function hexARgba(hex: string, opacidad: number): number[] {
   const limpio = hex.replace("#", "");
   const completo = limpio.length === 3 ? limpio.split("").map((x) => x + x).join("") : limpio;
   const n = parseInt(completo, 16) || 0;
@@ -80,7 +125,7 @@ function hexARgba(hex: string, opacidad: number): number[] {
   return [(n >> 16) & 255, (n >> 8) & 255, n & 255, a];
 }
 
-const rgbAHex = (r: number, g: number, b: number) =>
+export const rgbAHex = (r: number, g: number, b: number) =>
   "#" + [r, g, b].map((v) => Number(v).toString(16).padStart(2, "0")).join("");
 
 /** Elemento que queda al borrar `id` de una lista ordenada: el siguiente, o si no el anterior. */
@@ -96,6 +141,8 @@ class Partida {
   mapas = $state<Mapa[]>([]);
   banco = $state<Entidad[]>([]);
   instancias = $state<Instancia[]>([]);
+  /** Parámetros comunes a todas las fichas (vida, armadura...). */
+  definiciones = $state<DefinicionParametro[]>([]);
 
   /** Solo se guarda el id: la ficha seleccionada se actualiza sola al recargar las instancias,
    *  y desaparece si Rust la elimina (p. ej. al borrar su zona). */
@@ -107,7 +154,7 @@ class Partida {
   /** `null` = no hay ninguna zona (todavía no se ha creado, o se borró la última). */
   zonaId = $state<number | null>(null);
   mapaActual = $state<Mapa | null>(null);
-  rejilla = $state<Rejilla>({ visible: true, tamano: 50, color: "#ffffff", grosor: 1, opacidad: 0.3 });
+  rejilla = $state<Rejilla>({ ...REJILLA_DEFECTO });
 
   zonasOrdenadas = $derived([...this.zonas].sort(porOrden));
   mapasOrdenados = $derived([...this.mapas].sort(porOrden));
@@ -121,9 +168,56 @@ class Partida {
 
   async iniciar() {
     await iniciarImagenes(); // hace falta antes de mostrar ningún mapa con imagen
+    this.definiciones = await invoke<DefinicionParametro[]>("obtener_definiciones_parametros");
     await this.recargarZonas();
     await this.seleccionarZona(this.zonasOrdenadas[0]?.id ?? null);
     await this.recargarEntidades();
+  }
+
+  // ------------------------------------------------------------------
+  // Partidas (una carpeta cada una)
+  // ------------------------------------------------------------------
+
+  /** Partida abierta ("" hasta que se lee) y todas las que hay. */
+  partidas = $state<{ actual: string; lista: string[] }>({ actual: "", lista: [] });
+
+  async recargarPartidas() {
+    const { actual, partidas } = await invoke<{ actual: string; partidas: string[] }>("obtener_partidas");
+    this.partidas = { actual, lista: partidas };
+  }
+
+  /** Guarda la partida abierta y abre otra. Los errores de Rust (no se pudo guardar...) se propagan,
+   *  y en ese caso nada cambia. Quien llama debe recargar también las tiradas (`tiradas.cargar()`). */
+  cambiarPartida(nombre: string) {
+    return this.#alternar("abrir_partida", nombre);
+  }
+
+  /** Crea una partida vacía (con los parámetros de serie) y pasa a ella. */
+  crearPartida(nombre: string) {
+    return this.#alternar("crear_partida", nombre);
+  }
+
+  async #alternar(cmd: string, nombre: string) {
+    // Un cambio de rejilla pendiente (se guarda 5 s después) se escribiría en la partida nueva
+    await this.guardarRejilla();
+    try {
+      await invoke(cmd, { nombre });
+    } finally {
+      // Si falló, la lista puede haber cambiado (p. ej. se creó la carpeta pero no se pudo abrir)
+      await this.recargarPartidas().catch(() => {});
+    }
+
+    // Nada de lo de la partida anterior debe quedar a la vista, ni siquiera un instante
+    this.zonas = [];
+    this.mapas = [];
+    this.banco = [];
+    this.instancias = [];
+    this.zonaId = null;
+    this.mapaActual = null;
+    this.idInstanciaSeleccionada = null;
+    this.rejilla = { ...REJILLA_DEFECTO };
+    miniaturas.limpiar(); // sus URLs llevan dentro la carpeta de la partida anterior
+    await this.iniciar();
   }
 
   async recargarZonas() {
@@ -146,6 +240,43 @@ class Partida {
     this.mapas = await invoke<Mapa[]>("obtener_mapas_zona", { zonaId: this.zonaId });
     const ordenados = this.mapasOrdenados;
     this.#abrirMapa(ordenados.find((m) => m.id === quiero) ?? ordenados[0] ?? null);
+  }
+
+  // ------------------------------------------------------------------
+  // Parámetros de la partida (comunes a todas las fichas)
+  // ------------------------------------------------------------------
+
+  async recargarDefiniciones() {
+    this.definiciones = await invoke<DefinicionParametro[]>("obtener_definiciones_parametros");
+  }
+
+  /** Crear, borrar o reordenar un parámetro cambia también las fichas: se vuelve a leer todo.
+   *  Los errores de Rust (nombre repetido...) se propagan para que los muestre quien llama. */
+  async #cambiarDefiniciones(cmd: string, args: Record<string, unknown>) {
+    try {
+      await invoke(cmd, args);
+    } finally {
+      await Promise.all([this.recargarDefiniciones(), this.recargarEntidades()]);
+    }
+  }
+
+  crearDefinicion(definicion: Omit<DefinicionParametro, "id">) {
+    return this.#cambiarDefiniciones("crear_definicion_parametro", { definicion: { ...definicion, id: 0 } });
+  }
+
+  /** Cambia la configuración de un parámetro (no su tipo). Las fichas conservan sus valores. */
+  modificarDefinicion(definicion: DefinicionParametro) {
+    return this.#cambiarDefiniciones("modificar_definicion_parametro", { definicion });
+  }
+
+  /** Desaparece de la lista y del valor de todas las fichas. */
+  borrarDefinicion(id: number) {
+    return this.#cambiarDefiniciones("borrar_definicion_parametro", { id });
+  }
+
+  /** `ids` = todos los parámetros en el orden nuevo (el que seguirán las fichas). */
+  reordenarDefiniciones(ids: number[]) {
+    return this.#cambiarDefiniciones("reordenar_definiciones_parametros", { ids });
   }
 
   /** Rust también cambia el banco y las instancias al borrar zonas o mapas: se vuelven a leer. */
@@ -185,11 +316,14 @@ class Partida {
     this.idInstanciaSeleccionada = instancia?.id_instancia ?? null;
   }
 
-  /** PLACEHOLDER: de momento solo cambia la vida en memoria. Cuando exista el comando de Rust
-   *  (`modificar_vida`, con su delta), se llama aquí y los componentes no cambian. */
-  modificarVida(idInstancia: number, delta: number) {
+  /** PLACEHOLDER: de momento solo cambia el valor en memoria. Cuando exista el comando de Rust
+   *  (con el delta `ValorActualModificado`), se llama aquí y los componentes no cambian. */
+  modificarValorActual(idInstancia: number, idDefinicion: number, delta: number) {
     const instancia = this.instancias.find((i) => i.id_instancia === idInstancia);
-    if (instancia) instancia.vida_actual += delta;
+    if (!instancia) return;
+    const actual = instancia.valores_actuales.find((v) => v.id_definicion === idDefinicion);
+    if (actual) actual.valor += delta;
+    else instancia.valores_actuales.push({ id_definicion: idDefinicion, valor: valorActual(instancia, idDefinicion) + delta });
   }
 
   // ------------------------------------------------------------------
