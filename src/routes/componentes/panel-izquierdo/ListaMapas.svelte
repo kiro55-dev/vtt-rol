@@ -3,16 +3,14 @@
   import { onMount } from "svelte";
   import { flip } from "svelte/animate";
   import { open } from "@tauri-apps/plugin-dialog";
-  import { getCurrentWebview } from "@tauri-apps/api/webview";
   import { partida, type Mapa } from "$lib/partida.svelte";
   import { miniaturas } from "$lib/miniaturas.svelte";
   import { ListaOrdenable } from "$lib/ordenable.svelte";
+  import { ES_IMAGEN, EXTENSIONES_IMAGEN } from "$lib/imagenes";
+  import { alSoltarArchivos } from "$lib/soltarArchivos";
   import MenuContextual from "../comunes/MenuContextual.svelte";
   import ArrastreFlotante from "../comunes/ArrastreFlotante.svelte";
   import VentanaReemplazoImagen from "./VentanaReemplazoImagen.svelte";
-
-  const EXTENSIONES = ["png", "jpg", "jpeg", "webp", "gif", "bmp", "avif", "svg"];
-  const ES_IMAGEN = new RegExp(`\\.(${EXTENSIONES.join("|")})$`, "i");
 
   let editandoId = $state<number | null>(null);
   let textoEdicion = $state("");
@@ -55,45 +53,23 @@
     const ruta = await open({
       multiple: false,
       directory: false,
-      filters: [{ name: "Imágenes", extensions: EXTENSIONES }]
+      filters: [{ name: "Imágenes", extensions: EXTENSIONES_IMAGEN }]
     });
     if (typeof ruta === "string") await asignarImagen(mapa, ruta);
   }
 
   // Soltar una imagen del sistema: sobre una tarjeta la asigna a ese mapa, sobre la lista crea uno nuevo
-  onMount(() => {
-    let quitar: (() => void) | null = null;
-    let desmontado = false;
-
-    try {
-      getCurrentWebview()
-        .onDragDropEvent(async (event) => {
-          if (event.payload.type !== "drop") return;
-          const ruta = event.payload.paths?.[0];
-          if (!ruta || !ES_IMAGEN.test(ruta)) return;
-
-          const escala = window.devicePixelRatio || 1;
-          const { x, y } = event.payload.position;
-          const el = document.elementFromPoint(x / escala, y / escala);
-
-          const tarjeta = el?.closest<HTMLElement>(".tarjeta-mapa");
-          if (tarjeta?.dataset.mapaId) {
-            const mapa = partida.mapas.find((m) => m.id === Number(tarjeta.dataset.mapaId));
-            if (mapa) return asignarImagen(mapa, ruta);
-          }
-          if (el?.closest(".sub-mapas")) await partida.crearMapa(ruta);
-        })
-        .then((unlisten) => (desmontado ? unlisten() : (quitar = unlisten)))
-        .catch((err) => console.warn("Tauri dragDropEvent no disponible:", err));
-    } catch (err) {
-      console.warn("Tauri dragDropEvent no disponible:", err);
-    }
-
-    return () => {
-      desmontado = true;
-      quitar?.();
-    };
-  });
+  onMount(() =>
+    alSoltarArchivos(async ([ruta], el) => {
+      if (!ES_IMAGEN.test(ruta)) return;
+      const tarjeta = el?.closest<HTMLElement>(".tarjeta-mapa");
+      if (tarjeta?.dataset.mapaId) {
+        const mapa = partida.mapas.find((m) => m.id === Number(tarjeta.dataset.mapaId));
+        if (mapa) return asignarImagen(mapa, ruta);
+      }
+      if (el?.closest(".sub-mapas")) await partida.crearMapa(ruta);
+    })
+  );
 
   // ---- Nombre ----
   function iniciarEdicion(m: Mapa) {

@@ -6,6 +6,10 @@
 // eso es lo único que hace este módulo.
 import { invoke, convertFileSrc } from "@tauri-apps/api/core";
 
+/** Formatos que admite `importar_imagen` en Rust. */
+export const EXTENSIONES_IMAGEN = ["png", "jpg", "jpeg", "webp", "gif", "bmp", "avif", "svg"];
+export const ES_IMAGEN = new RegExp(`\\.(${EXTENSIONES_IMAGEN.join("|")})$`, "i");
+
 let dirDatos = "";
 
 /** Llamar UNA vez al arrancar, antes de pintar ningún mapa. */

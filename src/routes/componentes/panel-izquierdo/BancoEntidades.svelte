@@ -2,13 +2,10 @@
 <script lang="ts">
   import { onMount } from "svelte";
   import { invoke } from "@tauri-apps/api/core";
-  import { getCurrentWebview } from "@tauri-apps/api/webview";
   import { partida } from "$lib/partida.svelte";
   import { miniaturas } from "$lib/miniaturas.svelte";
-  import { importarImagen } from "$lib/imagenes";
-
-  const EXTENSIONES = ["png", "jpg", "jpeg", "webp", "gif", "bmp", "avif", "svg"];
-  const ES_IMAGEN = new RegExp(`\\.(${EXTENSIONES.join("|")})$`, "i");
+  import { ES_IMAGEN, importarImagen } from "$lib/imagenes";
+  import { alSoltarArchivos } from "$lib/soltarArchivos";
 
   // Filtros
   let busqueda = $state("");
@@ -63,43 +60,19 @@
   }
 
   // Drag & drop de imagen desde el explorador del SO
-  onMount(() => {
-    let unlisten: (() => void) | null = null;
-    let desmontado = false;
-
-    try {
-      getCurrentWebview()
-        .onDragDropEvent(async (event) => {
-          if (event.payload.type !== "drop") return;
-          const ruta = event.payload.paths?.[0];
-          if (!ruta || !ES_IMAGEN.test(ruta)) return;
-
-          const escala = window.devicePixelRatio || 1;
-          const { x, y } = event.payload.position;
-          const el = document.elementFromPoint(x / escala, y / escala);
-
-          if (el?.closest(".banco")) {
-            // Con una ficha ya abierta se ignora el drop (no se importa nada que quede huérfano)
-            if (partida.entidadEnEdicion) return;
-            const fotoUrl = await importarImagen(ruta);
-            await partida.abrirEditorEntidad(null, fotoUrl);
-            if (!partida.entidadEnEdicion) {
-              // No se pudo abrir el borrador: la imagen recién importada no la usa nadie
-              invoke("descartar_archivos_borrador", { rutas: [fotoUrl] }).catch(() => {});
-            }
-          }
-        })
-        .then((fn) => (desmontado ? fn() : (unlisten = fn)))
-        .catch((err) => console.warn("dragDropEvent no disponible:", err));
-    } catch (err) {
-      console.warn("dragDropEvent no disponible:", err);
-    }
-
-    return () => {
-      desmontado = true;
-      unlisten?.();
-    };
-  });
+  onMount(() =>
+    alSoltarArchivos(async ([ruta], el) => {
+      if (!ES_IMAGEN.test(ruta) || !el?.closest(".banco")) return;
+      // Con una ficha ya abierta se ignora el drop (no se importa nada que quede huérfano)
+      if (partida.entidadEnEdicion) return;
+      const fotoUrl = await importarImagen(ruta);
+      await partida.abrirEditorEntidad(null, fotoUrl);
+      if (!partida.entidadEnEdicion) {
+        // No se pudo abrir el borrador: la imagen recién importada no la usa nadie
+        invoke("descartar_archivos_borrador", { rutas: [fotoUrl] }).catch(() => {});
+      }
+    })
+  );
 </script>
 
 <div class="banco">
