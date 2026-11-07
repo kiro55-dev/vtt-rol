@@ -14,10 +14,42 @@ pub enum Cuerpo {
     Pequenio,
 }
 
-#[derive(Serialize, Deserialize, Clone, Debug)]
+/// Casilla del tablero, como en una hoja de cálculo: (0,0) arriba a la izquierda, x hacia la
+/// derecha, y hacia abajo. La lógica vive en `tablero.rs`.
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct Casilla {
+    pub x: u16,
+    pub y: u16,
+}
+
+/// Dónde está una instancia. En una ficha de varias casillas es la casilla CENTRAL
+/// (ver `tablero::extension`), para que pueda girar sobre sí misma.
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
+#[serde(from = "CoordenadaGuardada")]
 pub enum Coordenada {
-    Localizacion(Vec<i16>),
+    Casilla(Casilla),
     NoPuesto,
+}
+
+/// Forma en que se LEE una `Coordenada`: la actual más la antigua `Localizacion([x, y])`.
+#[derive(Deserialize)]
+enum CoordenadaGuardada {
+    Casilla(Casilla),
+    NoPuesto,
+    Localizacion(Vec<i16>),
+}
+
+impl From<CoordenadaGuardada> for Coordenada {
+    fn from(g: CoordenadaGuardada) -> Self {
+        match g {
+            CoordenadaGuardada::Casilla(c) => Coordenada::Casilla(c),
+            CoordenadaGuardada::NoPuesto => Coordenada::NoPuesto,
+            CoordenadaGuardada::Localizacion(v) => match v[..] {
+                [x, y, ..] => Coordenada::Casilla(Casilla { x: x.max(0) as u16, y: y.max(0) as u16 }),
+                _ => Coordenada::NoPuesto,
+            },
+        }
+    }
 }
 
 // ========================================================
@@ -361,5 +393,20 @@ mod tests {
                 (ID_RANGO_ARMA, Numero(5), true),
             ]
         );
+    }
+
+    #[test]
+    fn las_coordenadas_antiguas_pasan_a_casilla() {
+        let leer = |j: &str| serde_json::from_str::<Coordenada>(j).unwrap();
+        assert_eq!(leer(r#"{"Localizacion":[3,4]}"#), Coordenada::Casilla(Casilla { x: 3, y: 4 }));
+        assert_eq!(leer(r#"{"Localizacion":[-1,2]}"#), Coordenada::Casilla(Casilla { x: 0, y: 2 }));
+        assert_eq!(leer(r#"{"Localizacion":[7]}"#), Coordenada::NoPuesto);
+        assert_eq!(leer(r#""NoPuesto""#), Coordenada::NoPuesto);
+
+        // El formato nuevo va y vuelve igual
+        let nueva = Coordenada::Casilla(Casilla { x: 5, y: 1 });
+        let json = serde_json::to_string(&nueva).unwrap();
+        assert_eq!(json, r#"{"Casilla":{"x":5,"y":1}}"#);
+        assert_eq!(leer(&json), nueva);
     }
 }

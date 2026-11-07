@@ -68,6 +68,18 @@ Definitions change through the deltas `ParametroCreado`/`ParametroBorrado`/`Para
 
 `normalizar_parametros` keeps entities consistent with the definitions. It runs on load and in `crear_entidad`/`modificar_entidad`, and the front mirrors it in `EditorFicha`. Old saves that still have `vida_max`/`armadura`/... are migrated when deserialized, through `#[serde(from = "EntidadGuardada")]` in `modelos.rs`.
 
+### Board (tablero)
+Positions are grid cells, never pixels, like a spreadsheet: `Casilla { x, y }` with (0,0) top-left.
+- **Grid.** The map is split into `max(1, round(ancho / rejilla))` columns and rows, so cells fit exactly and are almost square.
+- **Map size.** `Mapa.ancho`/`alto` are owned by Rust: the real size of the background image, read from its header in `imagenes::dimensiones`.
+  - `modificar_mapa` ignores the front's values.
+  - `corregir_tamanos_mapas` fixes old maps with `MapaModificado` deltas when a game is opened.
+  - Image formats depend on use (`imagenes::Uso`, mirrored by `UsoImagen` in `src/lib/imagenes.ts`): a map accepts no SVG/AVIF, since its size defines the cells, so every map background can be measured. A ficha's photo accepts them, since its container fixes the size. The front rejects a wrong format before calling Rust, and Rust checks again.
+- **Bodies.** An instance occupies a rectangle (`Cuerpo`), and `Instancia.coordenadas` stores its CENTER cell (`tablero::extension`: on an even side, the top/left of the two central cells) so a future rotation only swaps the sides.
+- **Where the logic lives.** Cell logic is in [tablero.rs](src-tauri/src/tablero_general/tablero.rs), mirrored with the same integer math in [src/lib/tablero.ts](src/lib/tablero.ts), which also does the pixel and camera side. Keep both in sync, and their tests too.
+- `MapaModificado` re-fits instances of that map with `encajar`.
+- **Ephemeral notices (avisos).** Pings (middle click) and the measured path (right-drag, with the start cell in yellow) are `AvisoTablero` ([tablero.rs](src-tauri/src/tablero_general/tablero.rs), mirrored in [src/lib/avisosTablero.ts](src/lib/avisosTablero.ts)), NOT deltas: never written to disk or the log, no `seq`. The board draws its own marks at once and calls `avisar_tablero`, which validates and passes them to `difundir_aviso` (the network hook, `// FUTURA RED`). A notice from another player must arrive as the Tauri event `aviso-tablero`, which `Tablero.svelte` already listens to. Drawing lives in [marcasTablero.ts](src/lib/marcasTablero.ts).
+
 ### Dice
 The parser and roller live in Rust ([dados.rs](src-tauri/src/tablero_general/dados.rs), command `tirar_dado`, limit of 999 dice in total). The result breakdown is HTML with `<b>` marking a 1 or the max face. The frontend ([src/lib/tiradas.svelte.ts](src/lib/tiradas.svelte.ts)) only builds command strings (`aplicarDadoAlComando` is a pure, tested function) and keeps the history and arrow-key navigation.
 

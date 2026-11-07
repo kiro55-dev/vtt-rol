@@ -6,7 +6,7 @@
   import { partida, type Mapa } from "$lib/partida.svelte";
   import { miniaturas } from "$lib/miniaturas.svelte";
   import { ListaOrdenable } from "$lib/ordenable.svelte";
-  import { ES_IMAGEN, EXTENSIONES_IMAGEN } from "$lib/imagenes";
+  import { esImagen, EXTENSIONES_IMAGEN } from "$lib/imagenes";
   import { alSoltarArchivos } from "$lib/soltarArchivos";
   import MenuContextual from "../comunes/MenuContextual.svelte";
   import ArrastreFlotante from "../comunes/ArrastreFlotante.svelte";
@@ -53,7 +53,7 @@
     const ruta = await open({
       multiple: false,
       directory: false,
-      filters: [{ name: "Imágenes", extensions: EXTENSIONES_IMAGEN }]
+      filters: [{ name: "Imágenes", extensions: EXTENSIONES_IMAGEN.mapa }]
     });
     if (typeof ruta === "string") await asignarImagen(mapa, ruta);
   }
@@ -61,7 +61,7 @@
   // Soltar una imagen del sistema: sobre una tarjeta la asigna a ese mapa, sobre la lista crea uno nuevo
   onMount(() =>
     alSoltarArchivos(async ([ruta], el) => {
-      if (!ES_IMAGEN.test(ruta)) return;
+      if (!esImagen(ruta, "mapa")) return;
       const tarjeta = el?.closest<HTMLElement>(".tarjeta-mapa");
       if (tarjeta?.dataset.mapaId) {
         const mapa = partida.mapas.find((m) => m.id === Number(tarjeta.dataset.mapaId));

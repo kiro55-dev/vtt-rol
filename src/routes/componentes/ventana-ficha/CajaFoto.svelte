@@ -12,7 +12,7 @@
     const ruta = await open({
       multiple: false,
       directory: false,
-      filters: [{ name: "Imágenes", extensions: EXTENSIONES_IMAGEN }]
+      filters: [{ name: "Imágenes", extensions: EXTENSIONES_IMAGEN.ficha }]
     });
     if (typeof ruta === "string") onElegir(ruta);
   }

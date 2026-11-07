@@ -15,6 +15,7 @@ use std::path::PathBuf;
 
 use crate::tablero_general::almacen::Almacen;
 use crate::tablero_general::modelos::*;
+use crate::tablero_general::tablero;
 
 // ========================================================
 // 1. DELTAS (eventos de la partida)
@@ -205,6 +206,15 @@ impl EstadoPartida {
             DeltaPartida::MapaModificado(mapa) => {
                 if let Some(pos) = self.mapas.iter().position(|m| m.id == mapa.id) {
                     self.mapas[pos] = mapa.clone();
+
+                    // Si la rejilla o el tamaño cambian, una ficha podría quedar fuera: vuelve al borde.
+                    let rejilla = tablero::Rejilla::de(mapa);
+                    for inst in self.instancias_activas.iter_mut().filter(|i| i.id_mapa == Some(mapa.id)) {
+                        if let Coordenada::Casilla(c) = inst.coordenadas {
+                            let lados = tablero::tamano_cuerpo(&inst.base.cuerpo);
+                            inst.coordenadas = Coordenada::Casilla(tablero::encajar(rejilla, c, lados));
+                        }
+                    }
                 }
             }
             DeltaPartida::MapaBorrado(mapa) => {
@@ -581,6 +591,25 @@ mod tests {
         assert_eq!(e.ultimo_seq, 3);
         assert_eq!(e.zonas.len(), 1);
         assert_eq!(e.mapas[0].rejilla, 70);
+    }
+
+    #[test]
+    fn al_agrandar_la_rejilla_una_ficha_que_queda_fuera_vuelve_al_borde() {
+        let mut e = EstadoPartida::default();
+        e.aplicar_delta(&DeltaPartida::MapaCreado(zona(1), mapa(1, 1))); // 1000 px / 50 = 20×20
+        let mut grande = instancia(1, 5);
+        grande.id_mapa = Some(1);
+        grande.base.cuerpo = Cuerpo::Grande(vec![3, 3]);
+        grande.coordenadas = Coordenada::Casilla(Casilla { x: 18, y: 10 });
+        let mut otra = instancia(2, 5); // en otro mapa: no se toca
+        otra.id_mapa = Some(2);
+        otra.coordenadas = Coordenada::Casilla(Casilla { x: 18, y: 18 });
+        e.instancias_activas = vec![grande, otra];
+
+        // 1000 / 100 = 10×10: el 3×3 en x=18 se sale y pasa a x=8 (ocupa 7..9)
+        e.aplicar_delta(&DeltaPartida::MapaModificado(Mapa { rejilla: 100, ..mapa(1, 1) }));
+        assert_eq!(e.instancias_activas[0].coordenadas, Coordenada::Casilla(Casilla { x: 8, y: 8 }));
+        assert_eq!(e.instancias_activas[1].coordenadas, Coordenada::Casilla(Casilla { x: 18, y: 18 }));
     }
 
     #[test]

@@ -6,22 +6,53 @@
 //    nombre para la misma imagen cuando haya red).
 //  * En la partida solo se guarda la ruta RELATIVA ("imagenes/<hash>.<ext>"): la partida no
 //    depende de dónde estuviera el archivo original ni de qué sistema operativo se use.
+use crate::tablero_general::archivos;
+use image::ImageReader;
 use sha2::{Digest, Sha256};
 use std::fs;
 use std::path::Path;
 
-const EXTENSIONES: [&str; 8] = ["png", "jpg", "jpeg", "webp", "gif", "bmp", "avif", "svg"];
+/// Para qué se importa la imagen, que decide qué formatos vale.
+///  * `Mapa`: el tablero se dimensiona y se divide en casillas con el tamaño en píxeles de la
+///    imagen, así que solo sirven los formatos cuyo tamaño se puede leer (sin SVG ni AVIF).
+///  * `Ficha`: la foto va dentro de un contenedor que ya fija el tamaño (la casilla), así que
+///    también valen SVG y AVIF.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Uso {
+    Mapa,
+    Ficha,
+}
+
+const EXTENSIONES_MAPA: [&str; 6] = ["png", "jpg", "jpeg", "webp", "gif", "bmp"];
+const EXTENSIONES_FICHA: [&str; 8] = ["png", "jpg", "jpeg", "webp", "gif", "bmp", "avif", "svg"];
 const MAX_BYTES: u64 = 100 * 1024 * 1024; // 100 MB
+
+impl Uso {
+    fn extensiones(self) -> &'static [&'static str] {
+        match self {
+            Uso::Mapa => &EXTENSIONES_MAPA,
+            Uso::Ficha => &EXTENSIONES_FICHA,
+        }
+    }
+
+    fn nombre(self) -> &'static str {
+        match self {
+            Uso::Mapa => "un mapa",
+            Uso::Ficha => "una ficha",
+        }
+    }
+}
 
 /// Copia `origen` a `<dir_datos>/imagenes/` y devuelve la ruta relativa para guardar en el mapa.
 /// Bloqueante (lee y escribe el archivo entero): llamarlo desde un hilo aparte.
-pub fn importar(dir_datos: &Path, origen: &Path) -> Result<String, String> {
+pub fn importar(dir_datos: &Path, origen: &Path, uso: Uso) -> Result<String, String> {
     let ext = origen
         .extension()
         .and_then(|e| e.to_str())
         .map(|e| e.to_ascii_lowercase())
-        .filter(|e| EXTENSIONES.contains(&e.as_str()))
-        .ok_or_else(|| format!("Formato de imagen no admitido: {}", origen.display()))?;
+        .filter(|e| uso.extensiones().contains(&e.as_str()))
+        .ok_or_else(|| format!("Formato de imagen no admitido para {}: {}", uso.nombre(), origen.display()))?;
 
     let meta = fs::metadata(origen).map_err(|e| format!("No se puede leer la imagen: {e}"))?;
     if !meta.is_file() {
@@ -53,6 +84,16 @@ pub fn importar(dir_datos: &Path, origen: &Path) -> Result<String, String> {
     Ok(format!("imagenes/{nombre}"))
 }
 
+/// Tamaño en píxeles de una imagen ya importada (`ruta` relativa, "imagenes/..."). Solo lee la
+/// cabecera, así que es instantáneo. `None` si no se puede leer
+/// (archivo dañado o que no existe). Los lados se recortan a `u16`, que es lo que guarda `Mapa`.
+pub fn dimensiones(dir_datos: &Path, ruta: &str) -> Option<(u16, u16)> {
+    let archivo = archivos::ruta_segura(dir_datos, ruta, &["imagenes"]).ok()?;
+    let (w, h) = ImageReader::open(archivo).ok()?.with_guessed_format().ok()?.into_dimensions().ok()?;
+    let lado = |v: u32| v.clamp(1, u32::from(u16::MAX)) as u16;
+    Some((lado(w), lado(h)))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -66,8 +107,8 @@ mod tests {
         fs::write(origen.join("mapa.PNG"), b"contenido-de-prueba").unwrap();
         fs::write(origen.join("copia.png"), b"contenido-de-prueba").unwrap();
 
-        let a = importar(&datos, &origen.join("mapa.PNG")).unwrap();
-        let b = importar(&datos, &origen.join("copia.png")).unwrap();
+        let a = importar(&datos, &origen.join("mapa.PNG"), Uso::Mapa).unwrap();
+        let b = importar(&datos, &origen.join("copia.png"), Uso::Mapa).unwrap();
 
         assert_eq!(a, b, "mismo contenido => mismo nombre");
         assert!(a.starts_with("imagenes/") && a.ends_with(".png"), "{a}");
@@ -82,8 +123,30 @@ mod tests {
         fs::create_dir_all(&origen).unwrap();
         fs::write(origen.join("script.exe"), b"x").unwrap();
 
-        assert!(importar(&datos, &origen.join("script.exe")).is_err());
-        assert!(importar(&datos, &origen.join("no_existe.png")).is_err());
-        assert!(importar(&datos, &origen).is_err()); // un directorio
+        assert!(importar(&datos, &origen.join("script.exe"), Uso::Mapa).is_err());
+        assert!(importar(&datos, &origen.join("no_existe.png"), Uso::Mapa).is_err());
+        assert!(importar(&datos, &origen, Uso::Mapa).is_err()); // un directorio
+    }
+
+    #[test]
+    fn lee_el_tamano_de_una_imagen_importada() {
+        let datos = dir_temporal("img_dims");
+        let origen = dir_temporal("img_dims_o");
+        fs::create_dir_all(&origen).unwrap();
+        image::RgbaImage::new(37, 12).save(origen.join("mapa.png")).unwrap();
+        fs::write(origen.join("roto.png"), b"esto no es un png").unwrap();
+        fs::write(origen.join("dibujo.svg"), b"<svg/>").unwrap();
+
+        let png = importar(&datos, &origen.join("mapa.png"), Uso::Mapa).unwrap();
+        assert_eq!(dimensiones(&datos, &png), Some((37, 12)));
+
+        let roto = importar(&datos, &origen.join("roto.png"), Uso::Mapa).unwrap();
+        assert_eq!(dimensiones(&datos, &roto), None);
+        assert!(importar(&datos, &origen.join("dibujo.svg"), Uso::Mapa).is_err(), "un mapa no admite SVG");
+        // La foto de una ficha sí: va en un contenedor que fija el tamaño, aunque no se pueda medir
+        let svg = importar(&datos, &origen.join("dibujo.svg"), Uso::Ficha).unwrap();
+        assert_eq!(dimensiones(&datos, &svg), None);
+        assert_eq!(dimensiones(&datos, "imagenes/no_existe.png"), None);
+        assert_eq!(dimensiones(&datos, "../fuera.png"), None);
     }
 }

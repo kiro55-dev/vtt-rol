@@ -91,12 +91,21 @@ export interface Entidad {
   es_unico: boolean;
 }
 
+// Casilla del tablero: (0,0) arriba a la izquierda. La lógica está en $lib/tablero.ts (y en tablero.rs).
+export interface Casilla {
+  x: number;
+  y: number;
+}
+
+// En una ficha de varias casillas es la casilla CENTRAL
+export type Coordenada = "NoPuesto" | { Casilla: Casilla };
+
 export interface Instancia {
   id_instancia: number;
   id_mapa: number | null;
   base: Entidad;
   valores_actuales: ValorActual[];
-  coordenadas: "NoPuesto" | { Localizacion: number[] };
+  coordenadas: Coordenada;
   activo?: boolean;
 }
 
@@ -381,7 +390,7 @@ class Partida {
     let referencia: string | null = null;
     if (rutaOrigen) {
       try {
-        referencia = await importarImagen(rutaOrigen);
+        referencia = await importarImagen(rutaOrigen, "mapa");
       } catch (err) {
         console.error("No se pudo importar la imagen:", err);
         return;
@@ -399,7 +408,7 @@ class Partida {
   async cambiarImagenMapa(mapa: Mapa, rutaOrigen: string) {
     let referencia: string;
     try {
-      referencia = await importarImagen(rutaOrigen);
+      referencia = await importarImagen(rutaOrigen, "mapa");
     } catch (err) {
       console.error("No se pudo importar la imagen:", err);
       return;

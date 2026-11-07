@@ -5,7 +5,7 @@
   import { onMount } from "svelte";
   import { partida, type Entidad } from "$lib/partida.svelte";
   import { EditorFicha } from "$lib/editorFicha.svelte";
-  import { ES_IMAGEN } from "$lib/imagenes";
+  import { esImagen } from "$lib/imagenes";
   import { alSoltarArchivos } from "$lib/soltarArchivos";
   import { moverVentana } from "$lib/moverVentana";
   import CajaFoto from "./ventana-ficha/CajaFoto.svelte";
@@ -41,7 +41,7 @@
 
     return alSoltarArchivos((rutas, el) => {
       if (el?.closest(".caja-foto")) {
-        const imagen = rutas.find((r) => ES_IMAGEN.test(r));
+        const imagen = rutas.find((r) => esImagen(r, "ficha"));
         if (imagen) return editor.ponerFoto(imagen);
       } else if (el?.closest(".zona-archivos")) {
         return editor.importarArchivos(rutas);

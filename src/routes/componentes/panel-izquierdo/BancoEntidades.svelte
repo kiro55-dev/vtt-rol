@@ -4,7 +4,7 @@
   import { invoke } from "@tauri-apps/api/core";
   import { partida } from "$lib/partida.svelte";
   import { miniaturas } from "$lib/miniaturas.svelte";
-  import { ES_IMAGEN, importarImagen } from "$lib/imagenes";
+  import { esImagen, importarImagen } from "$lib/imagenes";
   import { alSoltarArchivos } from "$lib/soltarArchivos";
 
   // Filtros
@@ -62,10 +62,10 @@
   // Drag & drop de imagen desde el explorador del SO
   onMount(() =>
     alSoltarArchivos(async ([ruta], el) => {
-      if (!ES_IMAGEN.test(ruta) || !el?.closest(".banco")) return;
+      if (!esImagen(ruta, "ficha") || !el?.closest(".banco")) return;
       // Con una ficha ya abierta se ignora el drop (no se importa nada que quede huérfano)
       if (partida.entidadEnEdicion) return;
-      const fotoUrl = await importarImagen(ruta);
+      const fotoUrl = await importarImagen(ruta, "ficha");
       await partida.abrirEditorEntidad(null, fotoUrl);
       if (!partida.entidadEnEdicion) {
         // No se pudo abrir el borrador: la imagen recién importada no la usa nadie

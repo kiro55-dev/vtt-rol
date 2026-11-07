@@ -6,9 +6,26 @@
 // eso es lo único que hace este módulo.
 import { invoke, convertFileSrc } from "@tauri-apps/api/core";
 
-/** Formatos que admite `importar_imagen` en Rust. */
-export const EXTENSIONES_IMAGEN = ["png", "jpg", "jpeg", "webp", "gif", "bmp", "avif", "svg"];
-export const ES_IMAGEN = new RegExp(`\\.(${EXTENSIONES_IMAGEN.join("|")})$`, "i");
+/** Para qué se importa una imagen: decide qué formatos valen (igual que `imagenes::Uso` en Rust). */
+export type UsoImagen = "mapa" | "ficha";
+
+/**
+ * Formatos por uso.
+ *  - mapa: el tablero se divide en casillas según el tamaño en píxeles de la imagen, así que solo
+ *    valen los que se pueden medir (sin SVG ni AVIF).
+ *  - ficha: la foto va en un contenedor que ya fija el tamaño, así que valen todos.
+ */
+export const EXTENSIONES_IMAGEN: Record<UsoImagen, string[]> = {
+  mapa: ["png", "jpg", "jpeg", "webp", "gif", "bmp"],
+  ficha: ["png", "jpg", "jpeg", "webp", "gif", "bmp", "avif", "svg"]
+};
+
+const extension = (ruta: string) => /\.([^./\\]+)$/.exec(ruta.trim())?.[1].toLowerCase() ?? "";
+
+/** ¿Es un formato admitido para ese uso? */
+export function esImagen(ruta: string, uso: UsoImagen): boolean {
+  return EXTENSIONES_IMAGEN[uso].includes(extension(ruta));
+}
 
 let dirDatos = "";
 
@@ -21,8 +38,12 @@ export async function iniciarImagenes(): Promise<void> {
 const YA_ES_URL = /^(https?:|data:|blob:|asset:)/i;
 
 /** Copia una imagen del sistema a la carpeta de datos de la app. Devuelve la ruta relativa a guardar. */
-export async function importarImagen(origen: string): Promise<string> {
-  const ruta = await invoke<string>("importar_imagen", { origen });
+export async function importarImagen(origen: string, uso: UsoImagen): Promise<string> {
+  // Se rechaza aquí, antes de copiar nada: Rust lo vuelve a comprobar
+  if (!esImagen(origen, uso)) {
+    throw `Formato de imagen no admitido para ${uso === "mapa" ? "un mapa" : "una ficha"}: ${origen}`;
+  }
+  const ruta = await invoke<string>("importar_imagen", { origen, uso });
   // Si esta imagen se borró antes y vuelve a importarse, su miniatura se borró con ella:
   // quien tenga cacheada su miniatura debe olvidarla para pedirla de nuevo.
   for (const cb of alImportar) cb(ruta);

@@ -291,7 +291,7 @@ export class EditorFicha {
 
   async ponerFoto(origen: string) {
     try {
-      const nueva = await importarImagen(origen);
+      const nueva = await importarImagen(origen, "ficha");
       this.entidad.foto_url = nueva;
       if (!this.#sesion.includes(nueva)) this.#sesion.push(nueva);
     } catch (err) {

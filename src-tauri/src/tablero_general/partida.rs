@@ -17,6 +17,7 @@ use crate::tablero_general::miniaturas::{self, Tipo};
 use crate::tablero_general::modelos::*;
 use crate::tablero_general::partidas;
 use crate::tablero_general::recursos;
+use crate::tablero_general::tablero::{self, AvisoTablero};
 
 pub struct AppState {
     pub estado: Mutex<EstadoPartida>,
@@ -163,8 +164,9 @@ fn cambiar_de_partida(state: &AppState, nombre: &str) -> Result<(), String> {
     // 2. Se abre la nueva; si no se puede leer, se vuelve a la anterior (intacta en memoria)
     state.almacen.cambiar_dir(&nueva).map_err(|e| format!("No se pudo abrir la partida: {e}"))?;
     match estado::cargar(&state.almacen) {
-        Ok((nuevo, informe)) => {
+        Ok((mut nuevo, informe)) => {
             eprintln!("[partida] abierta «{nombre}» · {informe:?}");
+            corregir_tamanos_mapas(&mut nuevo, &state.almacen);
             if informe.conviene_compactar() {
                 if let Err(e) = estado::compactar(&state.almacen, &nuevo) {
                     eprintln!("[partida] {e}");
@@ -408,6 +410,8 @@ pub fn crear_mapa(
     url_imagen_fondo: Option<String>,
     state: State<'_, AppState>,
 ) -> Result<Mapa, String> {
+    // Solo lee la cabecera de la imagen: se hace antes de coger el lock
+    let (ancho, alto) = tamano_de_fondo(&state.almacen.dir(), url_imagen_fondo.as_deref());
     let mut est = state.lock();
 
     let zona = est
@@ -433,8 +437,8 @@ pub fn crear_mapa(
         id_zona,
         nombre: id.to_string(), // Nombre por defecto es su propio ID
         url_imagen_fondo,
-        ancho: 1000,
-        alto: 1000,
+        ancho,
+        alto,
         rejilla: 50,
         color_opacidad: vec![255, 255, 255, 76],
         grosor: 1,
@@ -445,14 +449,79 @@ pub fn crear_mapa(
     Ok(nuevo_mapa)
 }
 
+/// El tamaño del mapa (`ancho`/`alto`) no lo decide el front: es el de su imagen de fondo y lo
+/// calcula Rust. Si cambia el fondo se vuelve a leer; si no, se conserva el guardado.
 #[tauri::command]
-pub fn modificar_mapa(mapa: Mapa, state: State<'_, AppState>) {
-    procesar_delta(&state, DeltaPartida::MapaModificado(mapa));
+pub fn modificar_mapa(mut mapa: Mapa, state: State<'_, AppState>) -> Result<(), String> {
+    let dir = state.almacen.dir();
+    let mut est = state.lock();
+    let guardado = est.mapas.iter().find(|m| m.id == mapa.id).ok_or("Ese mapa no existe")?;
+
+    (mapa.ancho, mapa.alto) = if guardado.url_imagen_fondo == mapa.url_imagen_fondo {
+        (guardado.ancho, guardado.alto)
+    } else {
+        tamano_de_fondo(&dir, mapa.url_imagen_fondo.as_deref())
+    };
+    tablero::validar_mapa(&mapa)?;
+
+    registrar(&mut est, &state.almacen, DeltaPartida::MapaModificado(mapa));
+    Ok(())
+}
+
+/// Tamaño de un mapa sin imagen, o con una que no se puede leer.
+const TAMANO_MAPA_DEFECTO: (u16, u16) = (1000, 1000);
+
+/// Tamaño en px que debe tener un mapa con este fondo.
+fn tamano_de_fondo(dir: &Path, url_imagen_fondo: Option<&str>) -> (u16, u16) {
+    url_imagen_fondo.and_then(|u| imagenes::dimensiones(dir, u)).unwrap_or(TAMANO_MAPA_DEFECTO)
+}
+
+/// Pone a cada mapa con fondo el tamaño real de su imagen (los mapas antiguos se crearon todos
+/// con 1000×1000). Se llama al abrir una partida, ANTES de compactar. Cada corrección es un
+/// `MapaModificado` normal, así que queda en el log como cualquier otro cambio.
+pub fn corregir_tamanos_mapas(est: &mut EstadoPartida, almacen: &Almacen) {
+    let dir = almacen.dir();
+    let corregidos: Vec<Mapa> = est
+        .mapas
+        .iter()
+        .filter_map(|m| {
+            let (ancho, alto) = imagenes::dimensiones(&dir, m.url_imagen_fondo.as_deref()?)?;
+            (m.ancho != ancho || m.alto != alto).then(|| Mapa { ancho, alto, ..m.clone() })
+        })
+        .collect();
+    for mapa in corregidos {
+        eprintln!("[partida] mapa {} pasa a medir {}×{} px", mapa.id, mapa.ancho, mapa.alto);
+        registrar(est, almacen, DeltaPartida::MapaModificado(mapa));
+    }
 }
 
 #[tauri::command]
 pub fn borrar_mapa(mapa: Mapa, state: State<'_, AppState>) {
     procesar_delta(&state, DeltaPartida::MapaBorrado(mapa));
+}
+
+// ========================================================
+// AVISOS DEL TABLERO (efímeros)
+// ========================================================
+
+/// Envía un aviso a los demás jugadores. Aún no hay red: este es el único sitio que habrá que
+/// completar. Un aviso no es un delta (no se aplica al estado ni se guarda): solo se reenvía.
+fn difundir_aviso(_aviso: &AvisoTablero) {
+    // FUTURA RED: aquí es donde enviarás `_aviso` por websocket/red. Al RECIBIR uno de otro jugador,
+    // emite al front el evento de Tauri "aviso-tablero" con el mismo contenido (src/lib/avisosTablero.ts).
+}
+
+/// El jugador ha hecho un ping o ha movido su recorrido en el tablero (ver `AvisoTablero`).
+/// Su propio tablero ya lo ha dibujado; esto solo lo prepara para el resto.
+#[tauri::command]
+pub fn avisar_tablero(aviso: AvisoTablero, state: State<'_, AppState>) -> Result<(), String> {
+    {
+        let est = state.lock();
+        let mapa = est.mapas.iter().find(|m| m.id == aviso.id_mapa()).ok_or("Ese mapa no existe")?;
+        aviso.validar(mapa)?;
+    }
+    difundir_aviso(&aviso);
+    Ok(())
 }
 
 // ========================================================
@@ -467,11 +536,13 @@ pub fn obtener_dir_datos(state: State<'_, AppState>) -> String {
 }
 
 /// Copia la imagen elegida por el usuario al directorio de datos y devuelve su ruta relativa.
+/// `uso` ("mapa" o "ficha") decide qué formatos se aceptan.
+/// `uso` ("mapa" o "ficha") decide qué formatos se aceptan.
 /// Es `async` + `spawn_blocking` para que copiar un archivo grande no congele la interfaz.
 #[tauri::command]
-pub async fn importar_imagen(origen: String, state: State<'_, AppState>) -> Result<String, String> {
+pub async fn importar_imagen(origen: String, uso: imagenes::Uso, state: State<'_, AppState>) -> Result<String, String> {
     let dir = state.almacen.dir().to_path_buf();
-    tauri::async_runtime::spawn_blocking(move || imagenes::importar(&dir, Path::new(&origen)))
+    tauri::async_runtime::spawn_blocking(move || imagenes::importar(&dir, Path::new(&origen), uso))
         .await
         .map_err(|e| format!("La importación falló: {e}"))?
 }

@@ -8,7 +8,8 @@ use tablero_general::dados::tirar_dado;
 use tablero_general::estado;
 use tablero_general::partidas;
 use tablero_general::partida::{
-    AppState, abrir_archivo_en_sistema, borrar_entidad, borrar_mapa, cancelar_borrador_entidad,
+    corregir_tamanos_mapas,
+    AppState, abrir_archivo_en_sistema, avisar_tablero, borrar_entidad, borrar_mapa, cancelar_borrador_entidad,
     compactar_partida, borrar_definicion_parametro, modificar_definicion_parametro, crear_definicion_parametro, reordenar_definiciones_parametros,
     crear_documento_texto, crear_entidad, crear_mapa, crear_zona,
     descartar_archivos_borrador, eliminar_zona, guardar_archivo_texto, importar_archivo,
@@ -55,8 +56,9 @@ pub fn run() {
             #[cfg(not(debug_assertions))]
             let _ = recien_creada;
 
-            let (estado_inicial, informe) = estado::cargar(&almacen)?;
+            let (mut estado_inicial, informe) = estado::cargar(&almacen)?;
             eprintln!("[partida] datos en {} · {:?}", dir.display(), informe);
+            corregir_tamanos_mapas(&mut estado_inicial, &almacen);
 
             // Consolida los deltas pendientes en el snapshot al arrancar (mantiene corto el log).
             if informe.conviene_compactar() {
@@ -99,6 +101,7 @@ pub fn run() {
             borrar_mapa,
             obtener_dir_datos,
             importar_imagen,
+            avisar_tablero,
             crear_entidad,
             borrar_entidad,
             modificar_entidad,
