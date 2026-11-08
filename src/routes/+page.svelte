@@ -10,7 +10,24 @@
   import BarraRejilla from "./componentes/BarraRejilla.svelte";
   import BarraDados from "./componentes/BarraDados.svelte";
   import VentanaFicha from "./componentes/VentanaFicha.svelte";
+  import FantasmaFicha from "./componentes/comunes/FantasmaFicha.svelte";
   let fichaParaEditar = $state<any>(null); // por ahora nadie abre el modal; se tipará con Entidad/Instancia
+
+  // Un clic izquierdo en cualquier parte quita el foco de las fichas, salvo en lo que lo gestiona
+  // por su cuenta (tablero, «Fichas activas», parámetros, menús): lo marcan con data-conserva-foco.
+  function alPulsarEnLaVentana(e: PointerEvent) {
+    if (e.button !== 0 || partida.idsSeleccionados.length === 0) return;
+    if ((e.target as Element | null)?.closest?.("[data-conserva-foco]")) return;
+    partida.seleccionarInstancia(null);
+  }
+
+  // ↑ / ↓: con una sola ficha con foco, pasa a la anterior / siguiente de «Fichas activas»
+  function alPulsarTecla(e: KeyboardEvent) {
+    if (e.key !== "ArrowUp" && e.key !== "ArrowDown") return;
+    const t = e.target as HTMLElement | null;
+    if (t?.closest?.("input, textarea, select, [contenteditable='true']")) return;
+    if (partida.seleccionarVecina(e.key === "ArrowUp" ? -1 : 1)) e.preventDefault();
+  }
 
   onMount(async () => {
     try {
@@ -21,6 +38,8 @@
     }
   });
 </script>
+
+<svelte:window onpointerdown={alPulsarEnLaVentana} onkeydown={alPulsarTecla} />
 
 <div class="contenedor-principal">
   <PanelIzquierdo />
@@ -49,6 +68,9 @@
   {#if partida.entidadEnEdicion}
     <VentanaFicha entidad={partida.entidadEnEdicion} />
   {/if}
+
+  <!-- La ficha que se arrastra entre el banco, el tablero y «Fichas activas» -->
+  <FantasmaFicha />
 </div>
 
 <style>

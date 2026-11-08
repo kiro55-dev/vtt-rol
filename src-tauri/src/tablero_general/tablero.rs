@@ -13,7 +13,7 @@
 // casilla CENTRAL, no una esquina, para que un giro futuro la haga rotar sobre sí misma.
 // Con un lado par no hay centro exacto y se toma el de arriba/izquierda de los dos centrales.
 // Las funciones reciben los lados ya calculados: un giro de 90° solo tendría que intercambiarlos.
-use crate::tablero_general::modelos::{Casilla, Cuerpo, Mapa};
+use crate::tablero_general::modelos::{Casilla, Cuerpo, Instancia, Mapa};
 use serde::{Deserialize, Serialize};
 
 /// Límites del tamaño de casilla pedido (px de la imagen). Los mismos que `LIMITES_REJILLA` del front.
@@ -54,6 +54,13 @@ pub fn tamano_cuerpo(cuerpo: &Cuerpo) -> (u16, u16) {
             (lado(0), lado(1))
         }
     }
+}
+
+/// Lados de una instancia en el tablero: los de su cuerpo, intercambiados si está girada un
+/// cuarto o tres cuartos de vuelta (el centro no se mueve).
+pub fn lados_instancia(inst: &Instancia) -> (u16, u16) {
+    let (ancho, alto) = tamano_cuerpo(&inst.base.cuerpo);
+    if inst.rotacion % 2 == 1 { (alto, ancho) } else { (ancho, alto) }
 }
 
 /// Casillas que ocupa un lado antes y después de la central: 1 → (0,0), 2 → (0,1), 3 → (1,1), 4 → (1,2).

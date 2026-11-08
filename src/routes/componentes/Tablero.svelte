@@ -2,7 +2,14 @@
 <script>
   import { onMount, untrack, onDestroy } from 'svelte';
   import { urlDeImagen } from '$lib/imagenes';
-  import { rejillaDe, pantallaAMundo, casillaEn, casillaMasCercana, extenderRecorrido } from '$lib/tablero';
+  import {
+    rejillaDe, pantallaAMundo, casillaEn, casillaMasCercana, extenderRecorrido, origenAlSoltar
+  } from '$lib/tablero';
+  import { partida, numeroDe } from '$lib/partida.svelte';
+  import { arrastre } from '$lib/arrastreFicha.svelte';
+  import {
+    fichasDelMapa, fichaEnCasilla, imagenDe, dibujarFicha, dibujarDestino, dibujarFormas, rectanguloFicha
+  } from '$lib/fichasTablero';
   import { dibujarPing, dibujarRecorrido, pingVivo } from '$lib/marcasTablero';
   import {
     alRecibirAviso, enviarAviso, avisoPing, avisoRecorrido, avisoRecorridoBorrado
@@ -26,6 +33,8 @@
   let canvasFondo;
   /** @type {HTMLCanvasElement} */
   let canvasRejilla;
+  /** @type {HTMLCanvasElement} */
+  let canvasFichas;
   /** @type {HTMLCanvasElement} */
   let canvasMarcas;
 
@@ -64,6 +73,21 @@
   /** @type {{ x: number, y: number } | null} */
   let pulsacionCentral = null;
   const MOVIMIENTO_MAX_CLIC_PX = 5;
+
+  // Clic derecho que empezó sobre una ficha: si se suelta sin salir de su casilla ni mover el ratón,
+  // la ficha gira 90° a la derecha. La flecha de recorrido (y su casilla amarilla) solo aparece
+  // cuando el cursor sale de la casilla de salida.
+  /** @type {{ x: number, y: number, idInstancia: number, salida: import("$lib/partida.svelte").Casilla } | null} */
+  let derechoSobreFicha = null;
+  // Pulsación izquierda en el fondo: si se suelta sin arrastrar, las fichas pierden el foco.
+  /** @type {{ x: number, y: number } | null} */
+  let pulsacionIzquierda = null;
+
+  // Instancias colocadas en el mapa abierto (en orden de dibujo: la última, encima)
+  const fichas = $derived(fichasDelMapa(partida.instanciasOrdenadas, typeof mapa?.id === 'number' ? mapa.id : null));
+
+  /** @param {import("$lib/partida.svelte").Instancia} i */
+  const casillaDe = (i) => (typeof i.coordenadas === 'object' ? i.coordenadas.Casilla : null);
 
   const clamp = (v, min, max) => Math.min(max, Math.max(min, v));
 
@@ -188,17 +212,39 @@
   }
 
   // Botones:
-  //  * izquierdo: arrastrar mueve la vista. Cuando haya fichas: solo si el clic no cae en una.
+  //  * izquierdo: sobre una ficha, clic = foco (con Shift, añadirla) y arrastrar = moverla;
+  //    en el fondo, arrastrar mueve la vista y un clic quita el foco.
   //  * central: clic = ping; arrastrar también mueve la vista.
-  //  * derecho: arrastrar mide un recorrido por casillas.
+  //  * derecho: arrastrar mide un recorrido por casillas; sobre una ficha sin arrastrar, la gira.
+  /** @param {PointerEvent} e */
   function alPresionar(e) {
+    const p = puntoDelMapa(e);
+    const casillaPulsada = casillaEn(casillas, p.x, p.y);
+    const ficha = casillaPulsada ? fichaEnCasilla(fichas, casillaPulsada) : null;
+
+    if (e.button === 0 && ficha && casillaPulsada) {
+      e.preventDefault();
+      // Punto por el que se coge, para que la ficha no salte bajo el cursor al arrastrarla
+      const r = rectanguloFicha(cam, casillas, { instancia: ficha, casilla: casillaDe(ficha) ?? casillaPulsada });
+      const caja = contenedor.getBoundingClientRect();
+      const agarre = { x: (e.clientX - caja.left - r.x) / r.w, y: (e.clientY - caja.top - r.y) / r.h };
+      const anadir = e.shiftKey;
+      arrastre.preparar(e, { instancia: ficha, desde: 'tablero' }, () => partida.seleccionarInstancia(ficha, anadir), agarre);
+      return;
+    }
+
     if (e.button === 2) {
       e.preventDefault();
-      const p = puntoDelMapa(e);
-      const salida = casillaEn(casillas, p.x, p.y);
+      const salida = casillaPulsada;
       if (!salida) return; // se empieza a medir solo desde dentro del mapa
-      cambiarRecorrido([salida]);
       midiendo = true;
+      if (ficha) {
+        // Sobre una ficha aún no se marca nada: puede ser un giro
+        derechoSobreFicha = { x: e.clientX, y: e.clientY, idInstancia: ficha.id_instancia, salida };
+      } else {
+        derechoSobreFicha = null;
+        cambiarRecorrido([salida]);
+      }
       contenedor.setPointerCapture(e.pointerId);
       return;
     }
@@ -207,13 +253,23 @@
     panActivo = true;
     ultimo = { x: e.clientX, y: e.clientY };
     pulsacionCentral = e.button === 1 ? { x: e.clientX, y: e.clientY } : null;
+    pulsacionIzquierda = e.button === 0 ? { x: e.clientX, y: e.clientY } : null;
     contenedor.setPointerCapture(e.pointerId);
   }
 
+  /** @param {PointerEvent} e */
   function alMover(e) {
     if (midiendo) {
       const p = puntoDelMapa(e);
-      const siguiente = extenderRecorrido(recorrido, casillaMasCercana(casillas, p.x, p.y));
+      const aqui = casillaMasCercana(casillas, p.x, p.y);
+      if (recorrido.length === 0) {
+        // Clic derecho sobre una ficha: la flecha empieza al salir de su casilla
+        const d = derechoSobreFicha;
+        if (!d || (aqui.x === d.salida.x && aqui.y === d.salida.y)) return;
+        cambiarRecorrido(extenderRecorrido([d.salida], aqui));
+        return;
+      }
+      const siguiente = extenderRecorrido(recorrido, aqui);
       if (siguiente.length !== recorrido.length || siguiente.at(-1) !== recorrido.at(-1)) cambiarRecorrido(siguiente);
       return;
     }
@@ -224,14 +280,29 @@
     ) {
       pulsacionCentral = null; // ya es un arrastre, no un clic
     }
+    if (
+      pulsacionIzquierda &&
+      Math.hypot(e.clientX - pulsacionIzquierda.x, e.clientY - pulsacionIzquierda.y) > MOVIMIENTO_MAX_CLIC_PX
+    ) {
+      pulsacionIzquierda = null;
+    }
     cam = { ...cam, x: cam.x + e.clientX - ultimo.x, y: cam.y + e.clientY - ultimo.y };
     ultimo = { x: e.clientX, y: e.clientY };
   }
 
+  /** @param {PointerEvent} e */
   function alSoltar(e) {
     if (midiendo && e.button === 2) {
       midiendo = false; // el recorrido se queda dibujado hasta el siguiente clic
+      // Clic derecho sin arrastrar sobre una ficha: gira 90° a la derecha
+      const d = derechoSobreFicha;
+      if (d && recorrido.length === 0 && Math.hypot(e.clientX - d.x, e.clientY - d.y) <= MOVIMIENTO_MAX_CLIC_PX) {
+        void partida.rotarInstancia(d.idInstancia);
+      }
+      derechoSobreFicha = null;
     }
+    if (pulsacionIzquierda && e.button === 0) partida.seleccionarInstancia(null);
+    pulsacionIzquierda = null;
     if (pulsacionCentral && e.button === 1) {
       const p = puntoDelMapa(e);
       const casilla = casillaEn(casillas, p.x, p.y);
@@ -249,6 +320,8 @@
   /** @param {PointerEvent} e */
   function alCancelar(e) {
     midiendo = false;
+    derechoSobreFicha = null;
+    pulsacionIzquierda = null;
     pulsacionCentral = null;
     panActivo = false;
     if (contenedor?.hasPointerCapture?.(e.pointerId)) contenedor.releasePointerCapture(e.pointerId);
@@ -351,6 +424,68 @@
     programar();
   });
 
+  // Capa de fichas: depende de las instancias del mapa, la selección, la cámara y el arrastre en curso.
+  let fichasPendientes = true;
+  $effect(() => {
+    void [fichas, partida.idsSeleccionados, partida.definiciones, cam, ancho, alto, dpr, casillas, arrastre.actual];
+    void Object.values(partida.valoresPendientes); // la barra de vida y los radios siguen a la rueda
+    fichasPendientes = true;
+    programar();
+  });
+
+  function pintarFichas() {
+    const ctx = prepararCanvas(canvasFichas, ancho, alto, dpr);
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0); // en px de pantalla
+    const repintar = () => {
+      fichasPendientes = true;
+      programar();
+    };
+    /** @param {string | null} foto */
+    const imagen = (foto) => (foto ? imagenDe(urlDeImagen(foto), repintar) : null);
+
+    // 1. Las formas de los parámetros de las fichas con foco (debajo de todas las fichas). Se quedan
+    //    donde estaba la ficha aunque se esté arrastrando: así se ve hasta dónde puede llegar.
+    for (const f of fichas) {
+      if (!partida.estaSeleccionada(f.instancia.id_instancia)) continue;
+      const base = f.instancia.base;
+      dibujarFormas(
+        ctx, cam, casillas, f, partida.definiciones,
+        (d) => (d.tiene_maximo ? partida.valorMostrado(f.instancia, d.id) : numeroDe(base, d.id)),
+        (d) => numeroDe(base, d.id)
+      );
+    }
+
+    // 2. Las fichas (la que se arrastra no se dibuja en su sitio: va bajo el cursor)
+    for (const f of fichas) {
+      if (arrastre.arrastrando(f.instancia.id_instancia)) continue;
+      dibujarFicha(ctx, cam, casillas, f, imagen(f.instancia.base.foto_url), {
+        seleccionada: partida.estaSeleccionada(f.instancia.id_instancia)
+      });
+    }
+
+    // 3. Lo que se arrastra sobre el tablero: dónde caerá (amarillo) y la ficha "cogida" bajo el cursor
+    const a = arrastre.actual;
+    if (!a || a.zona !== 'tablero') return;
+    const destino = arrastre.casillaActual();
+    if (destino && destino.id_mapa === idMapa()) dibujarDestino(ctx, cam, casillas, destino.casilla, a.lados);
+
+    const instancia = 'instancia' in a.origen ? a.origen.instancia : fichaDeEntidad(a.origen.entidad);
+    const caja = contenedor.getBoundingClientRect();
+    const w = a.lados[0] * casillas.anchoCasilla * cam.zoom;
+    const h = a.lados[1] * casillas.altoCasilla * cam.zoom;
+    const agarre = a.agarre ?? { x: 0.5, y: 0.5 };
+    const en = { x: a.x - caja.left - agarre.x * w, y: a.y - caja.top - agarre.y * h };
+    dibujarFicha(ctx, cam, casillas, { instancia, casilla: { x: 0, y: 0 } }, imagen(instancia.base.foto_url), { en, sombra: true });
+  }
+
+  // Una ficha del banco aún sin instancia, para poder dibujarla igual que una instancia
+  /** @param {import("$lib/partida.svelte").Entidad} entidad */
+  function fichaDeEntidad(entidad) {
+    return /** @type {import("$lib/partida.svelte").Instancia} */ ({
+      id_instancia: -1, id_mapa: null, base: entidad, valores_actuales: [], coordenadas: 'NoPuesto', rotacion: 0, orden: 0
+    });
+  }
+
   // Depende de la cámara, del tamaño del tablero, de las casillas y del recorrido.
   $effect(() => {
     void [cam, ancho, alto, dpr, casillas, recorrido, recorridoAjeno];
@@ -373,7 +508,7 @@
 
   function pintar() {
     rafId = 0;
-    if (!canvasFondo || !canvasRejilla || !canvasMarcas) return;
+    if (!canvasFondo || !canvasRejilla || !canvasFichas || !canvasMarcas) return;
 
     const f = pendiente.fondo;
     if (f && f.ancho && f.alto) {
@@ -387,6 +522,11 @@
       const ctx = prepararCanvas(canvasRejilla, r.ancho, r.alto, r.dpr);
       ctx.setTransform(r.dpr, 0, 0, r.dpr, 0, 0); // la rejilla se dibuja en px de pantalla
       dibujarRejilla(ctx, r.cam, r.casillas, r.ancho, r.alto, r.estilo);
+    }
+
+    if (fichasPendientes && ancho && alto) {
+      fichasPendientes = false;
+      pintarFichas();
     }
 
     if ((marcasPendientes || pings.length) && ancho && alto) {
@@ -491,11 +631,26 @@
     observador.observe(contenedor);
     window.addEventListener('pointerdown', alPulsarEnLaVentana, true);
     const dejarDeEscuchar = alRecibirAviso(alLlegarAviso);
+    // Cómo pasa el cursor a una casilla del mapa abierto, para soltar fichas (ver $lib/arrastreFicha)
+    // Con `agarre` (el punto por el que se cogió la ficha), lo que cuenta es dónde queda el centro
+    // de la ficha, no el cursor: así cae donde se ve.
+    const dejarDeResolver = arrastre.registrarTablero((clientX, clientY, lados, agarre) => {
+      const id = idMapa();
+      if (id === null) return null;
+      const r = contenedor.getBoundingClientRect();
+      const p = pantallaAMundo(cam, clientX - r.left, clientY - r.top);
+      if (p.x < 0 || p.y < 0 || p.x >= casillas.ancho || p.y >= casillas.alto) return null;
+      const w = lados[0] * casillas.anchoCasilla;
+      const h = lados[1] * casillas.altoCasilla;
+      const centro = agarre ? { x: p.x + (0.5 - agarre.x) * w, y: p.y + (0.5 - agarre.y) * h } : p;
+      return { id_mapa: id, casilla: origenAlSoltar(casillas, centro.x, centro.y, lados) };
+    });
 
     return () => {
       observador.disconnect();
       window.removeEventListener('pointerdown', alPulsarEnLaVentana, true);
       dejarDeEscuchar();
+      dejarDeResolver();
       cancelAnimationFrame(rafId);
     };
   });
@@ -505,9 +660,11 @@
   class="tablero"
   class:arrastrando={panActivo}
   bind:this={contenedor}
+  data-destino="tablero"
+  data-conserva-foco
   role="application"
   aria-label="Tablero de juego"
-  title="Rueda: zoom · Arrastrar: mover · Doble clic: centrar · Clic central: aviso · Arrastrar con botón derecho: medir"
+  title="Rueda: zoom · Arrastrar: mover la vista o una ficha · Doble clic: centrar · Clic central: aviso · Botón derecho: medir (sobre una ficha sin arrastrar: quitarla del tablero)"
   onwheel={alRueda}
   onpointerdown={alPresionar}
   onpointermove={alMover}
@@ -518,6 +675,7 @@
 >
   <canvas bind:this={canvasFondo}></canvas>
   <canvas bind:this={canvasRejilla}></canvas>
+  <canvas bind:this={canvasFichas}></canvas>
   <canvas bind:this={canvasMarcas}></canvas>
 </div>
 

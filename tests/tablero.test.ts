@@ -166,3 +166,20 @@ describe("recorrido", () => {
     expect(extenderRecorrido([], c(3, 3))).toEqual([c(3, 3)]);
   });
 });
+
+describe("instancias giradas y formas", () => {
+  it("los lados de una instancia se intercambian con un giro impar", async () => {
+    const { ladosInstancia } = await import("$lib/tablero");
+    const ficha = (rotacion: number) => ({ base: { cuerpo: { Grande: [2, 3] } }, rotacion });
+    expect([0, 1, 2, 3].map((r) => ladosInstancia(ficha(r)))).toEqual([[2, 3], [3, 2], [2, 3], [3, 2]]);
+    expect(ladosInstancia({ base: { cuerpo: "Pequenio" } })).toEqual([1, 1]);
+  });
+
+  it("los cuatro puntos de una forma caen en la rejilla, a n casillas de los bordes del cuerpo", async () => {
+    const { extremosForma } = await import("$lib/tablero");
+    // 1×1 en (5,5), valor 2: de la línea 3 a la 8 en cada eje; centro 5.5
+    expect(extremosForma(c(5, 5), [1, 1], 2)).toEqual({ izquierda: 3, derecha: 8, arriba: 3, abajo: 8, cx: 5.5, cy: 5.5 });
+    // 2×3 en (5,5) (x 5..6, y 4..6), valor 1
+    expect(extremosForma(c(5, 5), [2, 3], 1)).toEqual({ izquierda: 4, derecha: 8, arriba: 3, abajo: 8, cx: 6, cy: 5.5 });
+  });
+});

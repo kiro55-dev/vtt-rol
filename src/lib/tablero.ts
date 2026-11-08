@@ -211,3 +211,31 @@ export function extenderRecorrido(recorrido: readonly Casilla[], destino: Casill
 export function centroDe(rejilla: RejillaTablero, c: Casilla) {
   return { x: (c.x + 0.5) * rejilla.anchoCasilla, y: (c.y + 0.5) * rejilla.altoCasilla };
 }
+
+// ---------------------------------------------------------------------------
+// Instancias giradas y formas de sus parámetros
+// ---------------------------------------------------------------------------
+
+/** Lados de una instancia en el tablero: los de su cuerpo, intercambiados con un giro impar
+ *  (igual que `tablero::lados_instancia` en Rust). */
+export function ladosInstancia(inst: { base: { cuerpo: Cuerpo }; rotacion?: number }): Lados {
+  const [ancho, alto] = tamanoCuerpo(inst.base.cuerpo);
+  return (inst.rotacion ?? 0) % 2 === 1 ? [alto, ancho] : [ancho, alto];
+}
+
+/**
+ * Límites (en casillas, como LÍNEAS de la rejilla) de la forma de un parámetro de valor `n` alrededor
+ * de un cuerpo: se cuentan `n` casillas desde cada borde del cuerpo. Los cuatro puntos de referencia
+ * (izquierda, derecha, arriba, abajo) caen justo en la rejilla; `cx`/`cy` es el centro del cuerpo.
+ */
+export function extremosForma(centro: Casilla, lados: Lados, n: number) {
+  const { x0, y0, x1, y1 } = extremos(centro, lados);
+  return {
+    izquierda: x0 - n,
+    derecha: x1 + 1 + n,
+    arriba: y0 - n,
+    abajo: y1 + 1 + n,
+    cx: (x0 + x1 + 1) / 2,
+    cy: (y0 + y1 + 1) / 2
+  };
+}

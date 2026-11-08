@@ -1,46 +1,64 @@
 <!-- src/routes/componentes/panel-derecho/ParametrosFicha.svelte -->
+<!-- Los parámetros de la instancia seleccionada, tal y como estén definidos en la partida (en su
+     orden). Los que tienen máximo muestran «actual / máx» con − y + para cambiar el actual. -->
 <script lang="ts">
-  import { partida, ID_PARAMETRO, numeroDe, valorActual, type Cuerpo } from "$lib/partida.svelte";
-  // Por ahora muestra los parámetros de serie (ids fijos); no los definidos por el usuario.
+  import { partida, numeroDe, type Cuerpo } from "$lib/partida.svelte";
 
-  const textoCuerpo = (c: Cuerpo) => (typeof c === "object" ? `Grande (${c.Grande.join("x")})` : "1x1");
+  const textoCuerpo = (c: Cuerpo) => (typeof c === "object" ? `${c.Grande[0] ?? 1}×${c.Grande[1] ?? 1}` : "1×1");
 
-  let ficha = $derived(partida.instanciaSeleccionada);
+  const ficha = $derived(partida.instanciaSeleccionada);
 
-  let parametros = $derived(
+  const parametros = $derived(
     ficha
-      ? [
-          { etiqueta: "V (Velocidad)", valor: `${numeroDe(ficha.base, ID_PARAMETRO.velocidad)} m` },
-          { etiqueta: "RA (Rango Arma)", valor: `${numeroDe(ficha.base, ID_PARAMETRO.rangoArma)} m` },
-          { etiqueta: "Cuerpo", valor: textoCuerpo(ficha.base.cuerpo) },
-          { etiqueta: "Armadura", valor: String(numeroDe(ficha.base, ID_PARAMETRO.armadura)) }
-        ]
+      ? partida.definiciones.map((d) => {
+          const v = ficha.base.parametros.find((p) => p.id_definicion === d.id)?.valor;
+          const unidad = d.unidad ? ` ${d.unidad}` : "";
+          const texto = !v ? "—" : "Numero" in v ? `${v.Numero}${unidad}` : v.Texto || "—";
+          return { id: d.id, clave: d.clave, tieneMaximo: d.tiene_maximo, texto, unidad };
+        })
       : []
   );
 </script>
 
-<div class="caja">
-  <span class="titulo-mini">PARÁMETROS</span>
-  {#if ficha}
+<div class="caja" data-conserva-foco>
+  <span class="titulo-mini">PARÁMETROS{ficha ? ` · ${ficha.base.nombre}` : ""}</span>
+  {#if partida.idsSeleccionados.length > 1}
+    <div class="sin-seleccion">{partida.seleccionadas.length} fichas con el foco</div>
+  {:else if ficha}
     <div class="caja-parametros">
-      {#each parametros as p}
-        <div class="param">
-          <span class="label">{p.etiqueta}</span>
-          <span class="valor-destacado">{p.valor}</span>
-        </div>
+      {#each parametros as p (p.id)}
+        {#if p.tieneMaximo}
+          <!-- La rueda también lo cambia; se manda a Rust agrupado (ver partida.cambiarValorActual) -->
+          <div
+            class="param ancho"
+            role="group"
+            title="Rueda o − / + para cambiarlo"
+            onwheel={(e) => {
+              e.preventDefault();
+              partida.cambiarValorActual(ficha.id_instancia, p.id, e.deltaY < 0 ? 1 : -1);
+            }}
+          >
+            <span class="label">{p.clave}</span>
+            <div class="control">
+              <button type="button" aria-label="Restar 1 a {p.clave}" onclick={() => partida.cambiarValorActual(ficha.id_instancia, p.id, -1)}>−</button>
+              <span class="valor">{partida.valorMostrado(ficha, p.id)} / {numeroDe(ficha.base, p.id)}{p.unidad}</span>
+              <button type="button" aria-label="Sumar 1 a {p.clave}" onclick={() => partida.cambiarValorActual(ficha.id_instancia, p.id, 1)}>+</button>
+            </div>
+          </div>
+        {:else}
+          <div class="param">
+            <span class="label">{p.clave}</span>
+            <span class="valor">{p.texto}</span>
+          </div>
+        {/if}
       {/each}
-
-      <div class="param vida">
-        <span class="label">Vida:</span>
-        <div class="control-vida">
-          <button onclick={() => partida.modificarValorActual(ficha.id_instancia, ID_PARAMETRO.vida, -1)}>-</button>
-          <span class="valor-destacado">{valorActual(ficha, ID_PARAMETRO.vida)} / {numeroDe(ficha.base, ID_PARAMETRO.vida)}</span>
-          <button onclick={() => partida.modificarValorActual(ficha.id_instancia, ID_PARAMETRO.vida, 1)}>+</button>
-        </div>
+      <div class="param">
+        <span class="label">Cuerpo</span>
+        <span class="valor">{textoCuerpo(ficha.base.cuerpo)}</span>
       </div>
     </div>
   {:else}
-    <div class="sin-seleccion">Pulsa una ficha para ver sus parámetros</div>
+    <div class="sin-seleccion">Pulsa una ficha activa para ver sus parámetros</div>
   {/if}
 </div>
 
@@ -55,15 +73,19 @@
     display: flex;
     flex-direction: column;
   }
-  .titulo-mini { font-size: 10px; font-weight: bold; color: #71717a; margin-bottom: 3px; display: block; }
-  .caja-parametros { display: grid; grid-template-columns: 1fr 1fr; gap: 4px; }
-  .param { background: #27272a; padding: 5px; border-radius: 4px; }
-  .param.vida { grid-column: span 2; display: flex; justify-content: space-between; align-items: center; }
-  .label { color: #a1a1aa; font-size: 10px; display: block; }
-  .valor-destacado { font-size: 13px; font-weight: bold; color: #f4f4f5; }
-  .control-vida { display: flex; align-items: center; gap: 6px; }
-  .control-vida button {
+  .titulo-mini {
+    font-size: 10px; font-weight: bold; color: #71717a; margin-bottom: 3px; display: block;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .caja-parametros { display: grid; grid-template-columns: 1fr 1fr; gap: 4px; overflow-y: auto; min-height: 0; }
+  .param { background: #27272a; padding: 5px; border-radius: 4px; min-width: 0; }
+  .param.ancho { grid-column: span 2; display: flex; justify-content: space-between; align-items: center; }
+  .label { color: #a1a1aa; font-size: 10px; display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .valor { font-size: 13px; font-weight: bold; color: #f4f4f5; overflow-wrap: anywhere; }
+  .control { display: flex; align-items: center; gap: 6px; }
+  .control button {
     background: #3f3f46; color: white; border: none; width: 22px; height: 22px; border-radius: 3px; cursor: pointer; font-weight: bold;
   }
+  .control button:hover { background: #52525b; }
   .sin-seleccion { color: #71717a; text-align: center; margin: auto 0; font-size: 11px; }
 </style>

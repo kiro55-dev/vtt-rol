@@ -97,6 +97,8 @@ pub enum Forma {
     Circulo(Vec<u8>),
     Cuadrado(Vec<u8>),
     BarraVida(Vec<u8>),
+    /// Solo con `tiene_maximo`: en «Fichas activas» se muestra «actual/máx» en este color.
+    Resumen(Vec<u8>),
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
@@ -295,6 +297,15 @@ pub struct Instancia {
 
     #[serde(default)]
     pub activo: bool,
+
+    /// Cuartos de vuelta en el sentido del reloj (0..=3). Con uno impar, ancho y alto del cuerpo se
+    /// intercambian (ver `tablero::lados_instancia`); el centro no se mueve.
+    #[serde(default)]
+    pub rotacion: u8,
+
+    /// Posición en «Fichas activas» (de arriba abajo). Ver `DeltaPartida::InstanciasReordenadas`.
+    #[serde(default)]
+    pub orden: u16,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]

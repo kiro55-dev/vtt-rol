@@ -13,6 +13,7 @@ use crate::tablero_general::almacen::{bloquear, Almacen};
 use crate::tablero_general::archivos;
 use crate::tablero_general::estado::{self, DeltaPartida, EstadoPartida};
 use crate::tablero_general::imagenes;
+use crate::tablero_general::instancias;
 use crate::tablero_general::miniaturas::{self, Tipo};
 use crate::tablero_general::modelos::*;
 use crate::tablero_general::partidas;
@@ -256,13 +257,18 @@ fn validar_definicion(existentes: &[DefinicionParametro], d: &DefinicionParametr
     if d.unidad.as_deref().is_some_and(|u| u.chars().count() > 8) {
         return Err("La unidad no puede pasar de 8 caracteres".into());
     }
-    if let Some(Forma::Rombo(c) | Forma::Circulo(c) | Forma::Cuadrado(c) | Forma::BarraVida(c)) = &d.representar_mapa {
+    if let Some(Forma::Rombo(c) | Forma::Circulo(c) | Forma::Cuadrado(c) | Forma::BarraVida(c) | Forma::Resumen(c)) =
+        &d.representar_mapa
+    {
         if c.len() != 4 {
             return Err("El color de la forma no es válido".into());
         }
         if !matches!(d.valor_por_defecto, ValorParametro::Numero(_)) {
             return Err("Solo un número puede dibujarse en el tablero".into());
         }
+    }
+    if matches!(d.representar_mapa, Some(Forma::Resumen(_))) && !d.tiene_maximo {
+        return Err("El resumen «actual/máx» solo vale para parámetros con máximo".into());
     }
     Ok(())
 }
@@ -362,6 +368,78 @@ pub fn obtener_banco_entidades(state: State<'_, AppState>) -> Vec<Entidad> {
 #[tauri::command]
 pub fn obtener_instancias_activas(state: State<'_, AppState>) -> Vec<Instancia> {
     state.lock().instancias_activas.clone()
+}
+
+// Instancias: las reglas (ficha única, casilla encajada, id nuevo...) están en `instancias.rs`;
+// aquí solo se registra el delta que devuelven.
+
+/// Instancia una ficha del banco en una casilla (`destino`) o solo como activa (`None`).
+/// Una ficha única que ya tenía instancia la reutiliza. Devuelve la instancia resultante.
+#[tauri::command]
+pub fn instanciar_entidad(
+    id_entidad: u16,
+    destino: Option<instancias::Destino>,
+    state: State<'_, AppState>,
+) -> Result<Instancia, String> {
+    let mut est = state.lock();
+    let delta = instancias::instanciar(&est, id_entidad, destino)?;
+    let (DeltaPartida::InstanciaCreada(i) | DeltaPartida::InstanciaModificada(i)) = &delta else {
+        unreachable!("instanciar solo crea o modifica")
+    };
+    let instancia = i.clone();
+    registrar(&mut est, &state.almacen, delta);
+    Ok(instancia)
+}
+
+/// Mueve una instancia a otra casilla o, con `None`, la quita del tablero (sigue activa).
+#[tauri::command]
+pub fn mover_instancia(id_instancia: u16, destino: Option<instancias::Destino>, state: State<'_, AppState>) -> Result<(), String> {
+    let mut est = state.lock();
+    let delta = instancias::mover(&est, id_instancia, destino)?;
+    registrar(&mut est, &state.almacen, delta);
+    Ok(())
+}
+
+/// Gira la instancia un cuarto de vuelta en el sentido del reloj.
+#[tauri::command]
+pub fn rotar_instancia(id_instancia: u16, state: State<'_, AppState>) -> Result<(), String> {
+    let mut est = state.lock();
+    let delta = instancias::rotar(&est, id_instancia)?;
+    registrar(&mut est, &state.almacen, delta);
+    Ok(())
+}
+
+/// Nuevo orden de «Fichas activas» (todas las instancias, de arriba abajo).
+#[tauri::command]
+pub fn reordenar_instancias(ids: Vec<u16>, state: State<'_, AppState>) -> Result<(), String> {
+    let mut est = state.lock();
+    let delta = instancias::reordenar(&est, ids)?;
+    registrar(&mut est, &state.almacen, delta);
+    Ok(())
+}
+
+/// La instancia deja de estar activa.
+#[tauri::command]
+pub fn borrar_instancia(id_instancia: u16, state: State<'_, AppState>) -> Result<(), String> {
+    let mut est = state.lock();
+    let delta = instancias::borrar(&est, id_instancia)?;
+    registrar(&mut est, &state.almacen, delta);
+    Ok(())
+}
+
+/// Suma `delta` al valor actual (p. ej. la vida) de una instancia, sin bajar de 0 ni pasar del máximo.
+#[tauri::command]
+pub fn modificar_valor_actual(
+    id_instancia: u16,
+    id_definicion: u16,
+    delta: i16,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    let mut est = state.lock();
+    if let Some(delta) = instancias::cambiar_valor_actual(&est, id_instancia, id_definicion, delta)? {
+        registrar(&mut est, &state.almacen, delta);
+    }
+    Ok(())
 }
 
 #[tauri::command]
@@ -902,6 +980,14 @@ mod tests_definiciones {
             ..nueva("Lema")
         };
         assert!(validar_definicion(&defs, &texto_en_mapa).is_err());
+
+        let resumen = |tiene_maximo| DefinicionParametro {
+            representar_mapa: Some(Forma::Resumen(vec![1, 2, 3, 4])),
+            tiene_maximo,
+            ..nueva("Maná")
+        };
+        assert!(validar_definicion(&defs, &resumen(true)).is_ok());
+        assert!(validar_definicion(&defs, &resumen(false)).is_err(), "Resumen sin máximo");
     }
 }
 

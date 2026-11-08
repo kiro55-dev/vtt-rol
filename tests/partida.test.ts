@@ -20,11 +20,11 @@ function crearBackend() {
     banco: [{ id: 1, nombre: "Orco", zona_id: 1 }, { id: 2, nombre: "Lobo", zona_id: 2 }],
     instancias: [
       {
-        id_instancia: 1, id_mapa: 1, valores_actuales: [{ id_definicion: 1, valor: 10 }],
+        id_instancia: 1, id_mapa: 1, valores_actuales: [{ id_definicion: 1, valor: 10 }], orden: 0, rotacion: 0,
         base: { nombre: "Orco", tipo: "Enemigo", parametros: [{ id_definicion: 1, valor: { Numero: 18 }, publico: false }] }
       },
       {
-        id_instancia: 2, id_mapa: 3, valores_actuales: [] as { id_definicion: number; valor: number }[],
+        id_instancia: 2, id_mapa: 3, valores_actuales: [] as { id_definicion: number; valor: number }[], orden: 1, rotacion: 0,
         base: { nombre: "Lobo", tipo: "Enemigo", parametros: [{ id_definicion: 1, valor: { Numero: 5 }, publico: false }] }
       }
     ],
@@ -87,6 +87,42 @@ function crearBackend() {
         }
         case "modificar_mapa": b.mapas = b.mapas.map((m) => (m.id === args.mapa.id ? clon(args.mapa) : m)); return;
         case "borrar_mapa": b.mapas = b.mapas.filter((m) => m.id !== args.mapa.id); return;
+        // Instancias: imita lo justo de Rust (las reglas de verdad se prueban en instancias.rs)
+        case "instanciar_entidad": {
+          const base = b.banco.find((e) => e.id === args.idEntidad);
+          if (!base) throw "Esa ficha no existe";
+          const i: any = {
+            id_instancia: Math.max(0, ...b.instancias.map((x) => x.id_instancia)) + 1,
+            id_mapa: args.destino?.id_mapa ?? null,
+            coordenadas: args.destino ? { Casilla: args.destino.casilla } : "NoPuesto",
+            valores_actuales: [], base: { ...clon(base), tipo: "Enemigo", parametros: [] },
+            orden: Math.max(-1, ...b.instancias.map((x) => x.orden)) + 1, rotacion: 0
+          };
+          b.instancias.push(i);
+          return clon(i);
+        }
+        case "mover_instancia": {
+          const i: any = b.instancias.find((x) => x.id_instancia === args.idInstancia);
+          if (!i) throw "Esa instancia no existe";
+          i.id_mapa = args.destino?.id_mapa ?? null;
+          i.coordenadas = args.destino ? { Casilla: args.destino.casilla } : "NoPuesto";
+          return;
+        }
+        case "borrar_instancia": b.instancias = b.instancias.filter((x) => x.id_instancia !== args.idInstancia); return;
+        case "rotar_instancia": {
+          const i = b.instancias.find((x) => x.id_instancia === args.idInstancia)!;
+          i.rotacion = (i.rotacion + 1) % 4;
+          return;
+        }
+        case "reordenar_instancias":
+          for (const i of b.instancias) i.orden = args.ids.indexOf(i.id_instancia);
+          return;
+        case "modificar_valor_actual": {
+          const i = b.instancias.find((x) => x.id_instancia === args.idInstancia)!;
+          const v = i.valores_actuales.find((x) => x.id_definicion === args.idDefinicion);
+          if (v) v.valor = Math.max(0, v.valor + args.delta);
+          return;
+        }
         default: throw new Error("comando desconocido: " + cmd);
       }
     }
@@ -325,10 +361,47 @@ describe("fichas: selección y vida", () => {
   it("seleccionar una ficha la expone como instanciaSeleccionada", async () => {
     const partida = await nuevoStore();
     partida.seleccionarInstancia(partida.instancias[1]);
-    expect(partida.idInstanciaSeleccionada).toBe(2);
+    expect(partida.idsSeleccionados).toEqual([2]);
     expect(partida.instanciaSeleccionada?.base.nombre).toBe("Lobo");
     partida.seleccionarInstancia(null);
     expect(partida.instanciaSeleccionada).toBeNull();
+  });
+
+  it("con Shift se añaden o quitan fichas del foco; con varias no hay «una seleccionada»", async () => {
+    const partida = await nuevoStore();
+    const [a, b] = partida.instancias;
+    partida.seleccionarInstancia(a);
+    partida.seleccionarInstancia(b, true);
+    expect(partida.idsSeleccionados).toEqual([1, 2]);
+    expect(partida.instanciaSeleccionada).toBeNull();
+    expect([partida.estaSeleccionada(1), partida.estaSeleccionada(2)]).toEqual([true, true]);
+
+    partida.seleccionarInstancia(a, true); // otra vez con Shift: la quita
+    expect(partida.idsSeleccionados).toEqual([2]);
+    partida.seleccionarInstancia(a); // sin Shift: solo esa
+    expect(partida.idsSeleccionados).toEqual([1]);
+  });
+
+  it("↑/↓ pasan a la ficha anterior/siguiente de «Fichas activas», solo con una con foco", async () => {
+    const partida = await nuevoStore();
+    await partida.reordenarInstancias([2, 1]);
+    expect(partida.instanciasOrdenadas.map((i) => i.id_instancia)).toEqual([2, 1]);
+
+    partida.seleccionarInstancia(partida.instancias.find((i) => i.id_instancia === 2)!);
+    expect(partida.seleccionarVecina(-1)).toBe(false); // ya es la primera
+    expect(partida.seleccionarVecina(1)).toBe(true);
+    expect(partida.idsSeleccionados).toEqual([1]);
+
+    partida.seleccionarInstancia(partida.instancias[1], true); // dos con foco
+    expect(partida.seleccionarVecina(-1)).toBe(false);
+  });
+
+  it("reordenar y rotar llaman a Rust", async () => {
+    const partida = await nuevoStore();
+    await partida.reordenarInstancias([2, 1]);
+    expect(llamadas("reordenar_instancias")[0].args).toEqual({ ids: [2, 1] });
+    await partida.rotarInstancia(1);
+    expect(partida.instancias[0].rotacion).toBe(1);
   });
 
   it("si Rust elimina la ficha seleccionada (al borrar su zona), la selección desaparece sola", async () => {
@@ -338,19 +411,69 @@ describe("fichas: selección y vida", () => {
     expect(partida.instanciaSeleccionada).toBeNull();
   });
 
-  it("modificarValorActual (placeholder) cambia la vida de la ficha y se refleja en la seleccionada", async () => {
+  it("50 pasos de rueda se ven al momento y se mandan como UN cambio de 50 al pasar 1 s", async () => {
     const partida = await nuevoStore();
-    const { valorActual } = await import("$lib/partida.svelte");
-    const vidas = () => partida.instancias.map((i) => valorActual(i, 1));
+    const orco = () => partida.instancias[0]; // vida 10 de 18
+    partida.seleccionarInstancia(orco());
 
+    for (let i = 0; i < 6; i++) partida.cambiarValorActual(1, 1, 1);
+    expect(partida.valorMostrado(orco(), 1)).toBe(16);
+    for (let i = 0; i < 50; i++) partida.cambiarValorActual(1, 1, -1);
+    expect(partida.valorMostrado(orco(), 1)).toBe(0); // nunca baja de 0
+    expect(llamadas("modificar_valor_actual")).toHaveLength(0); // aún nada
+
+    await vi.advanceTimersByTimeAsync(999);
+    expect(llamadas("modificar_valor_actual")).toHaveLength(0);
+    partida.cambiarValorActual(1, 1, 3); // otro paso reinicia la espera
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(llamadas("modificar_valor_actual").map((l) => l.args)).toEqual([{ idInstancia: 1, idDefinicion: 1, delta: -7 }]);
+    expect(partida.valorMostrado(orco(), 1)).toBe(3);
+    expect(partida.valoresPendientes).toEqual({});
+  });
+
+  it("los cambios pendientes no pasan del máximo y se mandan ya si la ficha pierde el foco", async () => {
+    const partida = await nuevoStore();
     partida.seleccionarInstancia(partida.instancias[0]);
-    partida.modificarValorActual(1, 1, -3);
-    expect(valorActual(partida.instanciaSeleccionada!, 1)).toBe(7);
-    partida.modificarValorActual(99, 1, 5); // id inexistente: no hace nada ni falla
-    expect(vidas()).toEqual([7, 5]);
-    // Una instancia que aún no tenía valor actual parte del de su ficha
-    partida.modificarValorActual(2, 1, -1);
-    expect(vidas()).toEqual([7, 4]);
+    for (let i = 0; i < 20; i++) partida.cambiarValorActual(1, 1, 1);
+    expect(partida.valorMostrado(partida.instancias[0], 1)).toBe(18); // el máximo
+
+    partida.seleccionarInstancia(null);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(llamadas("modificar_valor_actual").map((l) => l.args.delta)).toEqual([8]);
+  });
+
+  it("instanciar, mover, quitar del tablero y borrar llaman a Rust y vuelven a leer las instancias", async () => {
+    const partida = await nuevoStore();
+    const destino = { id_mapa: 1, casilla: { x: 3, y: 4 } };
+
+    await partida.instanciar(1, destino);
+    expect(llamadas("instanciar_entidad")[0].args).toEqual({ idEntidad: 1, destino });
+    expect(partida.instancias).toHaveLength(3);
+    expect(partida.idsSeleccionados).toEqual([3]); // la nueva queda seleccionada
+
+    await partida.instanciar(2, null); // solo activa
+    expect(partida.instancias[3].coordenadas).toBe("NoPuesto");
+
+    await partida.moverInstancia(4, { id_mapa: 1, casilla: { x: 0, y: 0 } });
+    expect(partida.instancias[3].coordenadas).toEqual({ Casilla: { x: 0, y: 0 } });
+
+    await partida.quitarDelTablero(4);
+    expect(llamadas("mover_instancia")[1].args).toEqual({ idInstancia: 4, destino: null });
+    expect(partida.instancias[3].id_mapa).toBeNull();
+
+    partida.seleccionarInstancia(partida.instancias[3]);
+    await partida.borrarInstancia(4);
+    expect(partida.instancias.map((i) => i.id_instancia)).toEqual([1, 2, 3]);
+    expect(partida.idsSeleccionados).toEqual([]);
+  });
+
+  it("si Rust rechaza el cambio, no rompe nada y las instancias se releen igual", async () => {
+    const partida = await nuevoStore();
+    const error = vi.spyOn(console, "error").mockImplementation(() => {});
+    await partida.moverInstancia(99, { id_mapa: 1, casilla: { x: 0, y: 0 } });
+    expect(error).toHaveBeenCalled();
+    expect(partida.instancias).toHaveLength(2);
+    error.mockRestore();
   });
 
   it("carga las definiciones de los parámetros al arrancar", async () => {

@@ -10,6 +10,28 @@ beforeEach(async () => {
   ({ FormularioParametro, resumenDefinicion } = await import("$lib/formularioParametro.svelte"));
 });
 
+describe("forma «Resumen»", () => {
+  it("solo se ofrece y solo vale con máximo, y se pinta opaca", async () => {
+    const { formasDisponibles } = await import("$lib/formularioParametro.svelte");
+    expect(formasDisponibles(false).some((f) => f.valor === "Resumen")).toBe(false);
+    expect(formasDisponibles(true).some((f) => f.valor === "Resumen")).toBe(true);
+
+    const f = new FormularioParametro();
+    f.clave = "Maná";
+    f.valorNumero = 20;
+    f.tieneMaximo = true;
+    f.forma = "Resumen";
+    f.color = "#00ff00";
+    expect(f.aDefinicion().representar_mapa).toEqual({ Resumen: [0, 255, 0, 255] });
+    expect(resumenDefinicion({ ...f.aDefinicion(), id: 9 })).toContain("Resumen (actual/máx)");
+
+    // Quitar el máximo quita el resumen
+    f.tieneMaximo = false;
+    expect(f.forma).toBe("ninguna");
+    expect(f.aDefinicion().representar_mapa).toBeNull();
+  });
+});
+
 describe("FormularioParametro", () => {
   it("convierte lo escrito en una definición sin id", () => {
     const f = new FormularioParametro();

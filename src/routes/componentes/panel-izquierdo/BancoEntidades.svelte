@@ -6,6 +6,10 @@
   import { miniaturas } from "$lib/miniaturas.svelte";
   import { esImagen, importarImagen } from "$lib/imagenes";
   import { alSoltarArchivos } from "$lib/soltarArchivos";
+  import { arrastre } from "$lib/arrastreFicha.svelte";
+
+  // Soltar aquí una instancia la elimina: se marca el banco mientras pasa por encima
+  const recibeInstancia = $derived(arrastre.actual?.zona === "banco" && "instancia" in arrastre.actual.origen);
 
   // Filtros
   let busqueda = $state("");
@@ -75,7 +79,7 @@
   );
 </script>
 
-<div class="banco">
+<div class="banco" data-destino="banco" class:destino={recibeInstancia}>
   <!-- Zona de búsqueda y filtros -->
   <div class="sub-busqueda">
     <div class="fila-cabecera">
@@ -151,8 +155,9 @@
         type="button"
         class="fila-entidad"
         use:vigilarVisibilidad={item.id}
-        onclick={() => partida.abrirEditorEntidad(item)}
-        title="Clic para editar ficha"
+        onpointerdown={(e) => arrastre.preparar(e, { entidad: item })}
+        onclick={() => !arrastre.esClicDeArrastre() && partida.abrirEditorEntidad(item)}
+        title="Clic: editar ficha · Arrastrar: al tablero o a «Fichas activas»"
       >
         {#if item.tipo === "NPC"}
           <div class="contenedor-rombo">
@@ -193,6 +198,7 @@
     gap: 5px;
     overflow: hidden;
   }
+  .banco.destino { outline: 1px dashed #ef4444; outline-offset: -1px; background: rgba(239, 68, 68, 0.06); }
   .sub-busqueda { display: flex; flex-direction: column; gap: 4px; }
   .fila-cabecera { display: flex; justify-content: space-between; align-items: center; }
   .titulo-mini { font-size: 10px; font-weight: bold; color: #71717a; }

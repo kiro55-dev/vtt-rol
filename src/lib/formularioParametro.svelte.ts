@@ -6,15 +6,22 @@
 import { hexARgba, rgbAHex, type DefinicionParametro, type Forma, type Visibilidad } from "$lib/partida.svelte";
 
 export type TipoParametro = "Numero" | "Texto";
-export type TipoForma = "ninguna" | "Rombo" | "Circulo" | "Cuadrado" | "BarraVida";
+export type TipoForma = "ninguna" | "Rombo" | "Circulo" | "Cuadrado" | "BarraVida" | "Resumen";
 
 export const FORMAS: { valor: TipoForma; texto: string }[] = [
   { valor: "ninguna", texto: "No se dibuja" },
   { valor: "Rombo", texto: "Rombo" },
   { valor: "Circulo", texto: "Círculo" },
   { valor: "Cuadrado", texto: "Cuadrado" },
-  { valor: "BarraVida", texto: "Barra de vida" }
+  { valor: "BarraVida", texto: "Barra de vida" },
+  // Solo para parámetros con máximo (ver `formasDisponibles`)
+  { valor: "Resumen", texto: "Resumen (actual/máx)" }
 ];
+
+/** Formas que se pueden elegir: «Resumen» solo tiene sentido con máximo. */
+export function formasDisponibles(tieneMaximo: boolean) {
+  return FORMAS.filter((f) => tieneMaximo || f.valor !== "Resumen");
+}
 
 export const VISIBILIDADES: { valor: Visibilidad; texto: string }[] = [
   { valor: "Variable", texto: "Cada ficha decide" },
@@ -33,11 +40,20 @@ export class FormularioParametro {
   tipo = $state<TipoParametro>("Numero");
   valorNumero = $state<number>(0);
   valorTexto = $state("");
-  tieneMaximo = $state(false);
+  #tieneMaximo = $state(false);
   unidad = $state("");
   visibilidad = $state<Visibilidad>("Variable");
   forma = $state<TipoForma>("ninguna");
   color = $state("#3b82f6");
+
+  get tieneMaximo() {
+    return this.#tieneMaximo;
+  }
+  /** Sin máximo no hay «actual/máx»: si estaba elegido el Resumen, la forma se quita. */
+  set tieneMaximo(v: boolean) {
+    this.#tieneMaximo = v;
+    if (!v && this.forma === "Resumen") this.forma = "ninguna";
+  }
 
   get esNumero() {
     return this.tipo === "Numero";
@@ -61,9 +77,11 @@ export class FormularioParametro {
     }
 
     // Lo que solo tiene sentido con números se ignora en un texto, aunque antes se hubiera marcado
+    const resumenSinMaximo = this.forma === "Resumen" && !this.tieneMaximo;
     const forma: Forma | null =
-      this.esNumero && this.forma !== "ninguna"
-        ? ({ [this.forma]: hexARgba(this.color, OPACIDAD_FORMA) } as Forma)
+      this.esNumero && this.forma !== "ninguna" && !resumenSinMaximo
+        ? // El resumen es texto: se pinta opaco
+          ({ [this.forma]: hexARgba(this.color, this.forma === "Resumen" ? 1 : OPACIDAD_FORMA) } as Forma)
         : null;
 
     return {

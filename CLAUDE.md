@@ -57,12 +57,31 @@ Invariants to preserve when adding state changes:
 - Entity drafts: `iniciar_borrador_entidad` reserves a real id (tracked in `AppState.borradores`) so attachments go straight into `archivos/entidad_<id>/`. Cancelling calls `cancelar_borrador_entidad`.
 
 ### Domain model
-[modelos.rs](src-tauri/src/tablero_general/modelos.rs) is mirrored by hand in TypeScript interfaces at the top of [src/lib/partida.svelte.ts](src/lib/partida.svelte.ts). Keep the two in sync (serde's default enum encoding, e.g. `Cuerpo = "Pequenio" | { Grande: number[] }`). `Zona` contains `Mapa`s. An `Entidad` (= ficha) is a template in the bank. An `Instancia` is a placed or active copy. Instance deltas are not implemented yet (commented out in `DeltaPartida`).
+[modelos.rs](src-tauri/src/tablero_general/modelos.rs) is mirrored by hand in TypeScript interfaces at the top of [src/lib/partida.svelte.ts](src/lib/partida.svelte.ts). Keep the two in sync (serde's default enum encoding, e.g. `Cuerpo = "Pequenio" | { Grande: number[] }`). `Zona` contains `Mapa`s. An `Entidad` (= ficha) is a template in the bank. An `Instancia` is an active copy, placed on a map cell or not (`id_mapa: None`, `NoPuesto`).
+
+Instances:
+- **Rules.** They live in [instancias.rs](src-tauri/src/tablero_general/instancias.rs): pure functions that build the delta (`InstanciaCreada`/`InstanciaModificada`/`InstanciaBorrada`/`ValorActualModificado`) with everything resolved (new id, cell fitted with `encajar`), and the commands only register it.
+- **Unique fichas.** A unique ficha that already has an instance reuses it (same id and current values) instead of creating another.
+- **Current values.** `ajustar_a_definiciones` keeps one current value per parameter with a maximum, and it stays between 0 and the max.
+- **Dragging** (banco ↔ tablero ↔ «Fichas activas») goes through [arrastreFicha.svelte.ts](src/lib/arrastreFicha.svelte.ts):
+  - It uses pointer events, not HTML5 DnD (Tauri intercepts it on Windows).
+  - Drop zones carry `data-destino`.
+  - `accionAlSoltar` holds the whole rule table.
+- **On the board.** Tokens are drawn by [fichasTablero.ts](src/lib/fichasTablero.ts): a square covering the body with a type-colored border (Enemigo red, NPC blue, Jugador green).
+  - Left-drag on a token moves it.
+  - Right-click without dragging rotates it 90° clockwise: `Instancia.rotacion`, and `lados_instancia`/`ladosInstancia` swap the sides around the same center.
+  - Dragging it to «Fichas activas» takes it off the board.
+- **Order and focus.** `Instancia.orden` is the order in «Fichas activas», changed via `InstanciasReordenadas`. Focus is a set (`partida.idsSeleccionados`, Shift adds).
+  - Focused tokens draw their parameter shapes, measured from the body's edges so the four reference points land on grid lines (`extremosForma`).
+  - A left click anywhere outside elements marked `data-conserva-foco` clears the focus.
+- **Current-value edits** (wheel, −/+) are batched in `partida.valoresPendientes` and sent as ONE `modificar_valor_actual` per value. They are sent 1 s after the last change, or earlier when the focus changes or the game is switched.
 
 Entity stats (vida, armadura...) are not fixed fields. They work on three levels:
 - `EstadoPartida.definiciones_parametros` (`DefinicionParametro`) holds the parameters shared by all entities. Defaults come from `parametros_por_defecto()`, with fixed ids `ID_VIDA`..`ID_RANGO_ARMA`.
 - `Entidad.parametros` (`Parametro`) holds each entity's value and its `publico` flag, one per definition, in definition order.
 - `Instancia.valores_actuales` (`ValorActual`) exists only for definitions with `tiene_maximo` (e.g. current vida). The entity's value is the maximum.
+
+`Forma::Resumen` (only with `tiene_maximo`) shows `actual/max` on the instance card in «Fichas activas».
 
 Definitions change through the deltas `ParametroCreado`/`ParametroBorrado`/`ParametrosReordenados`, which call `EstadoPartida::ajustar_a_definiciones` so every entity and instance follows (a deleted parameter disappears from all of them). The UI is `VentanaParametros.svelte`, opened from the gear button at the bottom-left of the left panel (`BotonAjustes`, which takes a list of options so more can be added in `PanelIzquierdo`).
 

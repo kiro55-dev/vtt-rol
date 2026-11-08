@@ -18,6 +18,8 @@ use tablero_general::partida::{
     modificar_entidad, modificar_mapa, modificar_zona, obtener_banco_entidades, obtener_definiciones_parametros,
     obtener_dir_datos,
     obtener_historial_personal, obtener_historial_tiradas, obtener_instancias_activas,
+    instanciar_entidad, mover_instancia, borrar_instancia, modificar_valor_actual, rotar_instancia,
+    reordenar_instancias,
     obtener_mapas_zona, obtener_miniatura, obtener_zonas, renombrar_archivo_adjunto,
 };
 
@@ -91,6 +93,12 @@ pub fn run() {
             obtener_mapas_zona,
             obtener_banco_entidades,
             obtener_instancias_activas,
+            instanciar_entidad,
+            mover_instancia,
+            borrar_instancia,
+            modificar_valor_actual,
+            rotar_instancia,
+            reordenar_instancias,
             obtener_historial_tiradas,
             obtener_historial_personal,
             crear_zona,

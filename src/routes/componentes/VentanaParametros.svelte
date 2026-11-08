@@ -8,7 +8,7 @@
   import { partida, type DefinicionParametro } from "$lib/partida.svelte";
   import { ListaOrdenable } from "$lib/ordenable.svelte";
   import { moverVentana } from "$lib/moverVentana";
-  import { FormularioParametro, FORMAS, VISIBILIDADES, resumenDefinicion } from "$lib/formularioParametro.svelte";
+  import { FormularioParametro, formasDisponibles, VISIBILIDADES, resumenDefinicion } from "$lib/formularioParametro.svelte";
   import ArrastreFlotante from "./comunes/ArrastreFlotante.svelte";
 
   let { onCerrar }: { onCerrar: () => void } = $props();
@@ -192,7 +192,7 @@
 
             <label for="p-forma">En el tablero:</label>
             <select id="p-forma" class="select" bind:value={formulario.forma}>
-              {#each FORMAS as f}<option value={f.valor}>{f.texto}</option>{/each}
+              {#each formasDisponibles(formulario.tieneMaximo) as f}<option value={f.valor}>{f.texto}</option>{/each}
             </select>
             {#if formulario.forma !== "ninguna"}
               <input type="color" class="input-color" aria-label="Color de la forma" bind:value={formulario.color} />

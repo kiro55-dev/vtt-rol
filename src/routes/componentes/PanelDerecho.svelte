@@ -26,6 +26,6 @@
     font-size: 12px;
   }
   .sub-fichas-activas { flex: 1.2; display: flex; flex-direction: column; overflow: hidden; }
-  .sub-parametros { height: 150px; display: flex; flex-direction: column; }
+  .sub-parametros { height: 190px; display: flex; flex-direction: column; }
   .sub-tiradas { height: 200px; display: flex; flex-direction: column; }
 </style>

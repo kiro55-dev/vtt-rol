@@ -38,7 +38,13 @@ export type Cuerpo = "Pequenio" | { Grande: number[] };
 export type ValorParametro = { Numero: number } | { Texto: string };
 export type Visibilidad = "SiemprePublico" | "SiemprePrivado" | "Variable";
 /** El array es RGBA */
-export type Forma = { Rombo: number[] } | { Circulo: number[] } | { Cuadrado: number[] } | { BarraVida: number[] };
+export type Forma =
+  | { Rombo: number[] }
+  | { Circulo: number[] }
+  | { Cuadrado: number[] }
+  | { BarraVida: number[] }
+  /** Solo con máximo: «actual/máx» en «Fichas activas», en ese color */
+  | { Resumen: number[] };
 
 export interface DefinicionParametro {
   id: number;
@@ -100,6 +106,12 @@ export interface Casilla {
 // En una ficha de varias casillas es la casilla CENTRAL
 export type Coordenada = "NoPuesto" | { Casilla: Casilla };
 
+/** Dónde poner una instancia: una casilla de un mapa (null = activa, fuera del tablero). */
+export interface Destino {
+  id_mapa: number;
+  casilla: Casilla;
+}
+
 export interface Instancia {
   id_instancia: number;
   id_mapa: number | null;
@@ -107,6 +119,10 @@ export interface Instancia {
   valores_actuales: ValorActual[];
   coordenadas: Coordenada;
   activo?: boolean;
+  /** Cuartos de vuelta en el sentido del reloj (0..3); con uno impar, ancho y alto se intercambian */
+  rotacion: number;
+  /** Posición en «Fichas activas» */
+  orden: number;
 }
 
 export interface Rejilla {
@@ -123,6 +139,9 @@ const REJILLA_DEFECTO: Rejilla = { visible: true, tamano: 50, color: "#ffffff", 
 
 // Los cambios de rejilla se agrupan: se guardan 5 s después del último, o antes si hace falta.
 const ESPERA_GUARDADO_MS = 5000;
+/** Los cambios de valores actuales (vida...) se mandan 1 s después del último. */
+const ESPERA_VALORES_MS = 1000;
+const claveValor = (idInstancia: number, idDefinicion: number) => `${idInstancia}:${idDefinicion}`;
 
 const porOrden = (a: { orden?: number }, b: { orden?: number }) => (a.orden ?? 0) - (b.orden ?? 0);
 
@@ -153,12 +172,19 @@ class Partida {
   /** Parámetros comunes a todas las fichas (vida, armadura...). */
   definiciones = $state<DefinicionParametro[]>([]);
 
-  /** Solo se guarda el id: la ficha seleccionada se actualiza sola al recargar las instancias,
-   *  y desaparece si Rust la elimina (p. ej. al borrar su zona). */
-  idInstanciaSeleccionada = $state<number | null>(null);
-  instanciaSeleccionada = $derived(
-    this.instancias.find((i) => i.id_instancia === this.idInstanciaSeleccionada) ?? null
-  );
+  /** «Fichas activas» de arriba abajo. */
+  instanciasOrdenadas = $derived([...this.instancias].sort((a, b) => a.orden - b.orden || a.id_instancia - b.id_instancia));
+
+  /** Fichas con el foco (varias con Shift). Solo se guardan los ids: se actualizan solas al recargar
+   *  las instancias y desaparecen si Rust las elimina (p. ej. al borrar su zona). */
+  idsSeleccionados = $state<number[]>([]);
+  seleccionadas = $derived(this.instancias.filter((i) => this.idsSeleccionados.includes(i.id_instancia)));
+  /** La ficha con el foco si hay exactamente una (sus parámetros se ven y se pueden cambiar). */
+  instanciaSeleccionada = $derived(this.seleccionadas.length === 1 ? this.seleccionadas[0] : null);
+
+  /** Cambios de valores actuales aún sin mandar a Rust, por "idInstancia:idDefinicion" (ver `cambiarValorActual`). */
+  valoresPendientes = $state<Record<string, number>>({});
+  #temporizadorValores: ReturnType<typeof setTimeout> | null = null;
 
   /** `null` = no hay ninguna zona (todavía no se ha creado, o se borró la última). */
   zonaId = $state<number | null>(null);
@@ -207,8 +233,9 @@ class Partida {
   }
 
   async #alternar(cmd: string, nombre: string) {
-    // Un cambio de rejilla pendiente (se guarda 5 s después) se escribiría en la partida nueva
+    // Un cambio de rejilla o de valores pendiente se escribiría en la partida nueva
     await this.guardarRejilla();
+    await this.guardarValoresPendientes();
     try {
       await invoke(cmd, { nombre });
     } finally {
@@ -223,7 +250,7 @@ class Partida {
     this.instancias = [];
     this.zonaId = null;
     this.mapaActual = null;
-    this.idInstanciaSeleccionada = null;
+    this.idsSeleccionados = [];
     this.rejilla = { ...REJILLA_DEFECTO };
     miniaturas.limpiar(); // sus URLs llevan dentro la carpeta de la partida anterior
     await this.iniciar();
@@ -321,18 +348,146 @@ class Partida {
   // Fichas (instancias activas)
   // ------------------------------------------------------------------
 
-  seleccionarInstancia(instancia: Instancia | null) {
-    this.idInstanciaSeleccionada = instancia?.id_instancia ?? null;
+  /**
+   * Da el foco a una ficha (`null` = a ninguna). Con `anadir` (Shift) la añade o la quita del
+   * conjunto en vez de sustituirlo. Los valores cambiados de la que pierde el foco se guardan ya.
+   */
+  seleccionarInstancia(instancia: Instancia | null, anadir = false) {
+    const ids = this.idsSeleccionados;
+    let nuevos: number[];
+    if (!instancia) nuevos = [];
+    else if (!anadir) nuevos = [instancia.id_instancia];
+    else if (ids.includes(instancia.id_instancia)) nuevos = ids.filter((id) => id !== instancia.id_instancia);
+    else nuevos = [...ids, instancia.id_instancia];
+
+    if (nuevos.length === ids.length && nuevos.every((id, i) => id === ids[i])) return;
+    this.idsSeleccionados = nuevos;
+    void this.guardarValoresPendientes();
   }
 
-  /** PLACEHOLDER: de momento solo cambia el valor en memoria. Cuando exista el comando de Rust
-   *  (con el delta `ValorActualModificado`), se llama aquí y los componentes no cambian. */
-  modificarValorActual(idInstancia: number, idDefinicion: number, delta: number) {
+  estaSeleccionada(idInstancia: number) {
+    return this.idsSeleccionados.includes(idInstancia);
+  }
+
+  /** Con una sola ficha con foco, lo pasa a la anterior (-1) o la siguiente (+1) de «Fichas activas». */
+  seleccionarVecina(paso: -1 | 1): boolean {
+    const actual = this.instanciaSeleccionada;
+    if (!actual || this.idsSeleccionados.length !== 1) return false;
+    const lista = this.instanciasOrdenadas;
+    const vecina = lista[lista.findIndex((i) => i.id_instancia === actual.id_instancia) + paso];
+    if (!vecina) return false;
+    this.seleccionarInstancia(vecina);
+    return true;
+  }
+
+  // ------------------------------------------------------------------
+  // Valores actuales (vida...): se agrupan antes de mandarlos
+  // ------------------------------------------------------------------
+
+  /** Valor actual que se ve: el de Rust más lo que aún no se ha mandado. */
+  valorMostrado(instancia: Instancia, idDefinicion: number): number {
+    return valorActual(instancia, idDefinicion) + (this.valoresPendientes[claveValor(instancia.id_instancia, idDefinicion)] ?? 0);
+  }
+
+  /**
+   * Suma `delta` a un valor con máximo (p. ej. la vida), entre 0 y el máximo. Se ve al momento pero
+   * no se manda a Rust hasta 1 s después del último cambio (o antes si la ficha pierde el foco):
+   * 50 pasos de rueda son UN delta de 50, no 50 deltas.
+   */
+  cambiarValorActual(idInstancia: number, idDefinicion: number, delta: number) {
     const instancia = this.instancias.find((i) => i.id_instancia === idInstancia);
-    if (!instancia) return;
-    const actual = instancia.valores_actuales.find((v) => v.id_definicion === idDefinicion);
-    if (actual) actual.valor += delta;
-    else instancia.valores_actuales.push({ id_definicion: idDefinicion, valor: valorActual(instancia, idDefinicion) + delta });
+    if (!instancia || delta === 0) return;
+    const clave = claveValor(idInstancia, idDefinicion);
+    const actual = valorActual(instancia, idDefinicion);
+    const maximo = numeroDe(instancia.base, idDefinicion);
+    const nuevo = Math.min(maximo, Math.max(0, this.valorMostrado(instancia, idDefinicion) + delta));
+    if (nuevo === actual) delete this.valoresPendientes[clave];
+    else this.valoresPendientes[clave] = nuevo - actual;
+
+    if (this.#temporizadorValores) clearTimeout(this.#temporizadorValores);
+    this.#temporizadorValores = setTimeout(() => void this.guardarValoresPendientes(), ESPERA_VALORES_MS);
+  }
+
+  /** Manda ya los valores pendientes: uno por cada valor cambiado, con la suma de todos sus pasos. */
+  async guardarValoresPendientes() {
+    if (this.#temporizadorValores) clearTimeout(this.#temporizadorValores);
+    this.#temporizadorValores = null;
+    const enviados = Object.entries(this.valoresPendientes).filter(([, delta]) => delta !== 0);
+    if (enviados.length === 0) return;
+
+    for (const [clave, delta] of enviados) {
+      const [idInstancia, idDefinicion] = clave.split(":").map(Number);
+      try {
+        await invoke("modificar_valor_actual", { idInstancia, idDefinicion, delta });
+      } catch (err) {
+        console.error("modificar_valor_actual:", err);
+      }
+    }
+    this.instancias = await invoke<Instancia[]>("obtener_instancias_activas");
+    // Lo mandado ya está en el valor de Rust; lo que se haya cambiado mientras tanto sigue pendiente
+    for (const [clave, delta] of enviados) {
+      const resto = (this.valoresPendientes[clave] ?? 0) - delta;
+      if (resto === 0) delete this.valoresPendientes[clave];
+      else this.valoresPendientes[clave] = resto;
+    }
+  }
+
+  // ------------------------------------------------------------------
+  // Instancias
+  // ------------------------------------------------------------------
+
+  /** Gira la ficha un cuarto de vuelta en el sentido del reloj (Rust la mete en el mapa si no cabe). */
+  async rotarInstancia(idInstancia: number) {
+    await this.#cambiarInstancias("rotar_instancia", { idInstancia });
+  }
+
+  /** Nuevo orden de «Fichas activas» (todos los ids, de arriba abajo). */
+  async reordenarInstancias(ids: number[]) {
+    // Se ve al momento; Rust lo confirma al releer
+    this.instancias = this.instancias.map((i) => ({ ...i, orden: Math.max(0, ids.indexOf(i.id_instancia)) }));
+    await this.#cambiarInstancias("reordenar_instancias", { ids });
+  }
+
+  /**
+   * Instancia una ficha del banco en una casilla (`destino`) o solo como activa (null). Una ficha
+   * única que ya tenía instancia la reutiliza (Rust decide). La instancia queda seleccionada.
+   */
+  async instanciar(idEntidad: number, destino: Destino | null) {
+    const instancia = await this.#cambiarInstancias<Instancia>("instanciar_entidad", { idEntidad, destino });
+    if (instancia) this.seleccionarInstancia(instancia);
+  }
+
+  /** Pone una instancia en otra casilla (la casilla final la encaja Rust). */
+  async moverInstancia(idInstancia: number, destino: Destino) {
+    await this.#cambiarInstancias("mover_instancia", { idInstancia, destino });
+  }
+
+  /** La saca del tablero; sigue en «Fichas activas». */
+  async quitarDelTablero(idInstancia: number) {
+    await this.#cambiarInstancias("mover_instancia", { idInstancia, destino: null });
+  }
+
+  /** Deja de estar activa. */
+  async borrarInstancia(idInstancia: number) {
+    // Lo pendiente de una ficha que desaparece ya no hace falta
+    for (const clave of Object.keys(this.valoresPendientes)) {
+      if (clave.startsWith(`${idInstancia}:`)) delete this.valoresPendientes[clave];
+    }
+    await this.#cambiarInstancias("borrar_instancia", { idInstancia });
+    this.idsSeleccionados = this.idsSeleccionados.filter((id) => id !== idInstancia);
+  }
+
+  // Llama a Rust y vuelve a leer las instancias. Un error (instancia o mapa que ya no existe) se
+  // muestra en consola: el arrastre ya terminó y no hay dónde enseñarlo.
+  async #cambiarInstancias<T = void>(comando: string, args: Record<string, unknown>): Promise<T | undefined> {
+    try {
+      return await invoke<T>(comando, args);
+    } catch (err) {
+      console.error(`${comando}:`, err);
+      return undefined;
+    } finally {
+      this.instancias = await invoke<Instancia[]>("obtener_instancias_activas");
+    }
   }
 
   // ------------------------------------------------------------------

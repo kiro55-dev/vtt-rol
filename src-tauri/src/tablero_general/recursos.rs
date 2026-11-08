@@ -68,6 +68,7 @@ pub fn afecta_a_recursos(delta: &DeltaPartida) -> bool {
             | DeltaPartida::MapaBorrado(_)
             | DeltaPartida::EntidadModificada(_)
             | DeltaPartida::EntidadBorrada(_)
+            | DeltaPartida::InstanciaBorrada(_)
     )
 }
 

@@ -41,12 +41,15 @@ pub enum DeltaPartida {
     /// Quita un parámetro de la partida y, con él, su valor en todas las fichas e instancias.
     ParametroBorrado(u16),
     /// Nuevo orden de los parámetros (ids). Las fichas lo siguen.
-    ParametrosReordenados(Vec<u16>)
-    /*
-    InstanciaCreada(),
-    InstanciaModificada(),
-    InstanciaBorrada()
-    */
+    ParametrosReordenados(Vec<u16>),
+    /// Instancia nueva (o reemplaza la de ese id). Las reglas para construirla están en `instancias.rs`.
+    InstanciaCreada(Instancia),
+    /// Instancia cambiada entera: movida, quitada del tablero o una ficha única reutilizada.
+    InstanciaModificada(Instancia),
+    /// Deja de estar activa (desaparece).
+    InstanciaBorrada(u16),
+    /// Nuevo orden de «Fichas activas» (ids de arriba abajo): cada una recibe su posición en `orden`.
+    InstanciasReordenadas(Vec<u16>),
 }
 
 /// Línea de deltas.jsonl al LEER.
@@ -208,13 +211,7 @@ impl EstadoPartida {
                     self.mapas[pos] = mapa.clone();
 
                     // Si la rejilla o el tamaño cambian, una ficha podría quedar fuera: vuelve al borde.
-                    let rejilla = tablero::Rejilla::de(mapa);
-                    for inst in self.instancias_activas.iter_mut().filter(|i| i.id_mapa == Some(mapa.id)) {
-                        if let Coordenada::Casilla(c) = inst.coordenadas {
-                            let lados = tablero::tamano_cuerpo(&inst.base.cuerpo);
-                            inst.coordenadas = Coordenada::Casilla(tablero::encajar(rejilla, c, lados));
-                        }
-                    }
+                    self.reencajar_instancias(|i| i.id_mapa == Some(mapa.id));
                 }
             }
             DeltaPartida::MapaBorrado(mapa) => {
@@ -254,6 +251,9 @@ impl EstadoPartida {
                         inst.base = entidad.clone();
                     }
                 }
+
+                // 3. Si el cuerpo creció, puede salirse del mapa: se reencaja
+                self.reencajar_instancias(|i| i.base.id == entidad.id);
             }
             DeltaPartida::EntidadBorrada(entidad) => {
                 // 1. La eliminamos del banco de entidades
@@ -273,6 +273,23 @@ impl EstadoPartida {
                 self.definiciones_parametros.retain(|d| d.id != *id);
                 self.ajustar_a_definiciones();
             }
+            DeltaPartida::InstanciaCreada(inst) | DeltaPartida::InstanciaModificada(inst) => {
+                if let Some(pos) = self.instancias_activas.iter().position(|i| i.id_instancia == inst.id_instancia) {
+                    self.instancias_activas[pos] = inst.clone();
+                } else if matches!(delta, DeltaPartida::InstanciaCreada(_)) {
+                    self.instancias_activas.push(inst.clone());
+                }
+            }
+            DeltaPartida::InstanciaBorrada(id) => {
+                self.instancias_activas.retain(|i| i.id_instancia != *id);
+            }
+            DeltaPartida::InstanciasReordenadas(ids) => {
+                for inst in self.instancias_activas.iter_mut() {
+                    if let Some(pos) = ids.iter().position(|id| *id == inst.id_instancia) {
+                        inst.orden = pos as u16;
+                    }
+                }
+            }
             DeltaPartida::ParametrosReordenados(ids) => {
                 // Los que no aparezcan en la lista (no debería pasar) se quedan al final, en su orden
                 self.definiciones_parametros
@@ -285,6 +302,17 @@ impl EstadoPartida {
     /// Deja las fichas e instancias acordes con las definiciones: un parámetro por definición y en su
     /// orden (rellena con el valor por defecto, quita los de definiciones que ya no existen) y solo
     /// lleva valor actual lo que sigue teniendo máximo.
+    /// Mete dentro de su mapa las instancias colocadas que cumplan `filtro` (tras cambiar la rejilla,
+    /// el tamaño del mapa o el cuerpo de la ficha).
+    fn reencajar_instancias(&mut self, filtro: impl Fn(&Instancia) -> bool) {
+        for inst in self.instancias_activas.iter_mut().filter(|i| filtro(i)) {
+            let (Coordenada::Casilla(c), Some(id_mapa)) = (inst.coordenadas, inst.id_mapa) else { continue };
+            let Some(mapa) = self.mapas.iter().find(|m| m.id == id_mapa) else { continue };
+            let lados = tablero::lados_instancia(inst);
+            inst.coordenadas = Coordenada::Casilla(tablero::encajar(tablero::Rejilla::de(mapa), c, lados));
+        }
+    }
+
     pub fn ajustar_a_definiciones(&mut self) {
         let defs = self.definiciones_parametros.clone();
         for e in self.banco_entidades.iter_mut() {
@@ -292,7 +320,13 @@ impl EstadoPartida {
         }
         for i in self.instancias_activas.iter_mut() {
             normalizar_parametros(&defs, &mut i.base.parametros);
-            i.valores_actuales.retain(|v| defs.iter().any(|d| d.id == v.id_definicion && d.tiene_maximo));
+            // Un valor actual por cada parámetro con máximo, en el orden de las definiciones. Uno que
+            // gana el máximo después de crearse la instancia empieza lleno (en el valor de la ficha).
+            let antes = std::mem::take(&mut i.valores_actuales);
+            i.valores_actuales = crate::tablero_general::instancias::valores_iniciales(&defs, &i.base)
+                .into_iter()
+                .map(|nuevo| antes.iter().find(|v| v.id_definicion == nuevo.id_definicion).cloned().unwrap_or(nuevo))
+                .collect();
         }
     }
 
@@ -433,6 +467,8 @@ mod tests {
             valores_actuales: vec![ValorActual { id_definicion: ID_VIDA, valor: vida }],
             coordenadas: Coordenada::NoPuesto,
             activo: true,
+            rotacion: 0,
+            orden: id,
         }
     }
 
@@ -480,7 +516,9 @@ mod tests {
             assert_eq!(claves(&e), ["Cordura", "Armadura", "Velocidad", "Rango arma"]);
             assert!(e.banco_entidades[0].parametros.iter().all(|p| p.id_definicion != ID_VIDA));
             assert!(e.instancias_activas[0].base.parametros.iter().all(|p| p.id_definicion != ID_VIDA));
-            assert!(e.instancias_activas[0].valores_actuales.is_empty());
+            // Solo queda el de Cordura, que también tiene máximo
+            let ids: Vec<u16> = e.instancias_activas[0].valores_actuales.iter().map(|v| v.id_definicion).collect();
+            assert_eq!(ids, [5]);
         }
 
         // Recargar desde el log reproduce lo mismo
@@ -591,6 +629,64 @@ mod tests {
         assert_eq!(e.ultimo_seq, 3);
         assert_eq!(e.zonas.len(), 1);
         assert_eq!(e.mapas[0].rejilla, 70);
+    }
+
+    #[test]
+    fn los_deltas_de_instancia_se_reproducen_desde_el_log() {
+        let dir = dir_temporal("instancias_log");
+        {
+            let a = Almacen::abrir(&dir).unwrap();
+            let mut e = EstadoPartida::default();
+            e.registrar(&a, DeltaPartida::MapaCreado(zona(1), mapa(1, 1))).unwrap();
+            let mut i = instancia(1, 20);
+            e.registrar(&a, DeltaPartida::InstanciaCreada(i.clone())).unwrap();
+            e.registrar(&a, DeltaPartida::InstanciaCreada(instancia(2, 20))).unwrap();
+            i.id_mapa = Some(1);
+            i.coordenadas = Coordenada::Casilla(Casilla { x: 3, y: 4 });
+            e.registrar(&a, DeltaPartida::InstanciaModificada(i)).unwrap();
+            e.registrar(&a, DeltaPartida::InstanciaBorrada(2)).unwrap();
+        }
+        let (e, informe) = cargar(&Almacen::abrir(&dir).unwrap()).unwrap();
+        assert_eq!(informe.deltas_aplicados, 5);
+        assert_eq!(e.instancias_activas.len(), 1);
+        assert_eq!(e.instancias_activas[0].coordenadas, Coordenada::Casilla(Casilla { x: 3, y: 4 }));
+
+        // Modificar una que no existe no la crea
+        let mut e = e;
+        e.aplicar_delta(&DeltaPartida::InstanciaModificada(instancia(9, 1)));
+        assert_eq!(e.instancias_activas.len(), 1);
+    }
+
+    #[test]
+    fn si_crece_el_cuerpo_de_la_ficha_sus_instancias_se_reencajan() {
+        let mut e = EstadoPartida::default();
+        e.aplicar_delta(&DeltaPartida::MapaCreado(zona(1), mapa(1, 1))); // 20×20
+        let mut i = instancia(1, 5);
+        i.id_mapa = Some(1);
+        i.coordenadas = Coordenada::Casilla(Casilla { x: 19, y: 0 });
+        e.instancias_activas.push(i.clone());
+
+        let mut grande = i.base.clone();
+        grande.cuerpo = Cuerpo::Grande(vec![3, 3]);
+        e.aplicar_delta(&DeltaPartida::EntidadModificada(grande));
+        assert_eq!(e.instancias_activas[0].coordenadas, Coordenada::Casilla(Casilla { x: 18, y: 1 }));
+    }
+
+    #[test]
+    fn cada_instancia_tiene_un_valor_actual_por_parametro_con_maximo() {
+        let mut e = EstadoPartida::default();
+        let mut i = instancia(1, 4); // vida 4 de 20
+        i.base.parametros.push(Parametro { id_definicion: 5, valor: ValorParametro::Numero(8), publico: false });
+        e.instancias_activas.push(i);
+
+        // Un parámetro con máximo creado después: la instancia lo recibe lleno; la vida no se toca
+        e.aplicar_delta(&DeltaPartida::ParametroCreado(cordura()));
+        let valores = &e.instancias_activas[0].valores_actuales;
+        assert_eq!(valores.iter().map(|v| (v.id_definicion, v.valor)).collect::<Vec<_>>(), vec![(ID_VIDA, 4), (5, 8)]);
+
+        // Y al borrarlo, desaparece
+        e.aplicar_delta(&DeltaPartida::ParametroBorrado(5));
+        assert_eq!(e.instancias_activas[0].valores_actuales.len(), 1);
     }
 
     #[test]
