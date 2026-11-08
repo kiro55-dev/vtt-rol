@@ -3,6 +3,7 @@
   import { onMount } from "svelte";
   import { partida } from "$lib/partida.svelte";
   import { tiradas } from "$lib/tiradas.svelte";
+  import { alRecibirAviso } from "$lib/avisosTablero";
 
   import PanelIzquierdo from "./componentes/PanelIzquierdo.svelte";
   import PanelDerecho from "./componentes/PanelDerecho.svelte";
@@ -26,8 +27,19 @@
     if (e.key !== "ArrowUp" && e.key !== "ArrowDown") return;
     const t = e.target as HTMLElement | null;
     if (t?.closest?.("input, textarea, select, [contenteditable='true']")) return;
-    if (partida.seleccionarVecina(e.key === "ArrowUp" ? -1 : 1)) e.preventDefault();
+    if (partida.seleccionarVecina(e.key === "ArrowUp" ? -1 : 1)) {
+      e.preventDefault();
+      // El botón de la tarjeta pulsada conserva el foco del navegador (y su borde): se suelta
+      (document.activeElement as HTMLElement | null)?.blur?.();
+    }
   }
+
+  // El foco de otro jugador (aviso por red, no se guarda) se dibuja aparte del propio
+  onMount(() =>
+    alRecibirAviso((aviso) => {
+      if ("Foco" in aviso) partida.recibirFocoAjeno(aviso.Foco.ids_instancias);
+    })
+  );
 
   onMount(async () => {
     try {

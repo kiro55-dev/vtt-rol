@@ -12,7 +12,9 @@ import type { Casilla } from "$lib/partida.svelte";
 export type AvisoTablero =
   | { Ping: { id_mapa: number; casilla: Casilla } }
   | { Recorrido: { id_mapa: number; casillas: Casilla[] } }
-  | { RecorridoBorrado: { id_mapa: number } };
+  | { RecorridoBorrado: { id_mapa: number } }
+  /** Las instancias que el emisor tiene con el foco (no va ligado a un mapa) */
+  | { Foco: { ids_instancias: number[] } };
 
 export const EVENTO_AVISO = "aviso-tablero";
 
@@ -21,6 +23,7 @@ export const avisoRecorrido = (id_mapa: number, casillas: readonly Casilla[]): A
   Recorrido: { id_mapa, casillas: [...casillas] }
 });
 export const avisoRecorridoBorrado = (id_mapa: number): AvisoTablero => ({ RecorridoBorrado: { id_mapa } });
+export const avisoFoco = (ids_instancias: readonly number[]): AvisoTablero => ({ Foco: { ids_instancias: [...ids_instancias] } });
 
 /** Avisa a Rust. Un aviso perdido no importa: nunca debe romper el tablero. */
 export function enviarAviso(aviso: AvisoTablero): void {

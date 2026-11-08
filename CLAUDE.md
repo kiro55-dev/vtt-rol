@@ -62,7 +62,7 @@ Invariants to preserve when adding state changes:
 Instances:
 - **Rules.** They live in [instancias.rs](src-tauri/src/tablero_general/instancias.rs): pure functions that build the delta (`InstanciaCreada`/`InstanciaModificada`/`InstanciaBorrada`/`ValorActualModificado`) with everything resolved (new id, cell fitted with `encajar`), and the commands only register it.
 - **Unique fichas.** A unique ficha that already has an instance reuses it (same id and current values) instead of creating another.
-- **Current values.** `ajustar_a_definiciones` keeps one current value per parameter with a maximum, and it stays between 0 and the max.
+- **Current values.** `ajustar_a_definiciones` keeps one current value per parameter with a maximum, The max is only the default: the current value may go above it (extra life) or below 0 (negative life), within ±`LIMITE_VALOR_ACTUAL` (16000, mirrored in `partida.svelte.ts`). A ficha is drawn grey (card and board) when any parameter with `atenuar_si_negativo` (only allowed with `tiene_maximo`; Vida has it by default) has its current value ≤ 0: `partida.estaCaida`, driven by the definition, not by any id. Old saves without the field get it only on Vida (`DefinicionGuardada` in `modelos.rs`).
 - **Dragging** (banco ↔ tablero ↔ «Fichas activas») goes through [arrastreFicha.svelte.ts](src/lib/arrastreFicha.svelte.ts):
   - It uses pointer events, not HTML5 DnD (Tauri intercepts it on Windows).
   - Drop zones carry `data-destino`.
@@ -71,10 +71,15 @@ Instances:
   - Left-drag on a token moves it.
   - Right-click without dragging rotates it 90° clockwise: `Instancia.rotacion`, and `lados_instancia`/`ladosInstancia` swap the sides around the same center.
   - Dragging it to «Fichas activas» takes it off the board.
+- **Visibility** lives in [visibilidad.rs](src-tauri/src/tablero_general/visibilidad.rs): `vista_jugador` keeps only public parameters (and the current value of those) and drops attachments; the same function will filter what is sent over the network.
+  - While `OCULTAR_PRIVADOS_AL_MASTER` is `true` (the master streams on Discord), `obtener_instancias_activas` returns that view to the master's own screen too: private values vanish from «Fichas activas», the parameter box and the board shapes. The game keeps everything, and the ficha editor always shows it all.
+  - The front never filters by itself: a parameter that is missing from `instancia.base.parametros` is not shown (`veParametro`).
 - **Order and focus.** `Instancia.orden` is the order in «Fichas activas», changed via `InstanciasReordenadas`. Focus is a set (`partida.idsSeleccionados`, Shift adds).
   - Focused tokens draw their parameter shapes, measured from the body's edges so the four reference points land on grid lines (`extremosForma`).
   - A left click anywhere outside elements marked `data-conserva-foco` clears the focus.
-- **Current-value edits** (wheel, −/+) are batched in `partida.valoresPendientes` and sent as ONE `modificar_valor_actual` per value. They are sent 1 s after the last change, or earlier when the focus changes or the game is switched.
+- **Focus is shared as a notice.** Every focus change sends `AvisoTablero::Foco` (ephemeral, not saved). A `Foco` from another player is kept in `partida.idsFocoAjeno` and drawn with a violet outline; it never changes the local focus. ↑/↓ cycle through «Fichas activas».
+- **Dragging a roll** from the chat onto a value (`data-valor="idInstancia:idDefinicion"`, on the summary of a card or a row of the parameter box) subtracts its total with the left button and adds it with the right ([arrastreTirada.svelte.ts](src/lib/arrastreTirada.svelte.ts)); it goes through the same batching as the wheel.
+- **Current-value edits** (wheel, −/+, dragged rolls) are batched in `partida.valoresPendientes` and sent as ONE `modificar_valor_actual` per value. They are sent 1 s after the last change, or earlier when the focus changes or the game is switched.
 
 Entity stats (vida, armadura...) are not fixed fields. They work on three levels:
 - `EstadoPartida.definiciones_parametros` (`DefinicionParametro`) holds the parameters shared by all entities. Defaults come from `parametros_por_defecto()`, with fixed ids `ID_VIDA`..`ID_RANGO_ARMA`.

@@ -9,6 +9,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { iniciarImagenes, importarImagen } from "$lib/imagenes";
 import { miniaturas } from "$lib/miniaturas.svelte";
+import { enviarAviso, avisoFoco } from "$lib/avisosTablero";
 
 export interface Zona {
   id: number;
@@ -54,6 +55,8 @@ export interface DefinicionParametro {
   representar_mapa: Forma | null;
   visibilidad: Visibilidad;
   unidad: string | null;
+  /** Solo con máximo: si el valor actual llega a 0 o menos, la ficha se ve atenuada (como la vida) */
+  atenuar_si_negativo: boolean;
 }
 
 export interface Parametro {
@@ -74,6 +77,14 @@ export const ID_PARAMETRO = { vida: 1, armadura: 2, velocidad: 3, rangoArma: 4 }
 export function numeroDe(entidad: Entidad, idDefinicion: number): number {
   const v = entidad.parametros.find((p) => p.id_definicion === idDefinicion)?.valor;
   return v && "Numero" in v ? v.Numero : 0;
+}
+
+/**
+ * ¿La instancia trae ese parámetro? Rust no manda a la pantalla los privados (ver `visibilidad.rs`):
+ * un parámetro que falta no se enseña, ni su valor, ni su resumen, ni lo que se dibuja con él.
+ */
+export function veParametro(instancia: Instancia, idDefinicion: number): boolean {
+  return instancia.base.parametros.some((p) => p.id_definicion === idDefinicion);
 }
 
 /** Valor actual de un parámetro con máximo en una instancia (si no lo lleva, el de la ficha). */
@@ -141,6 +152,8 @@ const REJILLA_DEFECTO: Rejilla = { visible: true, tamano: 50, color: "#ffffff", 
 const ESPERA_GUARDADO_MS = 5000;
 /** Los cambios de valores actuales (vida...) se mandan 1 s después del último. */
 const ESPERA_VALORES_MS = 1000;
+/** Tope de un valor actual en positivo y negativo (igual que `LIMITE_VALOR_ACTUAL` en Rust). */
+export const LIMITE_VALOR_ACTUAL = 16000;
 const claveValor = (idInstancia: number, idDefinicion: number) => `${idInstancia}:${idDefinicion}`;
 
 const porOrden = (a: { orden?: number }, b: { orden?: number }) => (a.orden ?? 0) - (b.orden ?? 0);
@@ -183,6 +196,12 @@ class Partida {
   instanciaSeleccionada = $derived(this.seleccionadas.length === 1 ? this.seleccionadas[0] : null);
 
   /** Cambios de valores actuales aún sin mandar a Rust, por "idInstancia:idDefinicion" (ver `cambiarValorActual`). */
+  /** Fichas que otro jugador tiene con el foco (llega por red como aviso, no se guarda). Se dibujan
+   *  con otro contorno; no cambian el foco propio. */
+  idsFocoAjeno = $state<number[]>([]);
+  /** Último foco propio avisado a los demás, para no repetirlo. */
+  #focoAvisado: number[] = [];
+
   valoresPendientes = $state<Record<string, number>>({});
   #temporizadorValores: ReturnType<typeof setTimeout> | null = null;
 
@@ -361,22 +380,40 @@ class Partida {
     else nuevos = [...ids, instancia.id_instancia];
 
     if (nuevos.length === ids.length && nuevos.every((id, i) => id === ids[i])) return;
+    this.#cambiarFoco(nuevos);
+  }
+
+  // Cambia el foco propio, guarda lo pendiente de las fichas que lo pierden y avisa a los demás.
+  #cambiarFoco(nuevos: number[]) {
     this.idsSeleccionados = nuevos;
     void this.guardarValoresPendientes();
+    // El foco es solo de este momento: se avisa (por red, cuando la haya) pero no se guarda en disco
+    const igual = nuevos.length === this.#focoAvisado.length && nuevos.every((id, i) => id === this.#focoAvisado[i]);
+    if (igual) return;
+    this.#focoAvisado = [...nuevos];
+    enviarAviso(avisoFoco(nuevos));
+  }
+
+  /** Lo que otro jugador tiene con el foco ahora (sustituye a lo anterior). */
+  recibirFocoAjeno(ids: number[]) {
+    this.idsFocoAjeno = [...ids];
   }
 
   estaSeleccionada(idInstancia: number) {
     return this.idsSeleccionados.includes(idInstancia);
   }
 
-  /** Con una sola ficha con foco, lo pasa a la anterior (-1) o la siguiente (+1) de «Fichas activas». */
+  /**
+   * Con una sola ficha con foco, lo pasa a la anterior (-1) o la siguiente (+1) de «Fichas activas».
+   * Es circular: tras la última va la primera y antes de la primera, la última.
+   */
   seleccionarVecina(paso: -1 | 1): boolean {
     const actual = this.instanciaSeleccionada;
     if (!actual || this.idsSeleccionados.length !== 1) return false;
     const lista = this.instanciasOrdenadas;
-    const vecina = lista[lista.findIndex((i) => i.id_instancia === actual.id_instancia) + paso];
-    if (!vecina) return false;
-    this.seleccionarInstancia(vecina);
+    if (lista.length < 2) return false;
+    const i = lista.findIndex((x) => x.id_instancia === actual.id_instancia);
+    this.seleccionarInstancia(lista[(i + paso + lista.length) % lista.length]);
     return true;
   }
 
@@ -384,13 +421,28 @@ class Partida {
   // Valores actuales (vida...): se agrupan antes de mandarlos
   // ------------------------------------------------------------------
 
+  /**
+   * La ficha se ve atenuada (gris) si algún parámetro marcado con «atenuar_si_negativo» (la vida de
+   * serie lo está) tiene su valor actual en 0 o menos. Lo decide la definición, no ningún id fijo.
+   */
+  estaCaida(instancia: Instancia): boolean {
+    return this.definiciones.some(
+      (d) =>
+        d.atenuar_si_negativo &&
+        d.tiene_maximo &&
+        instancia.valores_actuales.some((v) => v.id_definicion === d.id) &&
+        this.valorMostrado(instancia, d.id) <= 0
+    );
+  }
+
   /** Valor actual que se ve: el de Rust más lo que aún no se ha mandado. */
   valorMostrado(instancia: Instancia, idDefinicion: number): number {
     return valorActual(instancia, idDefinicion) + (this.valoresPendientes[claveValor(instancia.id_instancia, idDefinicion)] ?? 0);
   }
 
   /**
-   * Suma `delta` a un valor con máximo (p. ej. la vida), entre 0 y el máximo. Se ve al momento pero
+   * Suma `delta` a un valor con máximo (p. ej. la vida). Puede pasar del máximo (vida extra) o bajar
+   * de 0 (vida negativa). Se ve al momento pero
    * no se manda a Rust hasta 1 s después del último cambio (o antes si la ficha pierde el foco):
    * 50 pasos de rueda son UN delta de 50, no 50 deltas.
    */
@@ -399,8 +451,8 @@ class Partida {
     if (!instancia || delta === 0) return;
     const clave = claveValor(idInstancia, idDefinicion);
     const actual = valorActual(instancia, idDefinicion);
-    const maximo = numeroDe(instancia.base, idDefinicion);
-    const nuevo = Math.min(maximo, Math.max(0, this.valorMostrado(instancia, idDefinicion) + delta));
+    // El máximo es solo el valor por defecto: se puede pasar de él o bajar de 0 (como en Rust)
+    const nuevo = Math.min(LIMITE_VALOR_ACTUAL, Math.max(-LIMITE_VALOR_ACTUAL, this.valorMostrado(instancia, idDefinicion) + delta));
     if (nuevo === actual) delete this.valoresPendientes[clave];
     else this.valoresPendientes[clave] = nuevo - actual;
 
@@ -474,7 +526,9 @@ class Partida {
       if (clave.startsWith(`${idInstancia}:`)) delete this.valoresPendientes[clave];
     }
     await this.#cambiarInstancias("borrar_instancia", { idInstancia });
-    this.idsSeleccionados = this.idsSeleccionados.filter((id) => id !== idInstancia);
+    if (this.idsSeleccionados.includes(idInstancia)) {
+      this.#cambiarFoco(this.idsSeleccionados.filter((id) => id !== idInstancia));
+    }
   }
 
   // Llama a Rust y vuelve a leer las instancias. Un error (instancia o mapa que ya no existe) se

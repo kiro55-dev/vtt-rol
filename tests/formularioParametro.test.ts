@@ -10,6 +10,36 @@ beforeEach(async () => {
   ({ FormularioParametro, resumenDefinicion } = await import("$lib/formularioParametro.svelte"));
 });
 
+describe("atenuar la ficha", () => {
+  it("el check solo cuenta con máximo y se quita solo al desmarcar el máximo", () => {
+    const f = new FormularioParametro();
+    f.clave = "Aguante";
+    f.valorNumero = 8;
+    f.atenuar = true;
+    expect(f.aDefinicion().atenuar_si_negativo).toBe(false); // sin máximo no vale
+
+    f.tieneMaximo = true;
+    f.atenuar = true;
+    expect(f.aDefinicion().atenuar_si_negativo).toBe(true);
+    expect(resumenDefinicion({ ...f.aDefinicion(), id: 9 })).toContain("atenúa");
+
+    f.tieneMaximo = false;
+    expect(f.atenuar).toBe(false);
+    expect(f.aDefinicion().atenuar_si_negativo).toBe(false);
+  });
+
+  it("al editar un parámetro carga lo que ya tenía marcado", () => {
+    const f = new FormularioParametro();
+    f.cargar({
+      id: 1, clave: "Vida", valor_por_defecto: { Numero: 10 }, tiene_maximo: true, representar_mapa: null,
+      visibilidad: "Variable", unidad: null, atenuar_si_negativo: true
+    });
+    expect(f.atenuar).toBe(true);
+    f.reiniciar();
+    expect(f.atenuar).toBe(false);
+  });
+});
+
 describe("forma «Resumen»", () => {
   it("solo se ofrece y solo vale con máximo, y se pinta opaca", async () => {
     const { formasDisponibles } = await import("$lib/formularioParametro.svelte");
@@ -48,7 +78,8 @@ describe("FormularioParametro", () => {
       tiene_maximo: true,
       representar_mapa: { Circulo: [255, 0, 0, 90] },
       visibilidad: "SiemprePrivado",
-      unidad: "pts"
+      unidad: "pts",
+      atenuar_si_negativo: false
     });
   });
 
@@ -83,7 +114,7 @@ describe("FormularioParametro", () => {
   it("cargar y aDefinicion son inversos, y el id queda para saber que se edita", () => {
     const d = {
       id: 3, clave: "Velocidad", valor_por_defecto: { Numero: 6 }, tiene_maximo: false,
-      representar_mapa: { Rombo: [59, 130, 246, 90] }, visibilidad: "SiemprePublico" as const, unidad: "m"
+      representar_mapa: { Rombo: [59, 130, 246, 90] }, visibilidad: "SiemprePublico" as const, unidad: "m", atenuar_si_negativo: false
     };
     const f = new FormularioParametro();
     f.cargar(d);
@@ -110,13 +141,13 @@ describe("resumenDefinicion", () => {
     expect(
       resumenDefinicion({
         id: 3, clave: "Velocidad", valor_por_defecto: { Numero: 6 }, tiene_maximo: false,
-        representar_mapa: { Rombo: [1, 2, 3, 4] }, visibilidad: "SiemprePublico", unidad: "m"
+        representar_mapa: { Rombo: [1, 2, 3, 4] }, visibilidad: "SiemprePublico", unidad: "m", atenuar_si_negativo: false
       })
     ).toBe("Número · m · Rombo · siempre público");
     expect(
       resumenDefinicion({
         id: 1, clave: "Vida", valor_por_defecto: { Numero: 10 }, tiene_maximo: true,
-        representar_mapa: null, visibilidad: "Variable", unidad: null
+        representar_mapa: null, visibilidad: "Variable", unidad: null, atenuar_si_negativo: false
       })
     ).toBe("Número · con máximo · cada ficha decide");
   });

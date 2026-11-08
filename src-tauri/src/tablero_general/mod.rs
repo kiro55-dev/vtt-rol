@@ -11,3 +11,4 @@ pub mod modelos;
 pub mod partida;
 pub mod recursos;
 pub mod tablero;
+pub mod visibilidad;

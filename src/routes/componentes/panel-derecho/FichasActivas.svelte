@@ -7,8 +7,9 @@
      - Clic derecho = menú con «Eliminar instancia».
      Soltar aquí una ficha del banco la activa sin colocar; una del tablero, la quita de él. -->
 <script lang="ts">
-  import { partida, numeroDe, type Instancia } from "$lib/partida.svelte";
+  import { partida, numeroDe, veParametro, type Instancia } from "$lib/partida.svelte";
   import { arrastre, moverEnLista } from "$lib/arrastreFicha.svelte";
+  import { arrastreTirada } from "$lib/arrastreTirada.svelte";
   import { urlDeImagen } from "$lib/imagenes";
   import MenuContextual from "../comunes/MenuContextual.svelte";
 
@@ -70,6 +71,8 @@
       type="button"
       class="tarjeta"
       class:seleccionado={partida.estaSeleccionada(ficha.id_instancia)}
+      class:caida={partida.estaCaida(ficha)}
+      class:foco-ajeno={partida.idsFocoAjeno.includes(ficha.id_instancia) && !partida.estaSeleccionada(ficha.id_instancia)}
       class:arrastrada={idArrastrada === ficha.id_instancia}
       data-indice={i}
       onpointerdown={(e) => arrastre.preparar(e, { instancia: ficha, desde: "activas" })}
@@ -95,8 +98,14 @@
 
       {#if resumidos.length}
         <div class="resumen">
-          {#each resumidos as r (r.id)}
-            <span style:color={r.color} title={r.clave}>{partida.valorMostrado(ficha, r.id)}/{numeroDe(ficha.base, r.id)}</span>
+          {#each resumidos.filter((r) => veParametro(ficha, r.id)) as r (r.id)}
+            <!-- Una tirada soltada aquí cambia este valor (ver $lib/arrastreTirada) -->
+            <span
+              style:color={r.color}
+              title={r.clave}
+              data-valor="{ficha.id_instancia}:{r.id}"
+              class:destino-tirada={arrastreTirada.esDestino(ficha.id_instancia, r.id)}
+            >{partida.valorMostrado(ficha, r.id)}/{numeroDe(ficha.base, r.id)}</span>
           {/each}
         </div>
       {/if}
@@ -150,7 +159,12 @@
     touch-action: none;
   }
   .tarjeta:hover { background: #27272a; border-color: #3f3f46; }
+  .tarjeta:focus-visible { outline: none; } /* el estado lo marca solo .seleccionado */
   .tarjeta.seleccionado { border-color: #3b82f6; }
+  /* Sin vida (0 o negativa): en gris. Los textos de vida se siguen leyendo */
+  .tarjeta.caida .foto, .tarjeta.caida .texto { opacity: 0.4; filter: grayscale(100%); }
+  /* El foco de otro jugador (llega por red) */
+  .tarjeta.foco-ajeno { border-color: #a855f7; border-style: dotted; }
   /* El hueco donde caerá la tarjeta que se está reordenando */
   .tarjeta.arrastrada { opacity: 0.35; border-style: dashed; border-color: #60a5fa; }
 
@@ -186,5 +200,7 @@
   .donde { font-size: 10px; color: #71717a; }
 
   .resumen { display: flex; flex-direction: column; align-items: flex-end; gap: 1px; font-size: 12px; font-weight: bold; }
+  .resumen span { padding: 0 3px; border-radius: 3px; }
+  .resumen .destino-tirada { background: rgba(250, 204, 21, 0.25); outline: 1px solid #facc15; }
   .vacio { color: #52525b; font-size: 10px; text-align: center; margin-top: 10px; }
 </style>

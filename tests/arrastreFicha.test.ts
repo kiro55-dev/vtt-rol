@@ -92,3 +92,16 @@ describe("fichas del tablero", () => {
     expect(fichas.COLOR_TIPO).toEqual({ Enemigo: "#ef4444", NPC: "#3b82f6", Jugador: "#22c55e" });
   });
 });
+
+describe("coger una ficha que quedó fuera del mapa", () => {
+  it("se busca por el rectángulo de la ficha, no por su casilla, y gana la de encima", () => {
+    const r = { columnas: 10, filas: 8, anchoCasilla: 10, altoCasilla: 10, ancho: 100, alto: 80 };
+    // Una ficha en la casilla (14, 3): fuera del mapa (que acaba en x=100), pero a la vista
+    const fuera = fichas.fichasDelMapa([instancia(1, 1, { x: 14, y: 3 })], 1);
+    expect(fichas.fichaEnPunto(fuera, r, 145, 35)?.id_instancia).toBe(1);
+    expect(fichas.fichaEnPunto(fuera, r, 155, 35)).toBeNull();
+
+    const dos = fichas.fichasDelMapa([instancia(1, 1, { x: 2, y: 2 }), instancia(2, 1, { x: 2, y: 2 })], 1);
+    expect(fichas.fichaEnPunto(dos, r, 25, 25)?.id_instancia).toBe(2);
+  });
+});

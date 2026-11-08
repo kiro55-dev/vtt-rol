@@ -147,12 +147,28 @@ pub enum AvisoTablero {
     Recorrido { id_mapa: u16, casillas: Vec<Casilla> },
     /// El recorrido ya no se muestra (el emisor hizo otro clic).
     RecorridoBorrado { id_mapa: u16 },
+    /// Las instancias que el emisor tiene con el foco ahora (vacío = ninguna). Sustituye al anterior.
+    /// No va ligado a un mapa.
+    Foco { ids_instancias: Vec<u16> },
 }
 
 impl AvisoTablero {
-    pub fn id_mapa(&self) -> u16 {
+    /// El mapa al que se refiere (`Foco` no tiene).
+    pub fn id_mapa(&self) -> Option<u16> {
         match self {
-            Self::Ping { id_mapa, .. } | Self::Recorrido { id_mapa, .. } | Self::RecorridoBorrado { id_mapa } => *id_mapa,
+            Self::Ping { id_mapa, .. } | Self::Recorrido { id_mapa, .. } | Self::RecorridoBorrado { id_mapa } => Some(*id_mapa),
+            Self::Foco { .. } => None,
+        }
+    }
+
+    /// Un `Foco` solo nombra instancias que existen (y sin repetir).
+    pub fn validar_foco(&self, existentes: &[u16]) -> Result<(), String> {
+        let Self::Foco { ids_instancias } = self else { return Ok(()) };
+        let mut vistos = std::collections::HashSet::new();
+        if ids_instancias.iter().all(|id| existentes.contains(id) && vistos.insert(*id)) {
+            Ok(())
+        } else {
+            Err("El foco nombra una instancia que no existe".into())
         }
     }
 
@@ -166,7 +182,7 @@ impl AvisoTablero {
                 Err("El recorrido no tiene un tamaño válido".into())
             }
             Self::Recorrido { casillas, .. } if !casillas.iter().all(dentro) => Err("El recorrido se sale del mapa".into()),
-            _ => Ok(()),
+            _ => Ok(()), // `Foco` no depende del mapa
         }
     }
 }
@@ -332,7 +348,21 @@ mod tests {
         assert!(recorrido(vec![c(0, 0); MAX_CASILLAS_RECORRIDO + 1]).validar(&m).is_err());
 
         assert!(AvisoTablero::RecorridoBorrado { id_mapa: 3 }.validar(&m).is_ok());
-        assert_eq!(ping(1, 1).id_mapa(), 3);
+        assert_eq!(ping(1, 1).id_mapa(), Some(3));
+    }
+
+    #[test]
+    fn el_aviso_de_foco_no_va_ligado_a_un_mapa_y_solo_nombra_instancias_que_existen() {
+        let foco = |ids: Vec<u16>| AvisoTablero::Foco { ids_instancias: ids };
+        assert_eq!(foco(vec![1]).id_mapa(), None);
+        assert!(foco(vec![]).validar_foco(&[1, 2]).is_ok());
+        assert!(foco(vec![2, 1]).validar_foco(&[1, 2]).is_ok());
+        assert!(foco(vec![3]).validar_foco(&[1, 2]).is_err());
+        assert!(foco(vec![1, 1]).validar_foco(&[1, 2]).is_err(), "repetida");
+
+        let json = serde_json::to_string(&foco(vec![4, 7])).unwrap();
+        assert_eq!(json, r#"{"Foco":{"ids_instancias":[4,7]}}"#);
+        assert_eq!(serde_json::from_str::<AvisoTablero>(&json).unwrap(), foco(vec![4, 7]));
     }
 
     #[test]

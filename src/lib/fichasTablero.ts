@@ -44,6 +44,20 @@ export function fichaEnCasilla(fichas: readonly FichaEnMapa[], casilla: Casilla)
   return null;
 }
 
+/**
+ * La ficha bajo un punto del mapa (px del mapa), la de encima primero. Mira el rectángulo de la
+ * ficha, no su casilla: así se puede coger una que quedó fuera del mapa (p. ej. tras agrandar la
+ * rejilla, hasta que Rust la reencaja al guardarla).
+ */
+export function fichaEnPunto(fichas: readonly FichaEnMapa[], rejilla: RejillaTablero, x: number, y: number): Instancia | null {
+  for (let i = fichas.length - 1; i >= 0; i--) {
+    const f = fichas[i];
+    const r = rectanguloDe(rejilla, f.casilla, ladosInstancia(f.instancia));
+    if (x >= r.x && x < r.x + r.w && y >= r.y && y < r.y + r.h) return f.instancia;
+  }
+  return null;
+}
+
 // ---------------------------------------------------------------------------
 // Imágenes (a resolución completa: se ven grandes al hacer zoom)
 // ---------------------------------------------------------------------------
@@ -84,7 +98,7 @@ export function dibujarFicha(
   rejilla: RejillaTablero,
   ficha: FichaEnMapa,
   img: HTMLImageElement | null,
-  opciones: { seleccionada?: boolean; en?: { x: number; y: number }; sombra?: boolean } = {}
+  opciones: { seleccionada?: boolean; focoAjeno?: boolean; apagada?: boolean; en?: { x: number; y: number }; sombra?: boolean } = {}
 ) {
   const rect = rectanguloFicha(cam, rejilla, ficha);
   const { x, y } = opciones.en ?? rect;
@@ -93,6 +107,11 @@ export function dibujarFicha(
   const color = COLOR_TIPO[ficha.instancia.base.tipo] ?? "#a1a1aa";
 
   ctx.save();
+  if (opciones.apagada) {
+    // Sin vida: en gris
+    ctx.globalAlpha = 0.45;
+    ctx.filter = "grayscale(100%)";
+  }
   if (opciones.sombra) {
     ctx.shadowColor = "rgba(0, 0, 0, 0.55)";
     ctx.shadowBlur = 14;
@@ -132,6 +151,13 @@ export function dibujarFicha(
   ctx.strokeStyle = color;
   ctx.strokeRect(x + borde / 2, y + borde / 2, w - borde, h - borde);
 
+  if (opciones.focoAjeno && !opciones.seleccionada) {
+    // El foco de otro jugador: contorno violeta, distinto al blanco del propio
+    ctx.lineWidth = 2;
+    ctx.strokeStyle = "#a855f7";
+    ctx.setLineDash([2, 3]);
+    ctx.strokeRect(x - 3, y - 3, w + 6, h + 6);
+  }
   if (opciones.seleccionada) {
     ctx.lineWidth = 2;
     ctx.strokeStyle = "#fafafa";

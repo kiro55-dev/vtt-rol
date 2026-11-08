@@ -89,7 +89,11 @@ pub fn borrar(est: &EstadoPartida, id_instancia: u16) -> Result<DeltaPartida, St
     buscar(est, id_instancia).map(|i| DeltaPartida::InstanciaBorrada(i.id_instancia))
 }
 
-/// Cambia el valor actual de un parámetro con máximo. Se queda entre 0 y el máximo de la ficha.
+/// Tope (en positivo y en negativo) de un valor actual, para que sumar deltas nunca desborde un i16.
+pub const LIMITE_VALOR_ACTUAL: i16 = 16_000;
+
+/// Cambia el valor actual de un parámetro con máximo. El máximo es solo el valor por defecto: el
+/// actual puede pasarse de él (vida extra) o bajar de cero (vida negativa), dentro de ±`LIMITE_VALOR_ACTUAL`.
 pub fn cambiar_valor_actual(
     est: &EstadoPartida,
     id_instancia: u16,
@@ -103,11 +107,13 @@ pub fn cambiar_valor_actual(
         .find(|v| v.id_definicion == id_definicion)
         .ok_or("Ese parámetro no tiene valor actual")?
         .valor;
-    let maximo = match inst.base.parametros.iter().find(|p| p.id_definicion == id_definicion).map(|p| &p.valor) {
-        Some(ValorParametro::Numero(n)) => *n,
-        _ => return Err("Ese parámetro no tiene máximo".into()),
-    };
-    let nuevo = actual.saturating_add(delta).clamp(0, maximo.max(0));
+    if !matches!(
+        inst.base.parametros.iter().find(|p| p.id_definicion == id_definicion).map(|p| &p.valor),
+        Some(ValorParametro::Numero(_))
+    ) {
+        return Err("Ese parámetro no tiene máximo".into());
+    }
+    let nuevo = actual.saturating_add(delta).clamp(-LIMITE_VALOR_ACTUAL, LIMITE_VALOR_ACTUAL);
     // Sin cambio (ya estaba en el tope): no se registra nada
     Ok((nuevo != actual).then(|| DeltaPartida::ValorActualModificado { id_instancia, id_definicion, delta: nuevo - actual }))
 }
@@ -348,17 +354,21 @@ mod tests {
     }
 
     #[test]
-    fn el_valor_actual_se_queda_entre_cero_y_el_maximo() {
+    fn el_valor_actual_puede_pasar_del_maximo_y_bajar_de_cero() {
         let mut e = estado();
         hacer(&mut e, |e| instanciar(e, 1, None));
         let vida = |e: &EstadoPartida| e.instancias_activas[0].valores_actuales[0].valor;
 
-        // Ya está al máximo: subir no registra nada
-        assert!(cambiar_valor_actual(&e, 1, ID_VIDA, 5).unwrap().is_none());
+        // El máximo (30) es el valor por defecto: se puede tener más (vida extra)...
+        hacer(&mut e, |e| cambiar_valor_actual(e, 1, ID_VIDA, 5).map(Option::unwrap));
+        assert_eq!(vida(&e), 35);
+        // ...y menos que cero (vida negativa)
         hacer(&mut e, |e| cambiar_valor_actual(e, 1, ID_VIDA, -100).map(Option::unwrap));
-        assert_eq!(vida(&e), 0);
-        hacer(&mut e, |e| cambiar_valor_actual(e, 1, ID_VIDA, 7).map(Option::unwrap));
-        assert_eq!(vida(&e), 7);
+        assert_eq!(vida(&e), -65);
+        // Solo hay un tope enorme para no desbordar
+        hacer(&mut e, |e| cambiar_valor_actual(e, 1, ID_VIDA, i16::MAX).map(Option::unwrap));
+        assert_eq!(vida(&e), LIMITE_VALOR_ACTUAL);
+        assert!(cambiar_valor_actual(&e, 1, ID_VIDA, 1).unwrap().is_none(), "ya en el tope");
         // La armadura no tiene máximo
         assert!(cambiar_valor_actual(&e, 1, ID_ARMADURA, 1).is_err());
     }

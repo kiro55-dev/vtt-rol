@@ -481,6 +481,7 @@ mod tests {
             representar_mapa: None,
             visibilidad: Visibilidad::Variable,
             unidad: None,
+            atenuar_si_negativo: false,
         }
     }
 

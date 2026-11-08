@@ -29,7 +29,7 @@ function crearBackend() {
       }
     ],
     definiciones: [
-      { id: 1, clave: "Vida", valor_por_defecto: { Numero: 10 }, tiene_maximo: true, representar_mapa: null, visibilidad: "Variable", unidad: null }
+      { id: 1, clave: "Vida", valor_por_defecto: { Numero: 10 }, tiene_maximo: true, representar_mapa: null, visibilidad: "Variable", unidad: null, atenuar_si_negativo: false }
     ],
     partidas: ["A", "B"] as string[],
     actual: "A",
@@ -109,6 +109,7 @@ function crearBackend() {
           return;
         }
         case "borrar_instancia": b.instancias = b.instancias.filter((x) => x.id_instancia !== args.idInstancia); return;
+        case "avisar_tablero": return;
         case "rotar_instancia": {
           const i = b.instancias.find((x) => x.id_instancia === args.idInstancia)!;
           i.rotacion = (i.rotacion + 1) % 4;
@@ -120,7 +121,7 @@ function crearBackend() {
         case "modificar_valor_actual": {
           const i = b.instancias.find((x) => x.id_instancia === args.idInstancia)!;
           const v = i.valores_actuales.find((x) => x.id_definicion === args.idDefinicion);
-          if (v) v.valor = Math.max(0, v.valor + args.delta);
+          if (v) v.valor += args.delta;
           return;
         }
         default: throw new Error("comando desconocido: " + cmd);
@@ -388,12 +389,52 @@ describe("fichas: selección y vida", () => {
     expect(partida.instanciasOrdenadas.map((i) => i.id_instancia)).toEqual([2, 1]);
 
     partida.seleccionarInstancia(partida.instancias.find((i) => i.id_instancia === 2)!);
-    expect(partida.seleccionarVecina(-1)).toBe(false); // ya es la primera
     expect(partida.seleccionarVecina(1)).toBe(true);
     expect(partida.idsSeleccionados).toEqual([1]);
+    // Circular: tras la última va la primera, y antes de la primera, la última
+    expect(partida.seleccionarVecina(1)).toBe(true);
+    expect(partida.idsSeleccionados).toEqual([2]);
+    expect(partida.seleccionarVecina(-1)).toBe(true);
+    expect(partida.idsSeleccionados).toEqual([1]);
 
-    partida.seleccionarInstancia(partida.instancias[1], true); // dos con foco
+    partida.seleccionarInstancia(partida.instancias[1], true); // dos con foco: las flechas no hacen nada
     expect(partida.seleccionarVecina(-1)).toBe(false);
+  });
+
+  it("con una sola ficha activa, las flechas no hacen nada", async () => {
+    const partida = await nuevoStore();
+    await partida.borrarInstancia(2);
+    partida.seleccionarInstancia(partida.instancias[0]);
+    expect(partida.seleccionarVecina(1)).toBe(false);
+    expect(partida.idsSeleccionados).toEqual([1]);
+  });
+
+  it("cada cambio de foco se avisa a los demás (sin repetir) y no toca el disco", async () => {
+    const partida = await nuevoStore();
+    const avisos = () => llamadas("avisar_tablero").map((l) => l.args.aviso);
+    partida.seleccionarInstancia(partida.instancias[0]);
+    partida.seleccionarInstancia(partida.instancias[1], true);
+    partida.seleccionarInstancia(partida.instancias[1], true); // la quita
+    partida.seleccionarInstancia(partida.instancias[0]); // ya era el foco: no cambia nada
+    partida.seleccionarInstancia(null);
+    expect(avisos()).toEqual([
+      { Foco: { ids_instancias: [1] } },
+      { Foco: { ids_instancias: [1, 2] } },
+      { Foco: { ids_instancias: [1] } },
+      { Foco: { ids_instancias: [] } }
+    ]);
+    // Un foco es solo un aviso: ningún comando que cambie la partida
+    expect(backend.llamadas.filter((l) => /^(modificar|mover|borrar|instanciar|rotar|reordenar)/.test(l.cmd))).toEqual([]);
+  });
+
+  it("el foco que llega de otro jugador se guarda aparte y no cambia el propio", async () => {
+    const partida = await nuevoStore();
+    partida.seleccionarInstancia(partida.instancias[0]);
+    partida.recibirFocoAjeno([2]);
+    expect(partida.idsFocoAjeno).toEqual([2]);
+    expect(partida.idsSeleccionados).toEqual([1]);
+    partida.recibirFocoAjeno([]);
+    expect(partida.idsFocoAjeno).toEqual([]);
   });
 
   it("reordenar y rotar llaman a Rust", async () => {
@@ -419,27 +460,43 @@ describe("fichas: selección y vida", () => {
     for (let i = 0; i < 6; i++) partida.cambiarValorActual(1, 1, 1);
     expect(partida.valorMostrado(orco(), 1)).toBe(16);
     for (let i = 0; i < 50; i++) partida.cambiarValorActual(1, 1, -1);
-    expect(partida.valorMostrado(orco(), 1)).toBe(0); // nunca baja de 0
+    expect(partida.valorMostrado(orco(), 1)).toBe(-34); // puede bajar de 0 (vida negativa)
     expect(llamadas("modificar_valor_actual")).toHaveLength(0); // aún nada
 
     await vi.advanceTimersByTimeAsync(999);
     expect(llamadas("modificar_valor_actual")).toHaveLength(0);
     partida.cambiarValorActual(1, 1, 3); // otro paso reinicia la espera
     await vi.advanceTimersByTimeAsync(1000);
-    expect(llamadas("modificar_valor_actual").map((l) => l.args)).toEqual([{ idInstancia: 1, idDefinicion: 1, delta: -7 }]);
-    expect(partida.valorMostrado(orco(), 1)).toBe(3);
+    expect(llamadas("modificar_valor_actual").map((l) => l.args)).toEqual([{ idInstancia: 1, idDefinicion: 1, delta: -41 }]);
+    expect(partida.valorMostrado(orco(), 1)).toBe(-31);
     expect(partida.valoresPendientes).toEqual({});
   });
 
-  it("los cambios pendientes no pasan del máximo y se mandan ya si la ficha pierde el foco", async () => {
+  it("el máximo es solo el valor por defecto (vida extra) y se manda ya si la ficha pierde el foco", async () => {
     const partida = await nuevoStore();
     partida.seleccionarInstancia(partida.instancias[0]);
     for (let i = 0; i < 20; i++) partida.cambiarValorActual(1, 1, 1);
-    expect(partida.valorMostrado(partida.instancias[0], 1)).toBe(18); // el máximo
+    expect(partida.valorMostrado(partida.instancias[0], 1)).toBe(30); // 10 + 20, por encima del máximo (18)
 
     partida.seleccionarInstancia(null);
     await vi.advanceTimersByTimeAsync(0);
-    expect(llamadas("modificar_valor_actual").map((l) => l.args.delta)).toEqual([8]);
+    expect(llamadas("modificar_valor_actual").map((l) => l.args.delta)).toEqual([20]);
+  });
+
+  it("una ficha está caída (en gris) si un parámetro marcado para atenuar llega a 0 o menos", async () => {
+    const partida = await nuevoStore();
+    // La vida del backend falso no atenúa hasta que se marca; así se prueba que lo decide la definición
+    expect(partida.definiciones[0].atenuar_si_negativo).toBe(false);
+    partida.definiciones[0].atenuar_si_negativo = true;
+    const [orco, lobo] = partida.instancias; // el lobo no tiene valor actual de vida
+    expect(partida.estaCaida(orco)).toBe(false);
+    partida.cambiarValorActual(1, 1, -10);
+    expect(partida.estaCaida(orco)).toBe(true); // 0
+    partida.cambiarValorActual(1, 1, -5);
+    expect(partida.estaCaida(orco)).toBe(true); // negativa
+    partida.cambiarValorActual(1, 1, 6);
+    expect(partida.estaCaida(orco)).toBe(false); // 1
+    expect(partida.estaCaida(lobo)).toBe(false);
   });
 
   it("instanciar, mover, quitar del tablero y borrar llaman a Rust y vuelven a leer las instancias", async () => {
@@ -484,7 +541,7 @@ describe("fichas: selección y vida", () => {
   describe("parámetros de la partida", () => {
     const nueva = (clave: string) => ({
       clave, valor_por_defecto: { Numero: 3 }, tiene_maximo: false, representar_mapa: null,
-      visibilidad: "Variable" as const, unidad: null
+      visibilidad: "Variable" as const, unidad: null, atenuar_si_negativo: false
     });
 
     it("crear, reordenar y borrar recargan las definiciones y las fichas", async () => {
@@ -514,5 +571,34 @@ describe("fichas: selección y vida", () => {
       await expect(partida.crearDefinicion(nueva("Vida"))).rejects.toMatch("Ya existe");
       expect(partida.definiciones).toHaveLength(1);
     });
+  });
+});
+
+describe("atenuar por definición, no por id", () => {
+  it("un parámetro cualquiera marcado atenúa, y la vida sin marcar no", async () => {
+    const partida = await nuevoStore();
+    partida.definiciones.push({
+      id: 7, clave: "Aguante", valor_por_defecto: { Numero: 5 }, tiene_maximo: true, representar_mapa: null,
+      visibilidad: "Variable", unidad: null, atenuar_si_negativo: true
+    });
+    const orco = partida.instancias[0];
+    orco.valores_actuales.push({ id_definicion: 7, valor: 2 });
+    expect(partida.estaCaida(orco)).toBe(false); // vida 10, aguante 2
+    partida.cambiarValorActual(1, 7, -2); // aguante a 0
+    expect(partida.estaCaida(partida.instancias[0])).toBe(true);
+    // La vida no está marcada: ni a 0 atenúa por sí sola
+    partida.cambiarValorActual(1, 7, 5);
+    partida.cambiarValorActual(1, 1, -10);
+    expect(partida.estaCaida(partida.instancias[0])).toBe(false);
+  });
+});
+
+describe("lo privado no llega a la pantalla", () => {
+  it("veParametro: un parámetro que Rust no manda no se enseña", async () => {
+    const partida = await nuevoStore();
+    const { veParametro } = await import("$lib/partida.svelte");
+    const orco = partida.instancias[0]; // trae la vida (id 1)
+    expect(veParametro(orco, 1)).toBe(true);
+    expect(veParametro(orco, 2)).toBe(false);
   });
 });

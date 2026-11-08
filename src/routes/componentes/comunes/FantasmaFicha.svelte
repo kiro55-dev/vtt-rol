@@ -3,6 +3,7 @@
      rectángulo amarillo de las casillas donde caerá. -->
 <script lang="ts">
   import { arrastre } from "$lib/arrastreFicha.svelte";
+  import { arrastreTirada } from "$lib/arrastreTirada.svelte";
   import { urlDeImagen } from "$lib/imagenes";
   import { COLOR_TIPO } from "$lib/fichasTablero";
 
@@ -21,6 +22,13 @@
   });
 </script>
 
+{#if arrastreTirada.actual}
+  {@const t = arrastreTirada.actual}
+  <div class="tirada" class:resta={t.delta <= 0} style:left="{t.x}px" style:top="{t.y}px">
+    {t.delta > 0 ? "+" : "−"}{Math.abs(t.delta)}
+  </div>
+{/if}
+
 {#if a && base && a.zona !== "tablero"}
   <div class="fantasma" style:left="{a.x}px" style:top="{a.y}px" style:border-color={COLOR_TIPO[base.tipo]}>
     {#if base.foto_url}
@@ -35,6 +43,21 @@
 {/if}
 
 <style>
+  /* El número de la tirada que se arrastra: rojo si quita, verde si suma */
+  .tirada {
+    position: fixed;
+    z-index: 1000;
+    transform: translate(12px, -50%);
+    font-size: 16px;
+    font-weight: bold;
+    padding: 2px 8px;
+    border-radius: 4px;
+    background: rgba(0, 0, 0, 0.85);
+    color: #4ade80;
+    border: 1px solid #4ade80;
+    pointer-events: none;
+  }
+  .tirada.resta { color: #f87171; border-color: #f87171; }
   .fantasma {
     position: fixed;
     z-index: 1000;

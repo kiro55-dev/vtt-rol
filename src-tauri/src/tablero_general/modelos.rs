@@ -64,6 +64,7 @@ impl From<CoordenadaGuardada> for Coordenada {
 //                 instancia lleva su valor actual.
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
+#[serde(from = "DefinicionGuardada")]
 pub struct DefinicionParametro {
     pub id: u16,
     /// Nombre que se muestra: "Vida", "Armadura", "Cordura"...
@@ -80,6 +81,42 @@ pub struct DefinicionParametro {
     /// Texto tras el valor, p. ej. "m".
     #[serde(default)]
     pub unidad: Option<String>,
+    /// Solo con `tiene_maximo`: si el valor actual de una instancia llega a 0 o menos, la ficha se ve
+    /// atenuada (en gris) en el tablero y en «Fichas activas». Es lo que hace la vida.
+    pub atenuar_si_negativo: bool,
+}
+
+/// Forma en que se LEE una `DefinicionParametro`: las partidas guardadas antes de `atenuar_si_negativo`
+/// no lo traen, y su Vida de serie debe seguir atenuando como hasta ahora.
+#[derive(Deserialize)]
+struct DefinicionGuardada {
+    id: u16,
+    clave: String,
+    valor_por_defecto: ValorParametro,
+    #[serde(default)]
+    tiene_maximo: bool,
+    #[serde(default)]
+    representar_mapa: Option<Forma>,
+    visibilidad: Visibilidad,
+    #[serde(default)]
+    unidad: Option<String>,
+    #[serde(default)]
+    atenuar_si_negativo: Option<bool>,
+}
+
+impl From<DefinicionGuardada> for DefinicionParametro {
+    fn from(g: DefinicionGuardada) -> Self {
+        DefinicionParametro {
+            atenuar_si_negativo: g.atenuar_si_negativo.unwrap_or(g.id == ID_VIDA && g.tiene_maximo),
+            id: g.id,
+            clave: g.clave,
+            valor_por_defecto: g.valor_por_defecto,
+            tiene_maximo: g.tiene_maximo,
+            representar_mapa: g.representar_mapa,
+            visibilidad: g.visibilidad,
+            unidad: g.unidad,
+        }
+    }
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
@@ -147,6 +184,8 @@ pub fn parametros_por_defecto() -> Vec<DefinicionParametro> {
             representar_mapa,
             visibilidad,
             unidad: unidad.map(Into::into),
+            // La vida: a 0 o menos, la ficha se ve atenuada
+            atenuar_si_negativo: id == ID_VIDA,
         }
     };
     vec![
@@ -404,6 +443,28 @@ mod tests {
                 (ID_RANGO_ARMA, Numero(5), true),
             ]
         );
+    }
+
+    #[test]
+    fn solo_la_vida_de_serie_atenua_y_las_partidas_antiguas_la_conservan() {
+        let defs = parametros_por_defecto();
+        let atenuan: Vec<_> = defs.iter().filter(|d| d.atenuar_si_negativo).map(|d| d.id).collect();
+        assert_eq!(atenuan, vec![ID_VIDA]);
+
+        // Una definición guardada antes de existir el campo: la Vida atenúa, lo demás no
+        let vieja = |id: u16, max: bool| -> DefinicionParametro {
+            serde_json::from_str(&format!(
+                r#"{{"id":{id},"clave":"X","valor_por_defecto":{{"Numero":5}},"tiene_maximo":{max},"visibilidad":"Variable"}}"#
+            ))
+            .unwrap()
+        };
+        assert!(vieja(ID_VIDA, true).atenuar_si_negativo);
+        assert!(!vieja(ID_VIDA, false).atenuar_si_negativo);
+        assert!(!vieja(7, true).atenuar_si_negativo);
+
+        // Si está guardado, manda lo guardado (aunque sea la Vida desmarcada)
+        let json = serde_json::to_string(&DefinicionParametro { atenuar_si_negativo: false, ..vieja(ID_VIDA, true) }).unwrap();
+        assert!(!serde_json::from_str::<DefinicionParametro>(&json).unwrap().atenuar_si_negativo);
     }
 
     #[test]

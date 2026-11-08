@@ -4,7 +4,6 @@
      es el que siguen las fichas. -->
 <script lang="ts">
   import { flip } from "svelte/animate";
-  import { ask } from "@tauri-apps/plugin-dialog";
   import { partida, type DefinicionParametro } from "$lib/partida.svelte";
   import { ListaOrdenable } from "$lib/ordenable.svelte";
   import { moverVentana } from "$lib/moverVentana";
@@ -57,11 +56,6 @@
   }
 
   async function borrar(d: DefinicionParametro) {
-    const seguro = await ask(`¿Borrar el parámetro «${d.clave}»? Desaparecerá de todas las fichas.`, {
-      title: "Borrar parámetro",
-      kind: "warning"
-    });
-    if (!seguro) return;
     error = "";
     try {
       await partida.borrarDefinicion(d.id);
@@ -185,6 +179,13 @@
               <input type="checkbox" bind:checked={formulario.tieneMaximo} />
               <span>Tiene máximo (valor actual aparte en cada instancia)</span>
             </label>
+            <!-- Solo tiene sentido si el valor tiene máximo (valor actual en cada instancia) -->
+            {#if formulario.tieneMaximo}
+              <label class="check" title="Si el valor actual de una ficha llega a 0 o menos, se ve en gris en el tablero y en «Fichas activas»">
+                <input type="checkbox" bind:checked={formulario.atenuar} />
+                <span>Atenuar la ficha si llega a 0 o menos</span>
+              </label>
+            {/if}
           </div>
           <div class="fila">
             <label for="p-unidad">Unidad:</label>

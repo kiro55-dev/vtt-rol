@@ -1,11 +1,21 @@
 <!-- src/routes/componentes/panel-derecho/ListaTiradas.svelte -->
 <script lang="ts">
   import { tiradas } from "$lib/tiradas.svelte";
+  import { arrastreTirada } from "$lib/arrastreTirada.svelte";
 </script>
 
-<div class="lista-tiradas">
+<!-- Una tirada válida se puede arrastrar sobre el valor de una ficha: botón izquierdo = quita el total,
+     derecho = lo suma. `data-conserva-foco`: empezar a arrastrar no debe quitar el foco a la ficha. -->
+<div class="lista-tiradas" role="list" data-conserva-foco oncontextmenu={(e) => e.preventDefault()}>
   {#each tiradas.historial as t}
-    <div class="linea-tirada" class:error={t.total === null}>
+    <div
+      class="linea-tirada"
+      class:error={t.total === null}
+      class:arrastrable={t.total !== null}
+      role="listitem"
+      title={t.total === null ? undefined : "Arrastra sobre un valor de una ficha: botón izquierdo quita, derecho suma"}
+      onpointerdown={(e) => t.total !== null && arrastreTirada.preparar(e, t.total)}
+    >
       <span class="hora">{t.hora}</span>
       <!-- @html a propósito: Rust devuelve el desglose con <b> para resaltar el dado ganador.
            Es seguro mientras el texto lo genere solo Rust; si algún día llegan tiradas de otros
@@ -38,6 +48,7 @@
   .lista-tiradas::-webkit-scrollbar-thumb { background: #3f3f46; border-radius: 4px; }
   .lista-tiradas::-webkit-scrollbar-thumb:hover { background: #71717a; }
 
+  .linea-tirada.arrastrable { cursor: grab; user-select: none; }
   .linea-tirada {
     display: flex;
     align-items: flex-start;

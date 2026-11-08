@@ -2,7 +2,8 @@
 <!-- Los parámetros de la instancia seleccionada, tal y como estén definidos en la partida (en su
      orden). Los que tienen máximo muestran «actual / máx» con − y + para cambiar el actual. -->
 <script lang="ts">
-  import { partida, numeroDe, type Cuerpo } from "$lib/partida.svelte";
+  import { partida, numeroDe, veParametro, type Cuerpo } from "$lib/partida.svelte";
+  import { arrastreTirada } from "$lib/arrastreTirada.svelte";
 
   const textoCuerpo = (c: Cuerpo) => (typeof c === "object" ? `${c.Grande[0] ?? 1}×${c.Grande[1] ?? 1}` : "1×1");
 
@@ -10,7 +11,8 @@
 
   const parametros = $derived(
     ficha
-      ? partida.definiciones.map((d) => {
+      ? // Solo los que Rust manda: lo privado no se enseña
+        partida.definiciones.filter((d) => veParametro(ficha, d.id)).map((d) => {
           const v = ficha.base.parametros.find((p) => p.id_definicion === d.id)?.valor;
           const unidad = d.unidad ? ` ${d.unidad}` : "";
           const texto = !v ? "—" : "Numero" in v ? `${v.Numero}${unidad}` : v.Texto || "—";
@@ -31,6 +33,8 @@
           <!-- La rueda también lo cambia; se manda a Rust agrupado (ver partida.cambiarValorActual) -->
           <div
             class="param ancho"
+            class:destino-tirada={arrastreTirada.esDestino(ficha.id_instancia, p.id)}
+            data-valor="{ficha.id_instancia}:{p.id}"
             role="group"
             title="Rueda o − / + para cambiarlo"
             onwheel={(e) => {
@@ -80,6 +84,7 @@
   .caja-parametros { display: grid; grid-template-columns: 1fr 1fr; gap: 4px; overflow-y: auto; min-height: 0; }
   .param { background: #27272a; padding: 5px; border-radius: 4px; min-width: 0; }
   .param.ancho { grid-column: span 2; display: flex; justify-content: space-between; align-items: center; }
+  .param.destino-tirada { background: rgba(250, 204, 21, 0.25); outline: 1px solid #facc15; }
   .label { color: #a1a1aa; font-size: 10px; display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .valor { font-size: 13px; font-weight: bold; color: #f4f4f5; overflow-wrap: anywhere; }
   .control { display: flex; align-items: center; gap: 6px; }

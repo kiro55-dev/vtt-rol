@@ -44,15 +44,20 @@ export class FormularioParametro {
   unidad = $state("");
   visibilidad = $state<Visibilidad>("Variable");
   forma = $state<TipoForma>("ninguna");
+  /** Solo con máximo: la ficha se atenúa si el valor actual llega a 0 o menos */
+  atenuar = $state(false);
   color = $state("#3b82f6");
 
   get tieneMaximo() {
     return this.#tieneMaximo;
   }
-  /** Sin máximo no hay «actual/máx»: si estaba elegido el Resumen, la forma se quita. */
+  /** Sin máximo no hay «actual/máx» ni nada que atenuar: se quitan el Resumen y el atenuado. */
   set tieneMaximo(v: boolean) {
     this.#tieneMaximo = v;
-    if (!v && this.forma === "Resumen") this.forma = "ninguna";
+    if (!v) {
+      this.atenuar = false;
+      if (this.forma === "Resumen") this.forma = "ninguna";
+    }
   }
 
   get esNumero() {
@@ -90,7 +95,8 @@ export class FormularioParametro {
       tiene_maximo: this.esNumero && this.tieneMaximo,
       representar_mapa: forma,
       visibilidad: this.visibilidad,
-      unidad: this.esNumero && this.unidad.trim() ? this.unidad.trim() : null
+      unidad: this.esNumero && this.unidad.trim() ? this.unidad.trim() : null,
+      atenuar_si_negativo: this.esNumero && this.tieneMaximo && this.atenuar
     };
   }
 
@@ -103,6 +109,7 @@ export class FormularioParametro {
     this.valorNumero = "Numero" in v ? v.Numero : 0;
     this.valorTexto = "Texto" in v ? v.Texto : "";
     this.tieneMaximo = d.tiene_maximo;
+    this.atenuar = d.atenuar_si_negativo ?? false;
     this.unidad = d.unidad ?? "";
     this.visibilidad = d.visibilidad;
     const forma = d.representar_mapa;
@@ -121,6 +128,7 @@ export class FormularioParametro {
     this.valorNumero = 0;
     this.valorTexto = "";
     this.tieneMaximo = false;
+    this.atenuar = false;
     this.unidad = "";
     this.visibilidad = "Variable";
     this.forma = "ninguna";
@@ -132,6 +140,7 @@ export class FormularioParametro {
 export function resumenDefinicion(d: DefinicionParametro): string {
   const partes = ["Numero" in d.valor_por_defecto ? "Número" : "Texto"];
   if (d.tiene_maximo) partes.push("con máximo");
+  if (d.atenuar_si_negativo) partes.push("atenúa");
   if (d.unidad) partes.push(d.unidad);
   if (d.representar_mapa) {
     const nombre = Object.keys(d.representar_mapa)[0];

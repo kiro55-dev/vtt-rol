@@ -5,10 +5,10 @@
   import {
     rejillaDe, pantallaAMundo, casillaEn, casillaMasCercana, extenderRecorrido, origenAlSoltar
   } from '$lib/tablero';
-  import { partida, numeroDe } from '$lib/partida.svelte';
+  import { partida, numeroDe, veParametro } from '$lib/partida.svelte';
   import { arrastre } from '$lib/arrastreFicha.svelte';
   import {
-    fichasDelMapa, fichaEnCasilla, imagenDe, dibujarFicha, dibujarDestino, dibujarFormas, rectanguloFicha
+    fichasDelMapa, fichaEnPunto, imagenDe, dibujarFicha, dibujarDestino, dibujarFormas, rectanguloFicha
   } from '$lib/fichasTablero';
   import { dibujarPing, dibujarRecorrido, pingVivo } from '$lib/marcasTablero';
   import {
@@ -220,12 +220,14 @@
   function alPresionar(e) {
     const p = puntoDelMapa(e);
     const casillaPulsada = casillaEn(casillas, p.x, p.y);
-    const ficha = casillaPulsada ? fichaEnCasilla(fichas, casillaPulsada) : null;
+    // Por el rectángulo de la ficha y no por la casilla: una que quedó fuera del mapa (tras agrandar la
+    // rejilla, hasta que Rust la reencaja) también se puede coger
+    const ficha = fichaEnPunto(fichas, casillas, p.x, p.y);
 
-    if (e.button === 0 && ficha && casillaPulsada) {
+    if (e.button === 0 && ficha) {
       e.preventDefault();
       // Punto por el que se coge, para que la ficha no salte bajo el cursor al arrastrarla
-      const r = rectanguloFicha(cam, casillas, { instancia: ficha, casilla: casillaDe(ficha) ?? casillaPulsada });
+      const r = rectanguloFicha(cam, casillas, { instancia: ficha, casilla: casillaDe(ficha) ?? { x: 0, y: 0 } });
       const caja = contenedor.getBoundingClientRect();
       const agarre = { x: (e.clientX - caja.left - r.x) / r.w, y: (e.clientY - caja.top - r.y) / r.h };
       const anadir = e.shiftKey;
@@ -348,9 +350,10 @@
       if (aviso.Ping.id_mapa === idMapa()) lanzarPing(aviso.Ping.casilla);
     } else if ('Recorrido' in aviso) {
       if (aviso.Recorrido.id_mapa === idMapa()) recorridoAjeno = aviso.Recorrido.casillas;
-    } else if (aviso.RecorridoBorrado.id_mapa === idMapa()) {
-      recorridoAjeno = [];
+    } else if ('RecorridoBorrado' in aviso) {
+      if (aviso.RecorridoBorrado.id_mapa === idMapa()) recorridoAjeno = [];
     }
+    // `Foco` lo atiende +page.svelte (lo ven también «Fichas activas» y la lista de parámetros)
   }
 
   /** @param {import("$lib/partida.svelte").Casilla} casilla */
@@ -427,7 +430,7 @@
   // Capa de fichas: depende de las instancias del mapa, la selección, la cámara y el arrastre en curso.
   let fichasPendientes = true;
   $effect(() => {
-    void [fichas, partida.idsSeleccionados, partida.definiciones, cam, ancho, alto, dpr, casillas, arrastre.actual];
+    void [fichas, partida.idsSeleccionados, partida.idsFocoAjeno, partida.definiciones, cam, ancho, alto, dpr, casillas, arrastre.actual];
     void Object.values(partida.valoresPendientes); // la barra de vida y los radios siguen a la rueda
     fichasPendientes = true;
     programar();
@@ -449,7 +452,7 @@
       if (!partida.estaSeleccionada(f.instancia.id_instancia)) continue;
       const base = f.instancia.base;
       dibujarFormas(
-        ctx, cam, casillas, f, partida.definiciones,
+        ctx, cam, casillas, f, partida.definiciones.filter((d) => veParametro(f.instancia, d.id)),
         (d) => (d.tiene_maximo ? partida.valorMostrado(f.instancia, d.id) : numeroDe(base, d.id)),
         (d) => numeroDe(base, d.id)
       );
@@ -459,7 +462,9 @@
     for (const f of fichas) {
       if (arrastre.arrastrando(f.instancia.id_instancia)) continue;
       dibujarFicha(ctx, cam, casillas, f, imagen(f.instancia.base.foto_url), {
-        seleccionada: partida.estaSeleccionada(f.instancia.id_instancia)
+        seleccionada: partida.estaSeleccionada(f.instancia.id_instancia),
+        focoAjeno: partida.idsFocoAjeno.includes(f.instancia.id_instancia),
+        apagada: partida.estaCaida(f.instancia)
       });
     }
 

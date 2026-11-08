@@ -25,6 +25,7 @@ describe("avisos del tablero", () => {
     // Mismos JSON que comprueba el test de tablero.rs
     expect(lib.avisoPing(3, { x: 4, y: 5 })).toEqual({ Ping: { id_mapa: 3, casilla: { x: 4, y: 5 } } });
     expect(lib.avisoRecorridoBorrado(3)).toEqual({ RecorridoBorrado: { id_mapa: 3 } });
+    expect(lib.avisoFoco([4, 7])).toEqual({ Foco: { ids_instancias: [4, 7] } });
   });
 
   it("el recorrido enviado es una copia: seguir moviendo el ratón no lo cambia", () => {

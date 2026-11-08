@@ -19,6 +19,7 @@ use crate::tablero_general::modelos::*;
 use crate::tablero_general::partidas;
 use crate::tablero_general::recursos;
 use crate::tablero_general::tablero::{self, AvisoTablero};
+use crate::tablero_general::visibilidad;
 
 pub struct AppState {
     pub estado: Mutex<EstadoPartida>,
@@ -270,6 +271,9 @@ fn validar_definicion(existentes: &[DefinicionParametro], d: &DefinicionParametr
     if matches!(d.representar_mapa, Some(Forma::Resumen(_))) && !d.tiene_maximo {
         return Err("El resumen «actual/máx» solo vale para parámetros con máximo".into());
     }
+    if d.atenuar_si_negativo && !d.tiene_maximo {
+        return Err("Atenuar la ficha solo vale para parámetros con máximo".into());
+    }
     Ok(())
 }
 
@@ -365,9 +369,11 @@ pub fn obtener_banco_entidades(state: State<'_, AppState>) -> Vec<Entidad> {
     state.lock().banco_entidades.clone()
 }
 
+/// Las instancias tal como las muestra la pantalla del máster. Por ahora sin lo privado (ver
+/// `visibilidad::OCULTAR_PRIVADOS_AL_MASTER`): la partida lo conserva todo, solo cambia lo que se envía.
 #[tauri::command]
 pub fn obtener_instancias_activas(state: State<'_, AppState>) -> Vec<Instancia> {
-    state.lock().instancias_activas.clone()
+    visibilidad::instancias_para_el_master(&state.lock().instancias_activas, visibilidad::OCULTAR_PRIVADOS_AL_MASTER)
 }
 
 // Instancias: las reglas (ficha única, casilla encajada, id nuevo...) están en `instancias.rs`;
@@ -388,7 +394,8 @@ pub fn instanciar_entidad(
     };
     let instancia = i.clone();
     registrar(&mut est, &state.almacen, delta);
-    Ok(instancia)
+    // Lo que vuelve a la pantalla del máster, igual que `obtener_instancias_activas`
+    Ok(visibilidad::instancias_para_el_master(&[instancia], visibilidad::OCULTAR_PRIVADOS_AL_MASTER).remove(0))
 }
 
 /// Mueve una instancia a otra casilla o, con `None`, la quita del tablero (sigue activa).
@@ -595,8 +602,13 @@ fn difundir_aviso(_aviso: &AvisoTablero) {
 pub fn avisar_tablero(aviso: AvisoTablero, state: State<'_, AppState>) -> Result<(), String> {
     {
         let est = state.lock();
-        let mapa = est.mapas.iter().find(|m| m.id == aviso.id_mapa()).ok_or("Ese mapa no existe")?;
-        aviso.validar(mapa)?;
+        match aviso.id_mapa() {
+            Some(id) => aviso.validar(est.mapas.iter().find(|m| m.id == id).ok_or("Ese mapa no existe")?)?,
+            None => {
+                let ids: Vec<u16> = est.instancias_activas.iter().map(|i| i.id_instancia).collect();
+                aviso.validar_foco(&ids)?;
+            }
+        }
     }
     difundir_aviso(&aviso);
     Ok(())
@@ -936,6 +948,7 @@ mod tests {
             representar_mapa: None,
             visibilidad: Visibilidad::Variable,
             unidad: None,
+            atenuar_si_negativo: false,
         }];
         let ps = vec![Parametro { id_definicion: 9, valor: ValorParametro::Texto("Bob".into()), publico: false }];
         assert!(validar_parametros(&defs, &ps).is_err());
@@ -955,6 +968,7 @@ mod tests_definiciones {
             representar_mapa: None,
             visibilidad: Visibilidad::Variable,
             unidad: None,
+            atenuar_si_negativo: false,
         }
     }
 
@@ -988,6 +1002,10 @@ mod tests_definiciones {
         };
         assert!(validar_definicion(&defs, &resumen(true)).is_ok());
         assert!(validar_definicion(&defs, &resumen(false)).is_err(), "Resumen sin máximo");
+
+        let atenua = |tiene_maximo| DefinicionParametro { atenuar_si_negativo: true, tiene_maximo, ..nueva("Aguante") };
+        assert!(validar_definicion(&defs, &atenua(true)).is_ok());
+        assert!(validar_definicion(&defs, &atenua(false)).is_err(), "atenuar sin máximo");
     }
 }
 
