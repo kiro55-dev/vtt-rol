@@ -133,32 +133,12 @@ class ArrastreFicha {
         if (Math.hypot(ev.clientX - inicio.x, ev.clientY - inicio.y) <= UMBRAL_ARRASTRE_PX) return;
         empezado = true;
       }
-      const zona = zonaEn(ev.clientX, ev.clientY);
-      this.actual = {
-        origen,
-        foto: base.foto_url,
-        lados,
-        x: ev.clientX,
-        y: ev.clientY,
-        zona,
-        indice: zona === "activas" ? indiceEn(ev.clientX, ev.clientY) : null,
-        agarre
-      };
+      this.#actualizar(origen, base.foto_url, lados, agarre, ev.clientX, ev.clientY);
     };
-    const soltar = (ev: PointerEvent) => {
+    const soltar = (_ev: PointerEvent) => {
       this.#terminar();
       if (!empezado) return alClic?.();
-      const a = this.actual;
-      this.actual = null;
-      if (!a) return;
-      // El clic que el navegador manda al soltar sobre el elemento de origen no debe abrir nada
-      this.#ignorarClic = true;
-      setTimeout(() => (this.#ignorarClic = false), 0);
-
-      const casilla = a.zona === "tablero" ? (this.#resolverCasilla?.(a.x, a.y, a.lados, a.agarre) ?? null) : null;
-      const orden = partida.instanciasOrdenadas.map((i) => i.id_instancia);
-      const accion = accionAlSoltar(origen, a.zona, casilla, orden, a.indice);
-      if (accion) void ejecutarAccion(accion);
+      this.#completar(origen);
     };
     const cancelar = (ev: Event) => {
       if (ev instanceof KeyboardEvent && ev.key !== "Escape") return;
@@ -176,6 +156,53 @@ class ArrastreFicha {
       window.removeEventListener("pointercancel", cancelar);
       window.removeEventListener("keydown", cancelar);
     };
+  }
+
+  // Pone el arrastre en (x, y) (px de la ventana): qué zona hay debajo y, en «Fichas activas», qué posición
+  #actualizar(origen: OrigenArrastre, foto: string | null, lados: Lados, agarre: ArrastreEnCurso["agarre"], x: number, y: number) {
+    const zona = zonaEn(x, y);
+    this.actual = { origen, foto, lados, x, y, zona, indice: zona === "activas" ? indiceEn(x, y) : null, agarre };
+  }
+
+  // Termina el arrastre en curso: hace lo que toque donde se soltó
+  #completar(origen: OrigenArrastre) {
+    const a = this.actual;
+    this.actual = null;
+    if (!a) return;
+    // El clic que el navegador manda al soltar sobre el elemento de origen no debe abrir nada
+    this.#ignorarClic = true;
+    setTimeout(() => (this.#ignorarClic = false), 0);
+
+    const casilla = a.zona === "tablero" ? (this.#resolverCasilla?.(a.x, a.y, a.lados, a.agarre) ?? null) : null;
+    const orden = partida.instanciasOrdenadas.map((i) => i.id_instancia);
+    const accion = accionAlSoltar(origen, a.zona, casilla, orden, a.indice);
+    if (accion) void ejecutarAccion(accion);
+  }
+
+  // BANCO EXTERNO: arrastre que empezó en otra ventana (la del banco de fichas). La ventana del banco
+  // manda la posición del cursor ya convertida a px de ESTA ventana (ver $lib/bancoExterno).
+  #externo: { origen: OrigenArrastre; foto: string | null; lados: Lados } | null = null;
+
+  externoInicio(entidad: Entidad) {
+    this.#externo = { origen: { entidad }, foto: entidad.foto_url, lados: tamanoCuerpo(entidad.cuerpo) };
+  }
+
+  externoMover(x: number, y: number) {
+    const e = this.#externo;
+    if (e) this.#actualizar(e.origen, e.foto, e.lados, null, x, y);
+  }
+
+  externoFin(x: number, y: number) {
+    const e = this.#externo;
+    this.#externo = null;
+    if (!e) return;
+    this.#actualizar(e.origen, e.foto, e.lados, null, x, y);
+    this.#completar(e.origen);
+  }
+
+  externoCancelar() {
+    this.#externo = null;
+    this.actual = null;
   }
 
   /** Para el `onclick` de lo que se arrastra: true si ese clic es el final de un arrastre y hay que ignorarlo. */

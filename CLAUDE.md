@@ -104,6 +104,12 @@ Positions are grid cells, never pixels, like a spreadsheet: `Casilla { x, y }` w
 - `MapaModificado` re-fits instances of that map with `encajar`.
 - **Ephemeral notices (avisos).** Pings (middle click) and the measured path (right-drag, with the start cell in yellow) are `AvisoTablero` ([tablero.rs](src-tauri/src/tablero_general/tablero.rs), mirrored in [src/lib/avisosTablero.ts](src/lib/avisosTablero.ts)), NOT deltas: never written to disk or the log, no `seq`. The board draws its own marks at once and calls `avisar_tablero`, which validates and passes them to `difundir_aviso` (the network hook, `// FUTURA RED`). A notice from another player must arrive as the Tauri event `aviso-tablero`, which `Tablero.svelte` already listens to. Drawing lives in [marcasTablero.ts](src/lib/marcasTablero.ts).
 
+### Detached bank window (removable hack)
+A small ↗ button in the bank opens it in its own OS window (label `banco`, route `src/routes/banco`) so it does not show when sharing the main window on Discord; while it is open the main window shows a placeholder. Everything is marked `BANCO EXTERNO`: [bancoExterno.svelte.ts](src/lib/bancoExterno.svelte.ts), the route, the marked spots in `BancoEntidades`, `PanelIzquierdo`, `arrastreFicha` and `+page.svelte`, and the window permissions in `src-tauri/capabilities/default.json`. To remove it, delete those.
+- The bank window is a separate JS context: it reads Rust itself and stays current through Tauri events (`banco-cambiado`).
+- Pointer events do not cross windows, so a drag that starts there sends the global cursor position (`cursorPosition()`) to the main window as events. The main window converts it to its own pixels (`aVentana`) and drives the same `arrastre` store (`externoInicio/Mover/Fin`).
+- The ficha editor only exists in the main window, so clicks there are forwarded as events. OS file drops are disabled in the bank window.
+
 ### Dice
 The parser and roller live in Rust ([dados.rs](src-tauri/src/tablero_general/dados.rs), command `tirar_dado`, limit of 999 dice in total). The result breakdown is HTML with `<b>` marking a 1 or the max face. The frontend ([src/lib/tiradas.svelte.ts](src/lib/tiradas.svelte.ts)) only builds command strings (`aplicarDadoAlComando` is a pure, tested function) and keeps the history and arrow-key navigation.
 

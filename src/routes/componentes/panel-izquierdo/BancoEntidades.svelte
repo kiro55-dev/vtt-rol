@@ -7,6 +7,10 @@
   import { esImagen, importarImagen } from "$lib/imagenes";
   import { alSoltarArchivos } from "$lib/soltarArchivos";
   import { arrastre } from "$lib/arrastreFicha.svelte";
+  import { bancoExterno } from "$lib/bancoExterno.svelte"; // BANCO EXTERNO
+
+  // BANCO EXTERNO: true cuando este banco se dibuja en la ventana aparte (ver $lib/bancoExterno)
+  let { externo = false }: { externo?: boolean } = $props();
 
   // Soltar aquí una instancia la elimina: se marca el banco mientras pasa por encima
   const recibeInstancia = $derived(arrastre.actual?.zona === "banco" && "instancia" in arrastre.actual.origen);
@@ -66,7 +70,8 @@
   // Drag & drop de imagen desde el explorador del SO
   onMount(() =>
     alSoltarArchivos(async ([ruta], el) => {
-      if (!esImagen(ruta, "ficha") || !el?.closest(".banco")) return;
+      // BANCO EXTERNO: en la ventana aparte no hay editor de fichas, así que no se admiten archivos soltados
+      if (externo || !esImagen(ruta, "ficha") || !el?.closest(".banco")) return;
       // Con una ficha ya abierta se ignora el drop (no se importa nada que quede huérfano)
       if (partida.entidadEnEdicion) return;
       const fotoUrl = await importarImagen(ruta, "ficha");
@@ -84,9 +89,24 @@
   <div class="sub-busqueda">
     <div class="fila-cabecera">
       <span class="titulo-mini">BANCO DE FICHAS</span>
-      <button type="button" class="btn-anadir" onclick={() => partida.abrirEditorEntidad(null)}>
-        + Añadir Ficha
-      </button>
+      <div class="acciones-cabecera">
+        <button
+          type="button"
+          class="btn-anadir"
+          onclick={() => (externo ? bancoExterno.pedirAbrirFicha(null) : partida.abrirEditorEntidad(null))}
+        >
+          + Añadir Ficha
+        </button>
+        <!-- BANCO EXTERNO: sacar el banco a otra ventana (o traerlo de vuelta) -->
+        <button
+          type="button"
+          class="btn-ventana"
+          title={externo ? "Traer el banco de vuelta a la ventana principal" : "Sacar el banco a otra ventana (no se verá al compartir la aplicación)"}
+          onclick={() => (externo ? void bancoExterno.cerrar() : void bancoExterno.abrir())}
+        >
+          {externo ? "⤶" : "↗"}
+        </button>
+      </div>
     </div>
 
     <input type="text" placeholder="Buscar ficha..." bind:value={busqueda} class="input-buscar" />
@@ -155,8 +175,11 @@
         type="button"
         class="fila-entidad"
         use:vigilarVisibilidad={item.id}
-        onpointerdown={(e) => arrastre.preparar(e, { entidad: item })}
-        onclick={() => !arrastre.esClicDeArrastre() && partida.abrirEditorEntidad(item)}
+        onpointerdown={(e) =>
+          externo
+            ? bancoExterno.prepararArrastre(e, item, () => bancoExterno.pedirAbrirFicha(item.id)) // BANCO EXTERNO
+            : arrastre.preparar(e, { entidad: item })}
+        onclick={() => !externo && !arrastre.esClicDeArrastre() && partida.abrirEditorEntidad(item)}
         title="Clic: editar ficha · Arrastrar: al tablero o a «Fichas activas»"
       >
         {#if item.tipo === "NPC"}
@@ -213,6 +236,20 @@
     cursor: pointer;
   }
   .btn-anadir:hover { background: #3f3f46; color: white; }
+  .acciones-cabecera { display: flex; gap: 3px; align-items: center; }
+  .btn-ventana {
+    background: #27272a;
+    border: 1px solid #3f3f46;
+    color: #a1a1aa;
+    border-radius: 3px;
+    font-size: 11px;
+    line-height: 1;
+    width: 20px;
+    height: 20px;
+    padding: 0;
+    cursor: pointer;
+  }
+  .btn-ventana:hover { background: #3f3f46; color: white; }
 
   .input-buscar {
     background: #09090b;

@@ -4,6 +4,7 @@
   import { partida } from "$lib/partida.svelte";
   import { tiradas } from "$lib/tiradas.svelte";
   import { alRecibirAviso } from "$lib/avisosTablero";
+  import { bancoExterno } from "$lib/bancoExterno.svelte"; // BANCO EXTERNO
 
   import PanelIzquierdo from "./componentes/PanelIzquierdo.svelte";
   import PanelDerecho from "./componentes/PanelDerecho.svelte";
@@ -40,6 +41,13 @@
       if ("Foco" in aviso) partida.recibirFocoAjeno(aviso.Foco.ids_instancias);
     })
   );
+
+  // BANCO EXTERNO: atiende a la ventana del banco y le avisa cuando cambian las fichas, las instancias o la zona
+  onMount(() => bancoExterno.escuchar());
+  $effect(() => {
+    void [partida.banco, partida.instancias, partida.zonaId, bancoExterno.abierto];
+    void bancoExterno.avisarCambio();
+  });
 
   onMount(async () => {
     try {
