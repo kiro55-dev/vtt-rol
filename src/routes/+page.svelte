@@ -3,6 +3,7 @@
   import { onMount } from "svelte";
   import { partida } from "$lib/partida.svelte";
   import { tiradas } from "$lib/tiradas.svelte";
+  import { ajustesVista } from "$lib/ajustesVista.svelte";
   import { alRecibirAviso } from "$lib/avisosTablero";
   import { bancoExterno } from "$lib/bancoExterno.svelte"; // BANCO EXTERNO
 
@@ -52,9 +53,7 @@
       const ids = [...partida.idsSeleccionados];
       if (ids.length === 0) return;
       e.preventDefault();
-      void (async () => {
-        for (const id of ids) await partida.borrarInstancia(id);
-      })();
+      void partida.borrarInstancias(ids);
       return;
     }
     if (e.key !== "ArrowUp" && e.key !== "ArrowDown") return;
@@ -96,9 +95,12 @@
   <PanelIzquierdo />
 
   <main class="area-central">
-    <div class="barra-superior">
-      <BarraRejilla />
-    </div>
+    {#if ajustesVista.edicionRejilla}
+      <!-- Se oculta desde ⚙ (preferencia de esta pantalla, no de la partida) -->
+      <div class="barra-superior">
+        <BarraRejilla />
+      </div>
+    {/if}
 
     <div class="contenedor-lienzo">
       <Tablero mapa={partida.mapaActual} rejilla={partida.rejilla} />

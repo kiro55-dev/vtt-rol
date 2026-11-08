@@ -25,14 +25,39 @@ export const COLOR_TIPO: Record<TipoEntidad, string> = {
 /** Instancia colocada con su casilla central. */
 export type FichaEnMapa = { instancia: Instancia; casilla: Casilla };
 
-/** Las instancias que están en una casilla de ese mapa, en orden de dibujo (la última, encima). */
+/**
+ * Las instancias que están en una casilla de ese mapa, en orden de dibujo (la última, encima): por su
+ * `capa` (la última que se puso o movió, arriba) y, a igual capa, en el orden en que llegan.
+ */
 export function fichasDelMapa(instancias: readonly Instancia[], idMapa: number | null): FichaEnMapa[] {
   if (idMapa === null) return [];
-  return instancias.flatMap((instancia) =>
-    instancia.id_mapa === idMapa && typeof instancia.coordenadas === "object"
-      ? [{ instancia, casilla: instancia.coordenadas.Casilla }]
-      : []
-  );
+  return instancias
+    .flatMap((instancia) =>
+      instancia.id_mapa === idMapa && typeof instancia.coordenadas === "object"
+        ? [{ instancia, casilla: instancia.coordenadas.Casilla }]
+        : []
+    )
+    .sort((a, b) => (a.instancia.capa ?? 0) - (b.instancia.capa ?? 0)); // sort es estable
+}
+
+/**
+ * Las fichas que toca un recuadro (px del mapa, esquinas en cualquier orden), como al seleccionar
+ * arrastrando en el escritorio: basta con que se solapen, no hace falta que queden dentro.
+ */
+export function fichasEnRectangulo(
+  fichas: readonly FichaEnMapa[],
+  rejilla: RejillaTablero,
+  desde: { x: number; y: number },
+  hasta: { x: number; y: number }
+): Instancia[] {
+  const [x0, x1] = [Math.min(desde.x, hasta.x), Math.max(desde.x, hasta.x)];
+  const [y0, y1] = [Math.min(desde.y, hasta.y), Math.max(desde.y, hasta.y)];
+  return fichas
+    .filter((f) => {
+      const r = rectanguloDe(rejilla, f.casilla, ladosInstancia(f.instancia));
+      return r.x < x1 && r.x + r.w > x0 && r.y < y1 && r.y + r.h > y0;
+    })
+    .map((f) => f.instancia);
 }
 
 /** La ficha que cubre una casilla (la de encima si se solapan). */

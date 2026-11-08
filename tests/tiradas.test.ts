@@ -67,6 +67,10 @@ async function nuevoStore() {
         if (r === "ERROR") throw "comando inválido";
         return r;
       }
+      if (cmd === "limpiar_chat") {
+        if (!/^(clean|c)$/i.test(String(args.comando).trim())) throw "no es la orden de limpiar";
+        return;
+      }
       if (cmd === "obtener_historial_personal") return [...personales];
       if (cmd === "obtener_historial_tiradas") return [{ hora: "10:00", comando: "1d20 (15)", total: 15 }];
       throw new Error("comando desconocido " + cmd);
@@ -140,6 +144,26 @@ describe("tirar", () => {
     for (let i = 0; i < 25; i++) await tiradas.tirar(`1d${i + 2}`);
     expect(tiradas.historial).toHaveLength(20);
     expect(tiradas.historial[0].comando).toContain("1d26");
+  });
+
+  it("clean o c, solos, vacían el chat en Rust y en pantalla; mezclados son una tirada no válida", async () => {
+    const { tiradas, esComandoLimpiar } = await nuevoStore();
+    for (const c of ["c", "C", "clean", " Clean "]) expect(esComandoLimpiar(c)).toBe(true);
+    for (const c of ["c + 1d6", "clean 1d6", "cc", "1d6"]) expect(esComandoLimpiar(c)).toBe(false);
+
+    await tiradas.cargar();
+    await tiradas.tirar("1d20");
+    expect(tiradas.historial).toHaveLength(2);
+    await tiradas.tirar(" CLEAN ");
+    expect(tiradas.historial).toEqual([]);
+    expect(llamadas.filter((l) => l.cmd === "limpiar_chat")).toHaveLength(1);
+    expect(llamadas.some((l) => l.cmd === "tirar_dado" && /clean/i.test(l.args.comando))).toBe(false);
+
+    // Mezclado: va a Rust como tirada, que lo rechaza
+    tirarRespuesta = () => "ERROR";
+    await tiradas.tirar("c + 1d6");
+    expect(tiradas.historial[0]).toMatchObject({ comando: "tirada no válida", total: null });
+    expect(llamadas.filter((l) => l.cmd === "limpiar_chat")).toHaveLength(1);
   });
 
   it("ignora comandos vacíos", async () => {

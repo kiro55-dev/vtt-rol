@@ -11,6 +11,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { iniciarImagenes, importarImagen } from "$lib/imagenes";
 import { miniaturas } from "$lib/miniaturas.svelte";
 import { enviarAviso, avisoFoco } from "$lib/avisosTablero";
+import { desplazarGrupo, encajar, ladosInstancia, rejillaDe } from "$lib/tablero";
 
 export interface Zona {
   id: number;
@@ -139,6 +140,8 @@ export interface Instancia {
   rotacion: number;
   /** Posición en «Fichas activas» */
   orden: number;
+  /** Altura en el tablero (la mayor, encima). La pone Rust al poner o mover la ficha. */
+  capa?: number;
 }
 
 export interface Rejilla {
@@ -193,7 +196,7 @@ class Partida {
   /** «Fichas activas» de arriba abajo. */
   instanciasOrdenadas = $derived([...this.instancias].sort((a, b) => a.orden - b.orden || a.id_instancia - b.id_instancia));
 
-  /** Fichas con el foco (varias con Shift). Solo se guardan los ids: se actualizan solas al recargar
+  /** Fichas con el foco (varias con Ctrl, como en el banco). Solo se guardan los ids: se actualizan solas al recargar
    *  las instancias y desaparecen si Rust las elimina (p. ej. al borrar su zona). */
   idsSeleccionados = $state<number[]>([]);
   seleccionadas = $derived(this.instancias.filter((i) => this.idsSeleccionados.includes(i.id_instancia)));
@@ -428,7 +431,7 @@ class Partida {
   // ------------------------------------------------------------------
 
   /**
-   * Da el foco a una ficha (`null` = a ninguna). Con `anadir` (Shift) la añade o la quita del
+   * Da el foco a una ficha (`null` = a ninguna). Con `anadir` (Ctrl) la añade o la quita del
    * conjunto en vez de sustituirlo. Los valores cambiados de la que pierde el foco se guardan ya.
    */
   seleccionarInstancia(instancia: Instancia | null, anadir = false) {
@@ -440,6 +443,17 @@ class Partida {
     else nuevos = [...ids, instancia.id_instancia];
 
     if (nuevos.length === ids.length && nuevos.every((id, i) => id === ids[i])) return;
+    this.#cambiarFoco(nuevos);
+  }
+
+  /**
+   * Da el foco a varias fichas a la vez (el recuadro de Ctrl+arrastrar en el tablero). Con `anadir` se
+   * suman a las que ya lo tenían; si no, las sustituyen.
+   */
+  seleccionarInstancias(ids: readonly number[], anadir = false) {
+    const actuales = this.idsSeleccionados;
+    const nuevos = anadir ? [...actuales, ...ids.filter((id) => !actuales.includes(id))] : [...new Set(ids)];
+    if (nuevos.length === actuales.length && nuevos.every((id, i) => id === actuales[i])) return;
     this.#cambiarFoco(nuevos);
   }
 
@@ -562,31 +576,94 @@ class Partida {
 
   /**
    * Instancia una ficha del banco en una casilla (`destino`) o solo como activa (null). Una ficha
-   * única que ya tenía instancia la reutiliza (Rust decide). La instancia queda seleccionada.
+   * única que ya tenía instancia la reutiliza (Rust decide). Soltada en «Fichas activas» queda
+   * seleccionada; en el tablero no (así no se dibujan sus formas al soltarla).
    */
   async instanciar(idEntidad: number, destino: Destino | null) {
     const instancia = await this.#cambiarInstancias<Instancia>("instanciar_entidad", { idEntidad, destino });
-    if (instancia) this.seleccionarInstancia(instancia);
+    if (instancia && destino === null) this.seleccionarInstancia(instancia);
   }
 
   /**
    * Instancia varias fichas del banco de golpe (selección múltiple). En el tablero la primera cae en
    * `destino` y las demás en cuadrícula a su lado (Rust); con null, todas activas sin colocar.
-   * Quedan todas con el foco.
+   * Como con una sola: en «Fichas activas» quedan todas con el foco; en el tablero, ninguna.
    */
   async instanciarVarias(idsEntidades: number[], destino: Destino | null) {
     const creadas = await this.#cambiarInstancias<Instancia[]>("instanciar_entidades", { ids: idsEntidades, destino });
-    if (creadas?.length) this.#cambiarFoco(creadas.map((i) => i.id_instancia));
+    if (creadas?.length && destino === null) this.#cambiarFoco(creadas.map((i) => i.id_instancia));
   }
 
   /** Pone una instancia en otra casilla (la casilla final la encaja Rust). */
   async moverInstancia(idInstancia: number, destino: Destino) {
+    const rejilla = this.#rejillaDelMapa(destino.id_mapa);
+    const inst = this.instancias.find((i) => i.id_instancia === idInstancia);
+    if (rejilla && inst) {
+      this.#adelantarPosiciones(destino.id_mapa, new Map([[idInstancia, encajar(rejilla, destino.casilla, ladosInstancia(inst))]]));
+    }
     await this.#cambiarInstancias("mover_instancia", { idInstancia, destino });
+  }
+
+  /**
+   * Mueve juntas varias fichas del mapa `idMapa` `(dx, dy)` casillas, conservando sus distancias
+   * (las seleccionadas que se arrastran a la vez). Rust las recorta en el borde del mapa.
+   */
+  async moverInstancias(ids: number[], idMapa: number, dx: number, dy: number) {
+    const rejilla = this.#rejillaDelMapa(idMapa);
+    const grupo = ids.flatMap((id) => {
+      const i = this.instancias.find((x) => x.id_instancia === id);
+      return i && typeof i.coordenadas === "object" ? [{ id, casilla: i.coordenadas.Casilla, lados: ladosInstancia(i) }] : [];
+    });
+    if (rejilla && grupo.length === ids.length) {
+      const destinos = desplazarGrupo(rejilla, grupo, dx, dy);
+      this.#adelantarPosiciones(idMapa, new Map(grupo.map((f, k) => [f.id, destinos[k]])));
+    }
+    await this.#cambiarInstancias("mover_instancias", { ids, idMapa, dx, dy });
   }
 
   /** La saca del tablero; sigue en «Fichas activas». */
   async quitarDelTablero(idInstancia: number) {
+    // Se quita ya del tablero (si no, al soltarla se vería un instante donde estaba)
+    this.instancias = this.instancias.map((i) =>
+      i.id_instancia === idInstancia ? { ...i, id_mapa: null, coordenadas: "NoPuesto" as const } : i
+    );
     await this.#cambiarInstancias("mover_instancia", { idInstancia, destino: null });
+  }
+
+  /** Rejilla de un mapa con su tamaño guardado: la misma con la que calcula Rust. */
+  #rejillaDelMapa(idMapa: number) {
+    const mapa = this.mapas.find((m) => m.id === idMapa) ?? (this.mapaActual?.id === idMapa ? this.mapaActual : null);
+    return mapa ? rejillaDe(mapa.ancho, mapa.alto, mapa.rejilla) : null;
+  }
+
+  /**
+   * Pone ya las fichas donde caerán (las mismas cuentas que Rust) y encima de las demás, sin esperar a
+   * que Rust conteste: si no, al soltarlas se verían un instante en su casilla de antes. Lo que diga
+   * Rust al releer manda.
+   */
+  #adelantarPosiciones(idMapa: number, casillas: Map<number, Casilla>) {
+    let capa = Math.max(-1, ...this.instancias.map((i) => i.capa ?? 0)) + 1;
+    // Las del grupo suben en el orden en que estaban apiladas, como en Rust
+    const capas = new Map(
+      this.instancias
+        .filter((i) => casillas.has(i.id_instancia))
+        .sort((a, b) => (a.capa ?? 0) - (b.capa ?? 0))
+        .map((i) => [i.id_instancia, capa++])
+    );
+    this.instancias = this.instancias.map((i) => {
+      const casilla = casillas.get(i.id_instancia);
+      return casilla ? { ...i, id_mapa: idMapa, coordenadas: { Casilla: casilla }, capa: capas.get(i.id_instancia) } : i;
+    });
+  }
+
+  /** Saca varias del tablero (siguen en «Fichas activas»). */
+  async quitarVariasDelTablero(ids: number[]) {
+    for (const idInstancia of ids) await this.quitarDelTablero(idInstancia);
+  }
+
+  /** Varias dejan de estar activas (Supr, o arrastrarlas juntas al banco). */
+  async borrarInstancias(ids: number[]) {
+    for (const id of ids) await this.borrarInstancia(id);
   }
 
   /** Deja de estar activa. */

@@ -3,13 +3,14 @@
   import { onMount, untrack, onDestroy } from 'svelte';
   import { urlDeImagen } from '$lib/imagenes';
   import {
-    rejillaDe, pantallaAMundo, casillaEn, casillaMasCercana, extenderRecorrido, origenAlSoltar, disposicionEnCuadricula
+    rejillaDe, pantallaAMundo, mundoAPantalla, casillaEn, casillaMasCercana, extenderRecorrido, origenAlSoltar,
+    disposicionEnCuadricula, desplazarGrupo, ladosInstancia
   } from '$lib/tablero';
   import { partida, numeroDe, veParametro } from '$lib/partida.svelte';
-  import { arrastre, baseDe, ladosDeEntidad } from '$lib/arrastreFicha.svelte';
+  import { arrastre, baseDe, ladosDeEntidad, instanciasArrastradas } from '$lib/arrastreFicha.svelte';
   import { miniaturas } from '$lib/miniaturas.svelte';
   import {
-    fichasDelMapa, fichaEnPunto, imagenDe, dibujarFicha, dibujarDestino, dibujarFormas, rectanguloFicha
+    fichasDelMapa, fichaEnPunto, fichasEnRectangulo, imagenDe, dibujarFicha, dibujarDestino, dibujarFormas, rectanguloFicha
   } from '$lib/fichasTablero';
   import { dibujarPing, dibujarRecorrido, pingVivo } from '$lib/marcasTablero';
   import {
@@ -83,6 +84,10 @@
   // Pulsación izquierda en el fondo: si se suelta sin arrastrar, las fichas pierden el foco.
   /** @type {{ x: number, y: number } | null} */
   let pulsacionIzquierda = null;
+  // Ctrl + arrastrar en el fondo: recuadro de selección (px del mapa) y dónde se pulsó (px de la ventana).
+  // Al soltar, las fichas que toca se añaden a las que tienen el foco.
+  /** @type {{ desde: { x: number, y: number }, hasta: { x: number, y: number }, inicio: { x: number, y: number } } | null} */
+  let recuadro = $state.raw(null);
 
   // Instancias colocadas en el mapa abierto (en orden de dibujo: la última, encima)
   const fichas = $derived(fichasDelMapa(partida.instanciasOrdenadas, typeof mapa?.id === 'number' ? mapa.id : null));
@@ -213,8 +218,9 @@
   }
 
   // Botones:
-  //  * izquierdo: sobre una ficha, clic = foco (con Shift, añadirla) y arrastrar = moverla;
-  //    en el fondo, arrastrar mueve la vista y un clic quita el foco.
+  //  * izquierdo: sobre una ficha, clic = foco (con Ctrl, añadirla o quitarla) y arrastrar = moverla
+  //    (si tiene el foco, junto con las demás que lo tienen); en el fondo, arrastrar mueve la vista
+  //    (con Ctrl, recuadro que añade al foco) y un clic quita el foco.
   //  * central: clic = ping; arrastrar también mueve la vista.
   //  * derecho: arrastrar mide un recorrido por casillas; sobre una ficha sin arrastrar, la gira.
   /** @param {PointerEvent} e */
@@ -224,6 +230,7 @@
     // Por el rectángulo de la ficha y no por la casilla: una que quedó fuera del mapa (tras agrandar la
     // rejilla, hasta que Rust la reencaja) también se puede coger
     const ficha = fichaEnPunto(fichas, casillas, p.x, p.y);
+    const ctrl = e.ctrlKey || e.metaKey; // Ctrl: selección múltiple, igual que en el banco
 
     if (e.button === 0 && ficha) {
       e.preventDefault();
@@ -231,8 +238,23 @@
       const r = rectanguloFicha(cam, casillas, { instancia: ficha, casilla: casillaDe(ficha) ?? { x: 0, y: 0 } });
       const caja = contenedor.getBoundingClientRect();
       const agarre = { x: (e.clientX - caja.left - r.x) / r.w, y: (e.clientY - caja.top - r.y) / r.h };
-      const anadir = e.shiftKey;
-      arrastre.preparar(e, { instancia: ficha, desde: 'tablero' }, () => partida.seleccionarInstancia(ficha, anadir), agarre);
+      // Si tiene el foco, se arrastra con todas las de este mapa que lo tienen
+      const grupo = partida.estaSeleccionada(ficha.id_instancia)
+        ? fichas.filter((f) => partida.estaSeleccionada(f.instancia.id_instancia)).map((f) => f.instancia)
+        : [];
+      arrastre.preparar(
+        e,
+        { instancia: ficha, desde: 'tablero', grupo: grupo.length > 1 ? grupo : undefined },
+        () => partida.seleccionarInstancia(ficha, ctrl),
+        agarre
+      );
+      return;
+    }
+
+    if (e.button === 0 && ctrl) {
+      e.preventDefault();
+      recuadro = { desde: p, hasta: p, inicio: { x: e.clientX, y: e.clientY } };
+      contenedor.setPointerCapture(e.pointerId);
       return;
     }
 
@@ -262,6 +284,10 @@
 
   /** @param {PointerEvent} e */
   function alMover(e) {
+    if (recuadro) {
+      recuadro = { ...recuadro, hasta: puntoDelMapa(e) };
+      return;
+    }
     if (midiendo) {
       const p = puntoDelMapa(e);
       const aqui = casillaMasCercana(casillas, p.x, p.y);
@@ -295,6 +321,15 @@
 
   /** @param {PointerEvent} e */
   function alSoltar(e) {
+    if (recuadro && e.button === 0) {
+      const r = recuadro;
+      recuadro = null;
+      // Un Ctrl+clic sin arrastrar no hace nada (ni quita el foco)
+      if (Math.hypot(e.clientX - r.inicio.x, e.clientY - r.inicio.y) > MOVIMIENTO_MAX_CLIC_PX) {
+        const ids = fichasEnRectangulo(fichas, casillas, r.desde, puntoDelMapa(e)).map((i) => i.id_instancia);
+        partida.seleccionarInstancias(ids, true);
+      }
+    }
     if (midiendo && e.button === 2) {
       midiendo = false; // el recorrido se queda dibujado hasta el siguiente clic
       // Clic derecho sin arrastrar sobre una ficha: gira 90° a la derecha
@@ -322,6 +357,7 @@
   // Un pointercancel (p. ej. la ventana pierde el foco) no debe dejar un ping ni una medida a medias
   /** @param {PointerEvent} e */
   function alCancelar(e) {
+    recuadro = null;
     midiendo = false;
     derechoSobreFicha = null;
     pulsacionIzquierda = null;
@@ -485,22 +521,42 @@
     const a = arrastre.actual;
     if (!a || a.zona !== 'tablero') return;
     const destino = arrastre.casillaActual();
+    const instancia = 'instancia' in a.origen ? a.origen.instancia : fichaDeEntidad(baseDe(a.origen));
+    // Las demás del grupo (si se arrastran varias del tablero), con su casilla de ahora
+    const otras = instanciasArrastradas(a.origen)
+      .filter((i) => i.id_instancia !== instancia.id_instancia)
+      .flatMap((i) => (casillaDe(i) ? [{ instancia: i, casilla: /** @type {any} */ (casillaDe(i)) }] : []));
+    const casillaCogida = casillaDe(instancia);
+
     if (destino && destino.id_mapa === idMapa()) {
       if ('entidades' in a.origen) {
         // Varias fichas del banco: dónde caerá cada una (la misma cuadrícula que hará Rust)
         const lados = a.origen.entidades.map(ladosDeEntidad);
         disposicionEnCuadricula(casillas, destino.casilla, lados).forEach((c, k) => dibujarDestino(ctx, cam, casillas, c, lados[k]));
+      } else if (otras.length > 0 && casillaCogida) {
+        // Un grupo del tablero: todas se desplazan lo mismo que la cogida (lo mismo que hará Rust)
+        const grupo = [{ instancia, casilla: casillaCogida }, ...otras].map((f) => ({ casilla: f.casilla, lados: ladosInstancia(f.instancia) }));
+        const dx = destino.casilla.x - casillaCogida.x;
+        const dy = destino.casilla.y - casillaCogida.y;
+        desplazarGrupo(casillas, grupo, dx, dy).forEach((c, k) => dibujarDestino(ctx, cam, casillas, c, grupo[k].lados));
       } else {
         dibujarDestino(ctx, cam, casillas, destino.casilla, a.lados);
       }
     }
 
-    const instancia = 'instancia' in a.origen ? a.origen.instancia : fichaDeEntidad(baseDe(a.origen));
     const caja = contenedor.getBoundingClientRect();
     const w = a.lados[0] * casillas.anchoCasilla * cam.zoom;
     const h = a.lados[1] * casillas.altoCasilla * cam.zoom;
     const agarre = a.agarre ?? { x: 0.5, y: 0.5 };
     const en = { x: a.x - caja.left - agarre.x * w, y: a.y - caja.top - agarre.y * h };
+    // Las demás del grupo van "cogidas" con ella, a la misma distancia que tienen en el tablero
+    if (casillaCogida) {
+      const origen = rectanguloFicha(cam, casillas, { instancia, casilla: casillaCogida });
+      for (const f of otras) {
+        const r = rectanguloFicha(cam, casillas, f);
+        dibujarFicha(ctx, cam, casillas, f, imagen(f.instancia.base), { en: { x: en.x + r.x - origen.x, y: en.y + r.y - origen.y }, sombra: true });
+      }
+    }
     dibujarFicha(ctx, cam, casillas, { instancia, casilla: { x: 0, y: 0 } }, imagen(instancia.base), { en, sombra: true });
   }
 
@@ -514,7 +570,7 @@
 
   // Depende de la cámara, del tamaño del tablero, de las casillas y del recorrido.
   $effect(() => {
-    void [cam, ancho, alto, dpr, casillas, recorrido, recorridoAjeno];
+    void [cam, ancho, alto, dpr, casillas, recorrido, recorridoAjeno, recuadro];
     marcasPendientes = true;
     programar();
   });
@@ -524,12 +580,36 @@
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0); // en px de pantalla
     dibujarRecorrido(ctx, cam, casillas, recorridoAjeno);
     dibujarRecorrido(ctx, cam, casillas, recorrido);
+    if (recuadro) dibujarRecuadro(ctx, recuadro.desde, recuadro.hasta);
 
     const ahora = performance.now();
     for (let i = pings.length - 1; i >= 0; i--) {
       if (!pingVivo(pings[i], ahora)) pings.splice(i, 1);
     }
     for (const ping of pings) dibujarPing(ctx, cam, casillas, ping, ahora);
+  }
+
+  /**
+   * El recuadro de selección (Ctrl + arrastrar), con sus esquinas en px del mapa
+   * @param {CanvasRenderingContext2D} ctx
+   * @param {{ x: number, y: number }} desde
+   * @param {{ x: number, y: number }} hasta
+   */
+  function dibujarRecuadro(ctx, desde, hasta) {
+    const a = mundoAPantalla(cam, desde.x, desde.y);
+    const b = mundoAPantalla(cam, hasta.x, hasta.y);
+    const x = Math.min(a.x, b.x);
+    const y = Math.min(a.y, b.y);
+    const w = Math.abs(a.x - b.x);
+    const h = Math.abs(a.y - b.y);
+    ctx.save();
+    ctx.fillStyle = 'rgba(250, 250, 250, 0.08)';
+    ctx.fillRect(x, y, w, h);
+    ctx.strokeStyle = 'rgba(250, 250, 250, 0.85)';
+    ctx.lineWidth = 1;
+    ctx.setLineDash([5, 4]);
+    ctx.strokeRect(Math.round(x) + 0.5, Math.round(y) + 0.5, Math.round(w), Math.round(h));
+    ctx.restore();
   }
 
   function pintar() {
@@ -690,7 +770,7 @@
   data-conserva-foco
   role="application"
   aria-label="Tablero de juego"
-  title="Rueda: zoom · Arrastrar: mover la vista o una ficha · Doble clic: centrar · Clic central: aviso · Botón derecho: medir (sobre una ficha sin arrastrar: quitarla del tablero)"
+  title="Rueda: zoom · Arrastrar: mover la vista o una ficha (las que tienen foco, juntas) · Ctrl+clic: añadir o quitar del foco · Ctrl+arrastrar en el fondo: seleccionar con un recuadro · Doble clic: centrar · Clic central: aviso · Botón derecho: medir (sobre una ficha sin arrastrar: girarla)"
   onwheel={alRueda}
   onpointerdown={alPresionar}
   onpointermove={alMover}

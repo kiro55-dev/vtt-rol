@@ -9,6 +9,7 @@ import {
   extenderRecorrido,
   pasosEntre,
   casillasOcupadas,
+  desplazarGrupo,
   disposicionEnCuadricula,
   encajar,
   extension,
@@ -194,5 +195,19 @@ describe("varias fichas a la vez", () => {
     expect(disposicionEnCuadricula(r, c(2, 2), lados)).toEqual([c(2, 2), c(4, 2), c(6, 2), c(2, 4), c(4, 4)]);
     expect(disposicionEnCuadricula(r, c(19, 19), Array(4).fill([1, 1]))).toEqual(Array(4).fill(c(19, 19)));
     expect(disposicionEnCuadricula(r, c(0, 0), [])).toEqual([]);
+  });
+
+  it("un grupo arrastrado se mueve junto y se recorta en el borde (mismos casos que Rust)", () => {
+    const f = (x: number, y: number, lados: [number, number] = [1, 1]) => ({ casilla: c(x, y), lados });
+    let r = cuadricula(10, 10);
+    let grupo = [f(2, 2), f(4, 3)];
+    expect(desplazarGrupo(r, grupo, 3, 1)).toEqual([c(5, 3), c(7, 4)]);
+    expect(desplazarGrupo(r, grupo, 20, 0)).toEqual([c(7, 2), c(9, 3)]);
+    expect(desplazarGrupo(r, grupo, -10, -10)).toEqual([c(0, 0), c(2, 1)]);
+    grupo = [f(5, 5, [3, 3]), f(2, 5)];
+    expect(desplazarGrupo(r, grupo, 0, 10)).toEqual([c(5, 8), c(2, 8)]);
+    r = cuadricula(3, 10);
+    grupo = [f(0, 0), f(5, 0)];
+    expect(desplazarGrupo(r, grupo, 1, 2)).toEqual([c(1, 2), c(2, 2)]);
   });
 });

@@ -11,20 +11,33 @@
 import { partida, type Destino, type Entidad, type Instancia } from "$lib/partida.svelte";
 import { ladosInstancia, tamanoCuerpo, type Lados } from "$lib/tablero";
 
-/** Lo que se arrastra: una ficha del banco, varias (selección con Ctrl) o una instancia (y de dónde se cogió). */
+/**
+ * Lo que se arrastra: una ficha del banco, varias (selección con Ctrl) o una instancia (y de dónde se
+ * cogió). En el tablero, `grupo` son todas las seleccionadas de ese mapa que se arrastran con ella
+ * (incluida ella): se mueven juntas conservando sus distancias.
+ */
 export type OrigenArrastre =
   | { entidad: Entidad }
   | { entidades: Entidad[] }
-  | { instancia: Instancia; desde: "activas" | "tablero" };
+  | { instancia: Instancia; desde: "activas" | "tablero"; grupo?: Instancia[] };
 export type ZonaDestino = "tablero" | "activas" | "banco";
 
 export type AccionArrastre =
   | { tipo: "instanciar"; idEntidad: number; destino: Destino | null }
   | { tipo: "instanciarVarias"; idsEntidades: number[]; destino: Destino | null }
   | { tipo: "mover"; idInstancia: number; destino: Destino }
+  | { tipo: "moverVarias"; ids: number[]; idMapa: number; dx: number; dy: number }
   | { tipo: "quitarDelTablero"; idInstancia: number }
+  | { tipo: "quitarVariasDelTablero"; ids: number[] }
   | { tipo: "borrar"; idInstancia: number }
+  | { tipo: "borrarVarias"; ids: number[] }
   | { tipo: "reordenar"; ids: number[] };
+
+/** Las instancias que se arrastran juntas (solo una si no hay grupo). */
+export function instanciasArrastradas(origen: OrigenArrastre): Instancia[] {
+  if (!("instancia" in origen)) return [];
+  return origen.grupo && origen.grupo.length > 1 ? origen.grupo : [origen.instancia];
+}
 
 /** Ids de «Fichas activas» con `id` movido a la posición `indice`. */
 export function moverEnLista(ids: readonly number[], id: number, indice: number): number[] {
@@ -38,11 +51,14 @@ export function moverEnLista(ids: readonly number[], id: number, indice: number)
  * cursor no está sobre el mapa abierto); `orden` (ids de «Fichas activas») e `indice` (posición
  * bajo el cursor en esa lista), para reordenar.
  *
- * | origen \ zona          | tablero         | activas                | banco    |
- * | ficha del banco        | instanciar ahí  | instanciar sin casilla | nada     |
- * | varias del banco       | en cuadrícula   | todas sin casilla      | nada     |
- * | instancia del tablero  | mover ahí       | quitar del tablero     | borrar   |
- * | instancia de activas   | mover ahí       | reordenar              | borrar   |
+ * | origen \ zona          | tablero              | activas                | banco        |
+ * | ficha del banco        | instanciar ahí       | instanciar sin casilla | nada         |
+ * | varias del banco       | en cuadrícula        | todas sin casilla      | nada         |
+ * | instancia del tablero  | mover ahí            | quitar del tablero     | borrar       |
+ * | grupo del tablero      | moverlas juntas      | quitarlas del tablero  | borrarlas    |
+ * | instancia de activas   | mover ahí            | reordenar              | borrar       |
+ *
+ * Con un grupo, el desplazamiento es el de la ficha cogida: de su casilla a `casilla`.
  */
 export function accionAlSoltar(
   origen: OrigenArrastre,
@@ -64,6 +80,16 @@ export function accionAlSoltar(
     return null;
   }
   const { id_instancia: idInstancia, coordenadas } = origen.instancia;
+  const grupo = instanciasArrastradas(origen);
+  if (grupo.length > 1) {
+    const ids = grupo.map((i) => i.id_instancia);
+    if (zona === "banco") return { tipo: "borrarVarias", ids };
+    if (zona === "activas") return { tipo: "quitarVariasDelTablero", ids };
+    if (zona !== "tablero" || !casilla || typeof coordenadas !== "object") return null;
+    const dx = casilla.casilla.x - coordenadas.Casilla.x;
+    const dy = casilla.casilla.y - coordenadas.Casilla.y;
+    return { tipo: "moverVarias", ids, idMapa: casilla.id_mapa, dx, dy };
+  }
   if (zona === "tablero") return casilla ? { tipo: "mover", idInstancia, destino: casilla } : null;
   if (zona === "banco") return { tipo: "borrar", idInstancia };
   if (zona !== "activas") return null;
@@ -105,10 +131,16 @@ export function ejecutarAccion(accion: AccionArrastre) {
       return partida.instanciarVarias(accion.idsEntidades, accion.destino);
     case "mover":
       return partida.moverInstancia(accion.idInstancia, accion.destino);
+    case "moverVarias":
+      return partida.moverInstancias(accion.ids, accion.idMapa, accion.dx, accion.dy);
     case "quitarDelTablero":
       return partida.quitarDelTablero(accion.idInstancia);
+    case "quitarVariasDelTablero":
+      return partida.quitarVariasDelTablero(accion.ids);
     case "borrar":
       return partida.borrarInstancia(accion.idInstancia);
+    case "borrarVarias":
+      return partida.borrarInstancias(accion.ids);
     case "reordenar":
       return partida.reordenarInstancias(accion.ids);
   }
@@ -252,10 +284,10 @@ class ArrastreFicha {
     return this.#resolverCasilla?.(a.x, a.y, a.lados, a.agarre) ?? null;
   }
 
-  /** ¿Se está arrastrando esta instancia? (el tablero no la dibuja en su sitio mientras tanto) */
+  /** ¿Se está arrastrando esta instancia, sola o en su grupo? (el tablero no la dibuja en su sitio mientras tanto) */
   arrastrando(idInstancia: number) {
     const o = this.actual?.origen;
-    return !!o && "instancia" in o && o.instancia.id_instancia === idInstancia;
+    return !!o && instanciasArrastradas(o).some((i) => i.id_instancia === idInstancia);
   }
 
   #terminar() {

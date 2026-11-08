@@ -4,7 +4,7 @@ mod tablero_general;
 use tauri::Manager;
 
 use tablero_general::almacen::Almacen;
-use tablero_general::dados::tirar_dado;
+use tablero_general::dados::{limpiar_chat, tirar_dado};
 use tablero_general::estado;
 use tablero_general::partidas;
 use tablero_general::partida::{
@@ -18,7 +18,7 @@ use tablero_general::partida::{
     modificar_entidad, modificar_mapa, modificar_zona, obtener_banco_entidades, obtener_definiciones_parametros,
     obtener_dir_datos,
     obtener_historial_personal, obtener_historial_tiradas, obtener_instancias_activas,
-    instanciar_entidad, instanciar_entidades, borrar_entidades, restaurar_papelera, cerrar_partida, mover_instancia, borrar_instancia, modificar_valor_actual, rotar_instancia,
+    instanciar_entidad, instanciar_entidades, borrar_entidades, restaurar_papelera, cerrar_partida, mover_instancia, mover_instancias, borrar_instancia, modificar_valor_actual, rotar_instancia,
     reordenar_instancias,
     obtener_mapas_zona, obtener_miniatura, guardar_miniatura_ficha, obtener_zonas, renombrar_archivo_adjunto,
 };
@@ -87,6 +87,7 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             tirar_dado,
+            limpiar_chat,
             obtener_zonas,
             obtener_definiciones_parametros,
             crear_definicion_parametro,
@@ -102,6 +103,7 @@ pub fn run() {
             instanciar_entidad,
             instanciar_entidades,
             mover_instancia,
+            mover_instancias,
             borrar_instancia,
             modificar_valor_actual,
             rotar_instancia,

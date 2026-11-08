@@ -110,6 +110,15 @@ function crearBackend() {
           i.coordenadas = args.destino ? { Casilla: args.destino.casilla } : "NoPuesto";
           return;
         }
+        case "mover_instancias": {
+          // Sin recortar en el borde (eso se prueba en tablero.rs y tablero.test.ts)
+          for (const id of args.ids as number[]) {
+            const i: any = b.instancias.find((x) => x.id_instancia === id);
+            if (!i || typeof i.coordenadas !== "object") throw "Esa ficha no está en el tablero";
+            i.coordenadas = { Casilla: { x: i.coordenadas.Casilla.x + args.dx, y: i.coordenadas.Casilla.y + args.dy } };
+          }
+          return;
+        }
         case "borrar_instancia": b.instancias = b.instancias.filter((x) => x.id_instancia !== args.idInstancia); return;
         case "instanciar_entidades": {
           // Imita a Rust: una tras otra; en el tablero, la primera en la casilla y el resto a su derecha
@@ -532,10 +541,11 @@ describe("fichas: selección y vida", () => {
     await partida.instanciar(1, destino);
     expect(llamadas("instanciar_entidad")[0].args).toEqual({ idEntidad: 1, destino });
     expect(partida.instancias).toHaveLength(3);
-    expect(partida.idsSeleccionados).toEqual([3]); // la nueva queda seleccionada
+    expect(partida.idsSeleccionados).toEqual([]); // soltada en el tablero: sin foco (no se ven sus formas)
 
     await partida.instanciar(2, null); // solo activa
     expect(partida.instancias[3].coordenadas).toBe("NoPuesto");
+    expect(partida.idsSeleccionados).toEqual([4]); // en «Fichas activas» sí queda seleccionada
 
     await partida.moverInstancia(4, { id_mapa: 1, casilla: { x: 0, y: 0 } });
     expect(partida.instancias[3].coordenadas).toEqual({ Casilla: { x: 0, y: 0 } });
@@ -666,15 +676,65 @@ describe("banco: selección múltiple y papelera", () => {
     expect(partida.zonaId).toBe(1);
   });
 
-  it("varias fichas se instancian de golpe y quedan todas con el foco", async () => {
+  it("varias fichas se instancian de golpe: en el tablero sin foco, en «Fichas activas» todas con él", async () => {
     const partida = await nuevoStore();
     await partida.instanciarVarias([1, 2], { id_mapa: 1, casilla: { x: 4, y: 4 } });
     expect(llamadas("instanciar_entidades")).toHaveLength(1);
     const nuevas = partida.instancias.filter((i) => i.id_instancia > 2);
     expect(nuevas).toHaveLength(2);
-    expect(partida.idsSeleccionados).toEqual(nuevas.map((i) => i.id_instancia));
+    expect(partida.idsSeleccionados).toEqual([]);
 
-    await partida.instanciarVarias([1], null);
+    await partida.instanciarVarias([1, 2], null);
     expect(partida.instancias.at(-1)?.coordenadas).toBe("NoPuesto");
+    expect(partida.idsSeleccionados).toEqual([5, 6]);
+  });
+});
+
+describe("selección múltiple y grupos en el tablero", () => {
+  it("al soltar, la ficha ya está en su sitio nuevo (y encima) antes de que Rust conteste: no parpadea", async () => {
+    const partida = await nuevoStore();
+    const coords = (id: number) => partida.instancias.find((i) => i.id_instancia === id)?.coordenadas;
+    // Mapa 1: 20×20 casillas. Fuera del borde se encaja como en Rust
+    const una = partida.moverInstancia(1, { id_mapa: 1, casilla: { x: 25, y: 3 } });
+    expect(coords(1)).toEqual({ Casilla: { x: 19, y: 3 } });
+    expect(partida.instancias[0].capa).toBeGreaterThan(partida.instancias[1].capa ?? 0);
+    await una;
+    // (el Rust falso no encaja: se recolocan dentro del mapa)
+    await partida.moverInstancia(1, { id_mapa: 1, casilla: { x: 19, y: 3 } });
+    await partida.moverInstancia(2, { id_mapa: 1, casilla: { x: 17, y: 5 } });
+
+    // Un grupo: el mismo desplazamiento, recortado en el borde (la 1 ya está en x=19)
+    const grupo = partida.moverInstancias([1, 2], 1, 5, 1);
+    expect([coords(1), coords(2)]).toEqual([{ Casilla: { x: 19, y: 4 } }, { Casilla: { x: 17, y: 6 } }]);
+    await grupo;
+
+    const fuera = partida.quitarDelTablero(1);
+    expect(coords(1)).toBe("NoPuesto");
+    await fuera;
+  });
+
+  it("seleccionarInstancias sustituye o añade (sin repetir)", async () => {
+    const partida = await nuevoStore();
+    partida.seleccionarInstancias([2]);
+    expect(partida.idsSeleccionados).toEqual([2]);
+    partida.seleccionarInstancias([1, 2], true);
+    expect(partida.idsSeleccionados).toEqual([2, 1]);
+    partida.seleccionarInstancias([1, 1]);
+    expect(partida.idsSeleccionados).toEqual([1]);
+  });
+
+  it("mover varias manda UNA llamada con el desplazamiento; quitarlas o borrarlas, todas", async () => {
+    const partida = await nuevoStore();
+    await partida.moverInstancia(1, { id_mapa: 1, casilla: { x: 3, y: 3 } });
+    await partida.moverInstancia(2, { id_mapa: 1, casilla: { x: 5, y: 5 } });
+    await partida.moverInstancias([1, 2], 1, 2, -1);
+    expect(llamadas("mover_instancias")).toEqual([{ cmd: "mover_instancias", args: { ids: [1, 2], idMapa: 1, dx: 2, dy: -1 } }]);
+    expect(partida.instancias.map((i) => i.coordenadas)).toEqual([{ Casilla: { x: 5, y: 2 } }, { Casilla: { x: 7, y: 4 } }]);
+    await partida.quitarVariasDelTablero([1, 2]);
+    expect(partida.instancias.every((i) => i.coordenadas === "NoPuesto")).toBe(true);
+    partida.seleccionarInstancias([1, 2]);
+    await partida.borrarInstancias([1, 2]);
+    expect(partida.instancias).toEqual([]);
+    expect(partida.idsSeleccionados).toEqual([]);
   });
 });

@@ -447,6 +447,17 @@ pub fn mover_instancia(id_instancia: u16, destino: Option<instancias::Destino>, 
     Ok(())
 }
 
+/// Mueve varias instancias del mismo mapa a la vez `(dx, dy)` casillas, conservando sus distancias
+/// (las seleccionadas que se arrastran juntas). Un `InstanciaModificada` por ficha, en orden y bajo el mismo lock.
+#[tauri::command]
+pub fn mover_instancias(ids: Vec<u16>, id_mapa: u16, dx: i32, dy: i32, state: State<'_, AppState>) -> Result<(), String> {
+    let mut est = state.lock();
+    for delta in instancias::mover_grupo(&est, &ids, id_mapa, dx, dy)? {
+        registrar(&mut est, &state.almacen, delta);
+    }
+    Ok(())
+}
+
 /// Gira la instancia un cuarto de vuelta en el sentido del reloj.
 #[tauri::command]
 pub fn rotar_instancia(id_instancia: u16, state: State<'_, AppState>) -> Result<(), String> {

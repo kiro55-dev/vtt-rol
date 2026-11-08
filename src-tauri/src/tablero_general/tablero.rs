@@ -131,6 +131,33 @@ pub fn disposicion_en_cuadricula(rejilla: Rejilla, casilla: Casilla, lados: &[(u
         .collect()
 }
 
+/// Dónde cae cada ficha al arrastrar varias juntas `(dx, dy)` casillas: todas se mueven lo mismo, así
+/// conservan sus distancias. Si alguna se saldría del mapa, el desplazamiento común se recorta lo
+/// justo para que quepan todas. Solo si el grupo entero no cabe en un eje (es más grande que el mapa),
+/// en ese eje cada una se encaja por su cuenta. Igual que `desplazarGrupo` del front.
+pub fn desplazar_grupo(rejilla: Rejilla, fichas: &[(Casilla, (u16, u16))], dx: i32, dy: i32) -> Vec<Casilla> {
+    // Desplazamiento permitido en un eje: el que deja a todas dentro (None si no existe)
+    let recortar = |d: i32, extremos: &dyn Fn(Casilla, (u16, u16)) -> (i32, i32), casillas: u16| -> i32 {
+        let (mut minimo, mut maximo) = (i32::MIN, i32::MAX);
+        for &(centro, lados) in fichas {
+            let (a, b) = extremos(centro, lados);
+            minimo = minimo.max(-a);
+            maximo = maximo.min(i32::from(casillas) - 1 - b);
+        }
+        if minimo <= maximo { d.clamp(minimo, maximo) } else { d }
+    };
+    let dx = recortar(dx, &|c, l| { let (x0, _, x1, _) = rectangulo(c, l); (x0, x1) }, rejilla.columnas);
+    let dy = recortar(dy, &|c, l| { let (_, y0, _, y1) = rectangulo(c, l); (y0, y1) }, rejilla.filas);
+    let a_u16 = |v: i32| v.clamp(0, i32::from(u16::MAX)) as u16;
+    fichas
+        .iter()
+        .map(|&(c, lados)| {
+            let movida = Casilla { x: a_u16(i32::from(c.x) + dx), y: a_u16(i32::from(c.y) + dy) };
+            encajar(rejilla, movida, lados) // no cambia nada si ya cabe
+        })
+        .collect()
+}
+
 /// Las casillas que cubre el cuerpo (las que caerían en negativo no existen y se omiten).
 #[allow(dead_code)] // la usará la colocación de instancias
 pub fn casillas_ocupadas(centro: Casilla, lados: (u16, u16)) -> impl Iterator<Item = Casilla> {
@@ -221,6 +248,25 @@ mod tests {
 
     const fn c(x: u16, y: u16) -> Casilla {
         Casilla { x, y }
+    }
+
+    #[test]
+    fn un_grupo_se_mueve_junto_y_se_recorta_en_el_borde() {
+        let r = Rejilla { columnas: 10, filas: 10 };
+        let grupo = [(c(2, 2), (1, 1)), (c(4, 3), (1, 1))];
+        // Dentro: se mueven lo mismo
+        assert_eq!(desplazar_grupo(r, &grupo, 3, 1), vec![c(5, 3), c(7, 4)]);
+        // Hacia la derecha del todo: se para cuando la de x=4 toca el borde (x=9), sin juntarse
+        assert_eq!(desplazar_grupo(r, &grupo, 20, 0), vec![c(7, 2), c(9, 3)]);
+        // Hacia arriba a la izquierda: se para cuando la de (2,2) llega a 0
+        assert_eq!(desplazar_grupo(r, &grupo, -10, -10), vec![c(0, 0), c(2, 1)]);
+        // Con un cuerpo 3×3 (centro con 1 casilla a cada lado)
+        let grupo = [(c(5, 5), (3, 3)), (c(2, 5), (1, 1))];
+        assert_eq!(desplazar_grupo(r, &grupo, 0, 10), vec![c(5, 8), c(2, 8)]);
+        // Un grupo más ancho que el mapa: en ese eje cada una se encaja sola
+        let r = Rejilla { columnas: 3, filas: 10 };
+        let grupo = [(c(0, 0), (1, 1)), (c(5, 0), (1, 1))];
+        assert_eq!(desplazar_grupo(r, &grupo, 1, 2), vec![c(1, 2), c(2, 2)]);
     }
 
     #[test]

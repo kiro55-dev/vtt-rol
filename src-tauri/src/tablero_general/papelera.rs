@@ -338,6 +338,7 @@ mod tests {
             activo: true,
             rotacion: 0,
             orden: id,
+            capa: 0,
         }
     }
 

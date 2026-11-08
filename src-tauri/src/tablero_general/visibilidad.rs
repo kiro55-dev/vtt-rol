@@ -65,6 +65,7 @@ mod tests {
             activo: true,
             rotacion: 1,
             orden: 5,
+            capa: 0,
         }
     }
 

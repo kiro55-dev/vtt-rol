@@ -66,6 +66,14 @@ export function aplicarDadoAlComando(comando: string, fragmento: string, esSuma:
     .trim();
 }
 
+/**
+ * `clean` o `c` (solos, da igual mayúsculas) vacían el chat. Mezclados con otra cosas (`c + 1d6`) no
+ * lo son: van a Rust como tirada y no es válida. Igual que `es_comando_limpiar` de Rust.
+ */
+export function esComandoLimpiar(comando: string): boolean {
+  return /^(clean|c)$/i.test(comando.trim());
+}
+
 class Tiradas {
   /** Las últimas tiradas, la más reciente primero. */
   historial = $state<Tirada[]>([]);
@@ -135,6 +143,16 @@ class Tiradas {
   async tirar(comando: string) {
     const cmd = comando.trim();
     if (!cmd) return;
+
+    if (esComandoLimpiar(cmd)) {
+      try {
+        await invoke("limpiar_chat", { comando: cmd });
+        this.historial = [];
+      } catch (err) {
+        console.error("limpiar_chat:", err);
+      }
+      return;
+    }
 
     try {
       const resultado = await invoke<string>("tirar_dado", { comando: cmd });

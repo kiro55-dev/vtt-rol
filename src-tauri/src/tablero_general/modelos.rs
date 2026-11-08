@@ -385,6 +385,11 @@ pub struct Instancia {
     /// Posición en «Fichas activas» (de arriba abajo). Ver `DeltaPartida::InstanciasReordenadas`.
     #[serde(default)]
     pub orden: u16,
+
+    /// Altura en el tablero: con fichas solapadas, la de capa mayor se dibuja encima. Al poner o mover
+    /// una ficha en el tablero recibe la mayor (ver `instancias::capa_superior`).
+    #[serde(default)]
+    pub capa: u32,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]

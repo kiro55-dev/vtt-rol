@@ -110,6 +110,35 @@ export function disposicionEnCuadricula(rejilla: RejillaTablero, casilla: Casill
   );
 }
 
+/**
+ * Dónde cae cada ficha al arrastrar varias juntas `(dx, dy)` casillas: todas se mueven lo mismo y
+ * conservan sus distancias; si alguna se saldría del mapa, el desplazamiento común se recorta lo justo.
+ * Solo si el grupo no cabe en un eje, en ese eje cada una se encaja sola. Igual que `desplazar_grupo` de Rust.
+ */
+export function desplazarGrupo(
+  rejilla: RejillaTablero,
+  fichas: readonly { casilla: Casilla; lados: Lados }[],
+  dx: number,
+  dy: number
+): Casilla[] {
+  const recortar = (d: number, eje: "x" | "y", casillas: number) => {
+    let minimo = -Infinity;
+    let maximo = Infinity;
+    for (const f of fichas) {
+      const e = extremos(f.casilla, f.lados);
+      const [a, b] = eje === "x" ? [e.x0, e.x1] : [e.y0, e.y1];
+      minimo = Math.max(minimo, -a);
+      maximo = Math.min(maximo, casillas - 1 - b);
+    }
+    return minimo <= maximo ? Math.min(maximo, Math.max(minimo, d)) : d;
+  };
+  const mx = recortar(dx, "x", rejilla.columnas);
+  const my = recortar(dy, "y", rejilla.filas);
+  return fichas.map((f) =>
+    encajar(rejilla, { x: Math.max(0, f.casilla.x + mx), y: Math.max(0, f.casilla.y + my) }, f.lados)
+  );
+}
+
 /** Casillas que cubre el cuerpo (sin las que caerían en negativo). */
 export function casillasOcupadas(centro: Casilla, lados: Lados): Casilla[] {
   const { x0, y0, x1, y1 } = extremos(centro, lados);

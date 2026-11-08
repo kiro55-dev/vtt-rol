@@ -24,6 +24,8 @@ use crate::tablero_general::tablero;
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub enum DeltaPartida {
     TiradaRealizada(Tiradas),
+    /// Comando `clean` (o `c`) en el chat: se vacía el historial de tiradas de la partida.
+    HistorialTiradasLimpiado,
     /// Cambia el valor actual (p. ej. la vida) de un parámetro con máximo en una instancia.
     ValorActualModificado { id_instancia: u16, id_definicion: u16, delta: i16 },
     ZonaCreada(Zona),
@@ -148,6 +150,7 @@ impl EstadoPartida {
                     self.historial_tiradas.pop();
                 }
             }
+            DeltaPartida::HistorialTiradasLimpiado => self.historial_tiradas.clear(),
             DeltaPartida::ValorActualModificado { id_instancia, id_definicion, delta } => {
                 if let Some(v) = self
                     .instancias_activas
@@ -499,6 +502,7 @@ mod tests {
             activo: true,
             rotacion: 0,
             orden: id,
+            capa: 0,
         }
     }
 

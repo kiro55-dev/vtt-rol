@@ -2,7 +2,7 @@
 <!-- Las instancias activas, en su orden. Como las filas del banco pero más grandes y con la misma
      miniatura de la ficha, en la forma de su tipo (cuadrado rojo, rombo azul, círculo verde). A la
      derecha, el «actual/máx» de los parámetros con forma «Resumen».
-     - Pulsar = foco (con Shift, añadirla o quitarla del foco). Pulsar el hueco vacío = quitar el foco.
+     - Pulsar = foco (con Ctrl, añadirla o quitarla del foco). Pulsar el hueco vacío = quitar el foco.
      - Arrastrar dentro de la lista = reordenar; al tablero = colocarla; al banco = eliminarla.
      - Doble clic = la foto de la ficha a resolución completa, en una ventanita junto al puntero (se cierra pulsando fuera).
      - Clic derecho = menú con «Eliminar instancia».
@@ -54,7 +54,7 @@
 
   function alPulsar(e: MouseEvent, i: Instancia) {
     if (arrastre.esClicDeArrastre()) return;
-    partida.seleccionarInstancia(i, e.shiftKey);
+    partida.seleccionarInstancia(i, e.ctrlKey || e.metaKey); // Ctrl: varias, como en el banco y el tablero
   }
 
   // Pulsar el hueco vacío de la lista (no una tarjeta) quita el foco
@@ -89,7 +89,7 @@
         e.preventDefault();
         menu = { x: e.clientX, y: e.clientY, instancia: ficha };
       }}
-      title="Clic: foco (Shift: varias) · Doble clic: ver la foto · Arrastrar: reordenar o llevar al tablero · Clic derecho: eliminar"
+      title="Clic: foco (Ctrl: varias) · Doble clic: ver la foto · Arrastrar: reordenar o llevar al tablero · Clic derecho: eliminar"
     >
       <div class="foto {forma}">
         {#if ficha.base.foto_url}

@@ -31,7 +31,8 @@ pub fn instanciar(est: &EstadoPartida, id_entidad: u16, destino: Option<Destino>
             // Conserva su giro (y por tanto sus lados) al cambiar de sitio
             let reutilizada = Instancia { base: entidad.clone(), activo: true, ..existente.clone() };
             let (id_mapa, coordenadas) = colocar(est, tablero::lados_instancia(&reutilizada), destino)?;
-            return Ok(DeltaPartida::InstanciaModificada(Instancia { id_mapa, coordenadas, ..reutilizada }));
+            let capa = capa_al_colocar(est, &reutilizada, destino);
+            return Ok(DeltaPartida::InstanciaModificada(Instancia { id_mapa, coordenadas, capa, ..reutilizada }));
         }
     }
     let (id_mapa, coordenadas) = colocar(est, tablero::tamano_cuerpo(&entidad.cuerpo), destino)?;
@@ -52,14 +53,65 @@ pub fn instanciar(est: &EstadoPartida, id_entidad: u16, destino: Option<Destino>
         rotacion: 0,
         // La última de «Fichas activas»
         orden: est.instancias_activas.iter().map(|i| i.orden.saturating_add(1)).max().unwrap_or(0),
+        // En el tablero, encima de todas; sin colocar no importa
+        capa: if destino.is_some() { capa_superior(est) } else { 0 },
     }))
 }
 
 /// Pone una instancia en otra casilla (o la quita del tablero con `None`); sigue activa.
+/// La que se pone en el tablero queda encima de las demás.
 pub fn mover(est: &EstadoPartida, id_instancia: u16, destino: Option<Destino>) -> Result<DeltaPartida, String> {
     let inst = buscar(est, id_instancia)?;
     let (id_mapa, coordenadas) = colocar(est, tablero::lados_instancia(inst), destino)?;
-    Ok(DeltaPartida::InstanciaModificada(Instancia { id_mapa, coordenadas, ..inst.clone() }))
+    let capa = capa_al_colocar(est, inst, destino);
+    Ok(DeltaPartida::InstanciaModificada(Instancia { id_mapa, coordenadas, capa, ..inst.clone() }))
+}
+
+/// Mueve varias instancias del mismo mapa `(dx, dy)` casillas a la vez, conservando las distancias
+/// entre ellas (`tablero::desplazar_grupo` las recorta en el borde). Devuelve un `InstanciaModificada`
+/// por ficha, que se registran en orden. Quedan encima de las demás, sin cambiar cuál de ellas
+/// está encima de cuál.
+pub fn mover_grupo(est: &EstadoPartida, ids: &[u16], id_mapa: u16, dx: i32, dy: i32) -> Result<Vec<DeltaPartida>, String> {
+    let mapa = est.mapas.iter().find(|m| m.id == id_mapa).ok_or("Ese mapa no existe")?;
+    let mut grupo = Vec::with_capacity(ids.len());
+    for id in ids {
+        let inst = buscar(est, *id)?;
+        let Coordenada::Casilla(casilla) = inst.coordenadas else { return Err("Esa ficha no está en el tablero".into()) };
+        if inst.id_mapa != Some(id_mapa) {
+            return Err("Esa ficha está en otro mapa".into());
+        }
+        if grupo.iter().any(|(i, _): &(&Instancia, _)| i.id_instancia == *id) {
+            return Err("Una ficha repetida".into());
+        }
+        grupo.push((inst, casilla));
+    }
+    // Se reparten las capas de abajo arriba según estaban
+    grupo.sort_by_key(|(i, _)| i.capa);
+    let fichas: Vec<_> = grupo.iter().map(|(i, c)| (*c, tablero::lados_instancia(i))).collect();
+    let destinos = tablero::desplazar_grupo(tablero::Rejilla::de(mapa), &fichas, dx, dy);
+    let base = capa_superior(est);
+    Ok(grupo
+        .into_iter()
+        .zip(destinos)
+        .enumerate()
+        .map(|(k, ((inst, _), casilla))| {
+            DeltaPartida::InstanciaModificada(Instancia {
+                coordenadas: Coordenada::Casilla(casilla),
+                capa: base.saturating_add(k as u32),
+                ..inst.clone()
+            })
+        })
+        .collect())
+}
+
+/// Capa para quedar encima de todas las fichas.
+pub fn capa_superior(est: &EstadoPartida) -> u32 {
+    est.instancias_activas.iter().map(|i| i.capa.saturating_add(1)).max().unwrap_or(0)
+}
+
+/// Al ponerla en el tablero sube encima de todas; al quitarla de él conserva la que tenía.
+fn capa_al_colocar(est: &EstadoPartida, inst: &Instancia, destino: Option<Destino>) -> u32 {
+    if destino.is_some() { capa_superior(est) } else { inst.capa }
 }
 
 /// Gira la instancia un cuarto de vuelta en el sentido del reloj, sobre su casilla central. Si al
@@ -356,6 +408,64 @@ mod tests {
             "cuerpo":"Pequenio","zona_id":1},"coordenadas":"NoPuesto"}"#;
         let i: Instancia = serde_json::from_str(json).unwrap();
         assert_eq!((i.rotacion, i.orden), (0, 0));
+    }
+
+    #[test]
+    fn la_ficha_que_se_pone_o_se_mueve_queda_encima() {
+        let mut e = estado();
+        hacer(&mut e, |e| instanciar(e, 1, en(1, 1, 1)));
+        hacer(&mut e, |e| instanciar(e, 1, en(1, 1, 1)));
+        let capa = |e: &EstadoPartida, id: u16| e.instancias_activas.iter().find(|i| i.id_instancia == id).unwrap().capa;
+        assert!(capa(&e, 2) > capa(&e, 1), "la última puesta, encima");
+
+        // La 1 se mueve sobre la 2: ahora es ella la de encima
+        hacer(&mut e, |e| mover(e, 1, en(1, 1, 1)));
+        assert!(capa(&e, 1) > capa(&e, 2));
+
+        // Quitarla del tablero o girarla no cambia su capa
+        let antes = capa(&e, 2);
+        hacer(&mut e, |e| rotar(e, 2));
+        hacer(&mut e, |e| mover(e, 2, None));
+        assert_eq!(capa(&e, 2), antes);
+
+        // Una partida antigua sin `capa` carga con 0
+        let json = r#"{"id_instancia":1,"id_mapa":null,"base":{"id":1,"nombre":"Orco","tipo":"Enemigo",
+            "cuerpo":"Pequenio","zona_id":1},"coordenadas":"NoPuesto"}"#;
+        assert_eq!(serde_json::from_str::<Instancia>(json).unwrap().capa, 0);
+    }
+
+    #[test]
+    fn un_grupo_se_mueve_conservando_distancias_y_apilado() {
+        let mut e = estado(); // mapa 1: 20×10
+        hacer(&mut e, |e| instanciar(e, 1, en(1, 2, 2))); // 1
+        hacer(&mut e, |e| instanciar(e, 1, en(1, 5, 4))); // 2 (encima de la 1)
+        hacer(&mut e, |e| instanciar(e, 1, en(1, 9, 9))); // 3, no se mueve
+
+        let deltas = mover_grupo(&e, &[2, 1], 1, 3, 1).unwrap();
+        assert_eq!(deltas.len(), 2);
+        for d in &deltas {
+            e.aplicar_delta(d);
+        }
+        let i = |e: &EstadoPartida, id: u16| e.instancias_activas.iter().find(|i| i.id_instancia == id).unwrap().clone();
+        assert_eq!(i(&e, 1).coordenadas, Coordenada::Casilla(Casilla { x: 5, y: 3 }));
+        assert_eq!(i(&e, 2).coordenadas, Coordenada::Casilla(Casilla { x: 8, y: 5 }));
+        // Encima de la 3, y la 2 sigue encima de la 1
+        assert!(i(&e, 1).capa > i(&e, 3).capa);
+        assert!(i(&e, 2).capa > i(&e, 1).capa);
+
+        // Contra el borde de abajo (y=9): se para cuando la 2 llega, sin juntarse
+        for d in mover_grupo(&e, &[1, 2], 1, 0, 50).unwrap() {
+            e.aplicar_delta(&d);
+        }
+        assert_eq!(i(&e, 1).coordenadas, Coordenada::Casilla(Casilla { x: 5, y: 7 }));
+        assert_eq!(i(&e, 2).coordenadas, Coordenada::Casilla(Casilla { x: 8, y: 9 }));
+
+        // Errores: otro mapa, una sin colocar, una inexistente o repetida
+        assert!(mover_grupo(&e, &[1], 2, 0, 0).is_err());
+        hacer(&mut e, |e| instanciar(e, 1, None)); // 4
+        assert!(mover_grupo(&e, &[1, 4], 1, 0, 0).is_err());
+        assert!(mover_grupo(&e, &[1, 99], 1, 0, 0).is_err());
+        assert!(mover_grupo(&e, &[1, 1], 1, 0, 0).is_err());
     }
 
     #[test]

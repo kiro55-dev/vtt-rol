@@ -2,6 +2,7 @@
 <!-- Solo la estructura del panel: cada parte vive en su componente y lee el estado de `partida`. -->
 <script lang="ts">
   import { partida } from "$lib/partida.svelte";
+  import { ajustesVista } from "$lib/ajustesVista.svelte";
   import ListaZonas from "./panel-izquierdo/ListaZonas.svelte";
   import ListaMapas from "./panel-izquierdo/ListaMapas.svelte";
   import BancoEntidades from "./panel-izquierdo/BancoEntidades.svelte";
@@ -26,6 +27,14 @@
       accion: () => (parametrosAbierto = true),
       // Una ficha abierta ya copió los parámetros: se cambian cuando está cerrada
       deshabilitada: partida.entidadEnEdicion ? "Cierra la ficha que tienes abierta" : undefined
+    },
+    {
+      texto: ajustesVista.edicionRejilla ? "Ocultar edición de la rejilla" : "Mostrar edición de la rejilla",
+      accion: () => {
+        // Un cambio de rejilla a medias se guarda ya, no al cabo de 5 s con la barra oculta
+        if (ajustesVista.edicionRejilla) void partida.guardarRejilla();
+        ajustesVista.alternarEdicionRejilla();
+      }
     }
   ]);
 </script>

@@ -53,6 +53,19 @@ describe("accionAlSoltar", () => {
     expect(accionAlSoltar(sinColocar, "activas", null)).toBeNull();
     expect(accionAlSoltar(sinColocar, "banco", null)).toEqual({ tipo: "borrar", idInstancia: 5 });
   });
+
+  it("un grupo del tablero se mueve junto lo que se movió la cogida, sale entero o se borra entero", () => {
+    const cogida = instancia(4, 1, { x: 5, y: 5 });
+    const grupo = [instancia(2, 1, { x: 1, y: 1 }), cogida];
+    const origen = { instancia: cogida, desde: "tablero" as const, grupo };
+    // De (5, 5) a (2, 3): todas -3, -2
+    expect(accionAlSoltar(origen, "tablero", destino)).toEqual({ tipo: "moverVarias", ids: [2, 4], idMapa: 1, dx: -3, dy: -2 });
+    expect(accionAlSoltar(origen, "activas", null)).toEqual({ tipo: "quitarVariasDelTablero", ids: [2, 4] });
+    expect(accionAlSoltar(origen, "banco", null)).toEqual({ tipo: "borrarVarias", ids: [2, 4] });
+    expect(accionAlSoltar(origen, "tablero", null)).toBeNull();
+    // Un grupo de una sola es como sin grupo
+    expect(accionAlSoltar({ ...origen, grupo: [cogida] }, "tablero", destino)).toEqual({ tipo: "mover", idInstancia: 4, destino });
+  });
 });
 
 describe("reordenar «Fichas activas»", () => {
@@ -94,6 +107,31 @@ describe("fichas del tablero", () => {
     expect(fichas.fichaEnCasilla(enMapa, { x: 4, y: 4 })?.id_instancia).toBe(1);
     expect(fichas.fichaEnCasilla(enMapa, { x: 6, y: 6 })?.id_instancia).toBe(2); // la última, encima
     expect(fichas.fichaEnCasilla(enMapa, { x: 7, y: 5 })).toBeNull();
+  });
+
+  it("la de capa mayor (la última puesta o movida) se dibuja encima y es la que se coge", () => {
+    const abajo = { ...instancia(1, 1, { x: 2, y: 2 }), capa: 5 };
+    const arriba = { ...instancia(2, 1, { x: 2, y: 2 }), capa: 9 };
+    const sinCapa = instancia(3, 1, { x: 7, y: 7 }); // partida antigua: capa 0
+    const enMapa = fichas.fichasDelMapa([arriba, abajo, sinCapa], 1);
+    expect(enMapa.map((f) => f.instancia.id_instancia)).toEqual([3, 1, 2]);
+    expect(fichas.fichaEnCasilla(enMapa, { x: 2, y: 2 })?.id_instancia).toBe(2);
+  });
+
+  it("el recuadro de selección coge las que toca, aunque no queden dentro del todo", () => {
+    const r = { columnas: 10, filas: 8, anchoCasilla: 10, altoCasilla: 10, ancho: 100, alto: 80 };
+    const enMapa = fichas.fichasDelMapa(
+      [instancia(1, 1, { x: 1, y: 1 }), instancia(2, 1, { x: 5, y: 5 }), instancia(3, 1, { x: 3, y: 1 }, { Grande: [3, 1] })],
+      1
+    );
+    const ids = (desde: any, hasta: any) => fichas.fichasEnRectangulo(enMapa, r, desde, hasta).map((i) => i.id_instancia);
+    // De (15, 15) a (25, 18): toca la 1 (x 10..20) y la 3 (x 20..50)
+    expect(ids({ x: 15, y: 15 }, { x: 25, y: 18 })).toEqual([1, 3]);
+    // Las esquinas en cualquier orden
+    expect(ids({ x: 25, y: 18 }, { x: 15, y: 15 })).toEqual([1, 3]);
+    // Solo rozar el borde no cuenta
+    expect(ids({ x: 0, y: 0 }, { x: 10, y: 10 })).toEqual([]);
+    expect(ids({ x: 0, y: 0 }, { x: 100, y: 80 })).toEqual([1, 2, 3]);
   });
 
   it("cada tipo tiene su color", () => {

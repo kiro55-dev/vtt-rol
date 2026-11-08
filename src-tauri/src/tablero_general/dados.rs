@@ -1,7 +1,8 @@
 // src-tauri/src/tablero_general/dados.rs
 use std::fmt::Write;
 use tauri::State;
-use crate::tablero_general::partida::{registrar_comando_personal, registrar_tirada, AppState};
+use crate::tablero_general::estado::DeltaPartida;
+use crate::tablero_general::partida::{procesar_delta, registrar_comando_personal, registrar_tirada, AppState};
 
 pub struct Tirada {
     pub signo: i32,
@@ -243,12 +244,48 @@ pub fn tirar_dado(comando: String, state: State<'_, AppState>) -> Result<String,
     Ok(format!("{desglose} = {total}"))
 }
 
+/// `clean` o `c` (sin nada más, da igual mayúsculas) es la orden de vaciar el chat de tiradas.
+/// Mezclada con otras cosas (`c + 1d6`) no lo es, y como tirada tampoco es válida.
+pub fn es_comando_limpiar(comando: &str) -> bool {
+    let c = comando.trim();
+    c.eq_ignore_ascii_case("clean") || c.eq_ignore_ascii_case("c")
+}
+
+/// Vacía el historial de tiradas de la partida (delta `HistorialTiradasLimpiado`). El comando queda en
+/// el historial personal (↑ ↓) como cualquier otro.
+#[tauri::command]
+pub fn limpiar_chat(comando: String, state: State<'_, AppState>) -> Result<(), String> {
+    if !es_comando_limpiar(&comando) {
+        return Err("No es la orden de limpiar el chat".into());
+    }
+    procesar_delta(&state, DeltaPartida::HistorialTiradasLimpiado);
+    registrar_comando_personal(&state, comando.trim());
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     fn tirar(cmd: &str) -> Result<(String, i32), String> {
         ejecutar_tiradas(&parsear_comando(cmd)?)
+    }
+
+    #[test]
+    fn clean_o_c_solos_limpian_el_chat_y_mezclados_no_valen() {
+        for cmd in ["c", "C", "clean", " Clean ", "CLEAN"] {
+            assert!(es_comando_limpiar(cmd), "{cmd}");
+        }
+        for cmd in ["c + 1d6", "clean 1d6", "1d6 + c", "cc", "cleanup", ""] {
+            assert!(!es_comando_limpiar(cmd), "{cmd}");
+            assert!(tirar(cmd).is_err(), "{cmd} tampoco es una tirada");
+        }
+
+        let mut e = crate::tablero_general::estado::EstadoPartida::default();
+        let t = crate::tablero_general::modelos::Tiradas { total: 3, comando: "1d6 (3)".into(), hora: "10:00".into() };
+        e.aplicar_delta(&DeltaPartida::TiradaRealizada(t));
+        e.aplicar_delta(&DeltaPartida::HistorialTiradasLimpiado);
+        assert!(e.historial_tiradas.is_empty());
     }
 
     #[test]
