@@ -23,10 +23,21 @@
     partida.seleccionarInstancia(null);
   }
 
-  // ↑ / ↓: con una sola ficha con foco, pasa a la anterior / siguiente de «Fichas activas»
+  // Supr: borra las fichas con foco. ↑ / ↓: con una sola ficha con foco, pasa a la anterior / siguiente de «Fichas activas»
   function alPulsarTecla(e: KeyboardEvent) {
-    if (e.key !== "ArrowUp" && e.key !== "ArrowDown") return;
     const t = e.target as HTMLElement | null;
+    // Supr: elimina las instancias con foco, igual que arrastrarlas al banco (a la izquierda)
+    if (e.key === "Delete") {
+      if (t?.closest?.("input, textarea, select, [contenteditable='true']")) return;
+      const ids = [...partida.idsSeleccionados];
+      if (ids.length === 0) return;
+      e.preventDefault();
+      void (async () => {
+        for (const id of ids) await partida.borrarInstancia(id);
+      })();
+      return;
+    }
+    if (e.key !== "ArrowUp" && e.key !== "ArrowDown") return;
     if (t?.closest?.("input, textarea, select, [contenteditable='true']")) return;
     if (partida.seleccionarVecina(e.key === "ArrowUp" ? -1 : 1)) {
       e.preventDefault();

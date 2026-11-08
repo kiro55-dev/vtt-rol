@@ -189,7 +189,7 @@ pub fn parametros_por_defecto() -> Vec<DefinicionParametro> {
         }
     };
     vec![
-        def(ID_VIDA, "Vida", 10, true, None, Visibilidad::Variable, None),
+        def(ID_VIDA, "Vida", 10, true, Some(Forma::Resumen(vec![34, 177, 76, 255])), Visibilidad::Variable, None),
         def(ID_ARMADURA, "Armadura", 10, false, None, Visibilidad::Variable, None),
         def(
             ID_VELOCIDAD,
