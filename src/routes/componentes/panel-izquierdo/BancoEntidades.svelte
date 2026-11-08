@@ -2,7 +2,7 @@
 <script lang="ts">
   import { onMount } from "svelte";
   import { invoke } from "@tauri-apps/api/core";
-  import { partida } from "$lib/partida.svelte";
+  import { partida, type Entidad } from "$lib/partida.svelte";
   import { miniaturas } from "$lib/miniaturas.svelte";
   import { esImagen, importarImagen } from "$lib/imagenes";
   import { alSoltarArchivos } from "$lib/soltarArchivos";
@@ -67,6 +67,46 @@
     };
   }
 
+  // Selección múltiple (Ctrl+clic). Arrastrar una seleccionada arrastra todas; Supr las manda a la papelera.
+  const seleccion = $derived(partida.idsBancoSeleccionados);
+
+  /** Lo que se arrastra desde esta fila: toda la selección si la fila está en ella, si no solo la fila. */
+  function grupoDe(item: Entidad): Entidad[] {
+    if (seleccion.length < 2 || !seleccion.includes(item.id)) return [item];
+    return seleccion.flatMap((id) => partida.banco.filter((b) => b.id === id));
+  }
+
+  function alPulsarFila(e: PointerEvent, item: Entidad) {
+    if (e.ctrlKey || e.metaKey) return; // Ctrl+clic solo selecciona (lo hace el clic)
+    const grupo = grupoDe(item);
+    if (externo) {
+      // BANCO EXTERNO
+      bancoExterno.prepararArrastre(e, grupo, () => bancoExterno.pedirAbrirFicha(item.id));
+    } else {
+      arrastre.preparar(e, grupo.length > 1 ? { entidades: grupo } : { entidad: item });
+    }
+  }
+
+  function alHacerClicFila(e: MouseEvent, item: Entidad) {
+    if (arrastre.esClicDeArrastre()) return;
+    if (e.ctrlKey || e.metaKey) return partida.alternarSeleccionBanco(item.id);
+    partida.limpiarSeleccionBanco();
+    if (!externo) void partida.abrirEditorEntidad(item);
+  }
+
+  // BANCO EXTERNO: en la ventana del banco, Supr y Ctrl+Z los hace la principal (ver +page.svelte)
+  function alPulsarTeclaExterno(e: KeyboardEvent) {
+    if ((e.target as HTMLElement | null)?.closest?.("input, textarea, select")) return;
+    if (e.key === "Escape") partida.limpiarSeleccionBanco();
+    else if (e.key === "Delete" && seleccion.length > 0) {
+      e.preventDefault();
+      bancoExterno.pedirTecla({ tecla: "suprimir", ids: [...seleccion] });
+    } else if ((e.ctrlKey || e.metaKey) && !e.shiftKey && e.key.toLowerCase() === "z") {
+      e.preventDefault();
+      bancoExterno.pedirTecla({ tecla: "deshacer" });
+    }
+  }
+
   // Drag & drop de imagen desde el explorador del SO
   onMount(() =>
     alSoltarArchivos(async ([ruta], el) => {
@@ -83,6 +123,8 @@
     })
   );
 </script>
+
+<svelte:window onkeydown={(e) => externo && alPulsarTeclaExterno(e)} />
 
 <div class="banco" data-destino="banco" class:destino={recibeInstancia}>
   <!-- Zona de búsqueda y filtros -->
@@ -174,13 +216,11 @@
       <button
         type="button"
         class="fila-entidad"
+        class:seleccionada={seleccion.includes(item.id)}
         use:vigilarVisibilidad={item.id}
-        onpointerdown={(e) =>
-          externo
-            ? bancoExterno.prepararArrastre(e, item, () => bancoExterno.pedirAbrirFicha(item.id)) // BANCO EXTERNO
-            : arrastre.preparar(e, { entidad: item })}
-        onclick={() => !externo && !arrastre.esClicDeArrastre() && partida.abrirEditorEntidad(item)}
-        title="Clic: editar ficha · Arrastrar: al tablero o a «Fichas activas»"
+        onpointerdown={(e) => alPulsarFila(e, item)}
+        onclick={(e) => alHacerClicFila(e, item)}
+        title="Clic: editar ficha · Ctrl+clic: seleccionar varias (Supr las borra) · Arrastrar: al tablero o a «Fichas activas»"
       >
         {#if item.tipo === "NPC"}
           <div class="contenedor-rombo">
@@ -331,6 +371,10 @@
   .fila-entidad:hover {
     background: #27272a;
     border-color: #3f3f46;
+  }
+  .fila-entidad.seleccionada {
+    background: #1e2a3d;
+    border-color: #3b82f6;
   }
 
   /* Rombo azul para NPC */

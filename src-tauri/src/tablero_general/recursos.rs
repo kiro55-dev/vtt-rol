@@ -17,6 +17,7 @@ use crate::tablero_general::archivos;
 use crate::tablero_general::estado::{DeltaPartida, EstadoPartida};
 use crate::tablero_general::miniaturas;
 use crate::tablero_general::modelos::Entidad;
+use crate::tablero_general::papelera::{self, Borrado};
 
 #[derive(Debug, Default, Clone, PartialEq)]
 pub struct Referencias {
@@ -56,6 +57,31 @@ pub fn referencias(estado: &EstadoPartida) -> Referencias {
     };
     estado.banco_entidades.iter().for_each(&mut anota);
     estado.instancias_activas.iter().for_each(|i| anota(&i.base));
+
+    // Lo que está en la papelera se puede restaurar: sus archivos siguen en uso hasta que se vacíe
+    let mut fondos = Vec::new();
+    for b in estado.papelera.iter().flat_map(|g| &g.borrados) {
+        match b {
+            Borrado::Entidad { entidad, instancias } => {
+                anota(entidad);
+                instancias.iter().for_each(|i| anota(&i.base));
+            }
+            Borrado::Mapa { mapa, instancias, retiradas } => {
+                fondos.push(mapa);
+                instancias.iter().chain(retiradas).for_each(|i| anota(&i.base));
+            }
+            Borrado::Zona { mapas, entidades, instancias, retiradas, .. } => {
+                fondos.extend(mapas);
+                entidades.iter().for_each(&mut anota);
+                instancias.iter().chain(retiradas).for_each(|i| anota(&i.base));
+            }
+        }
+    }
+    for m in fondos {
+        if let Some(u) = m.url_imagen_fondo.as_deref().filter(|u| es_ruta_de(u, "imagenes")) {
+            r.imagenes.insert(u.to_string());
+        }
+    }
     r
 }
 
@@ -75,6 +101,7 @@ pub fn afecta_a_recursos(delta: &DeltaPartida) -> bool {
             | DeltaPartida::EntidadBorrada(_)
             | DeltaPartida::MiniaturaFichaCambiada { .. }
             | DeltaPartida::InstanciaBorrada(_)
+            | DeltaPartida::PapeleraVaciada
     )
 }
 
@@ -127,9 +154,10 @@ pub fn descartar(dir_datos: &Path, estado: &EstadoPartida, rutas: &[String]) -> 
     borradas
 }
 
-/// Siguiente id libre para una ficha nueva, contando también las que se están creando.
-pub fn siguiente_id_entidad(banco: &[Entidad], en_creacion: &HashSet<u16>) -> u16 {
-    let max_banco = banco.iter().map(|e| e.id).max().unwrap_or(0);
+/// Siguiente id libre para una ficha nueva, contando también las que se están creando y las que están en
+/// la papelera (su carpeta de adjuntos lleva el id: una ficha nueva con ese id se la quedaría o la vaciaría).
+pub fn siguiente_id_entidad(est: &EstadoPartida, en_creacion: &HashSet<u16>) -> u16 {
+    let max_banco = est.banco_entidades.iter().map(|e| e.id).max().unwrap_or(0).max(papelera::reservados(est).entidad);
     let max_reservas = en_creacion.iter().copied().max().unwrap_or(0);
     max_banco.max(max_reservas) + 1
 }
@@ -253,6 +281,30 @@ mod tests {
         // Borrar su zona entera (que se lleva las fichas sin pasar por «borrar ficha»): también
         aplicar(&d, &mut est, DeltaPartida::ZonaEliminada(zona(1)));
         assert!(!existe(&d, "miniaturas/ficha/entidad_2_1.webp"));
+    }
+
+    #[test]
+    fn lo_que_esta_en_la_papelera_conserva_sus_archivos_hasta_vaciarla() {
+        let d = dir();
+        con_miniaturas(&d, "imagenes/foto.png");
+        con_miniaturas(&d, "imagenes/fondo.png");
+        crear(&d, "archivos/entidad_1/notas.txt");
+        let mut est = EstadoPartida::default();
+        est.zonas = vec![zona(1)];
+        est.mapas = vec![mapa(1, 1, Some("imagenes/fondo.png"))];
+        est.banco_entidades = vec![ficha(1, 1, Some("imagenes/foto.png"), &["archivos/entidad_1/notas.txt"], false)];
+
+        let d1 = papelera::borrar_entidades(&est, &[1]).unwrap();
+        let d2 = papelera::borrar_zona(&est, 1).unwrap();
+        assert!(aplicar(&d, &mut est, d1).is_empty());
+        assert!(aplicar(&d, &mut est, d2).is_empty());
+        assert!(existe(&d, "imagenes/foto.png") && existe(&d, "imagenes/fondo.png") && existe(&d, "archivos/entidad_1/notas.txt"));
+
+        // Al vaciarla se libera todo
+        let mut borradas = aplicar(&d, &mut est, DeltaPartida::PapeleraVaciada);
+        borradas.sort();
+        assert_eq!(borradas, vec!["archivos/entidad_1/notas.txt", "imagenes/fondo.png", "imagenes/foto.png"]);
+        assert!(!existe(&d, "miniaturas/ficha/foto.webp"));
     }
 
     #[test]
@@ -381,13 +433,21 @@ mod tests {
 
     #[test]
     fn el_id_de_una_ficha_nueva_tiene_en_cuenta_las_que_se_estan_creando() {
-        let banco = vec![ficha(1, 1, None, &[], false), ficha(4, 1, None, &[], false)];
+        let mut est = EstadoPartida::default();
+        est.banco_entidades = vec![ficha(1, 1, None, &[], false), ficha(4, 1, None, &[], false)];
         let mut reservas = HashSet::new();
-        assert_eq!(siguiente_id_entidad(&banco, &reservas), 5);
+        assert_eq!(siguiente_id_entidad(&est, &reservas), 5);
         reservas.insert(5);
         reservas.insert(6);
-        assert_eq!(siguiente_id_entidad(&banco, &reservas), 7);
-        assert_eq!(siguiente_id_entidad(&[], &HashSet::new()), 1);
+        assert_eq!(siguiente_id_entidad(&est, &reservas), 7);
+        assert_eq!(siguiente_id_entidad(&EstadoPartida::default(), &HashSet::new()), 1);
+
+        // La ficha 4 a la papelera: su id sigue ocupado
+        let d = papelera::borrar_entidades(&est, &[4]).unwrap();
+        est.aplicar_delta(&d);
+        assert_eq!(siguiente_id_entidad(&est, &HashSet::new()), 5);
+        est.aplicar_delta(&DeltaPartida::PapeleraVaciada);
+        assert_eq!(siguiente_id_entidad(&est, &HashSet::new()), 2);
     }
 
     #[test]

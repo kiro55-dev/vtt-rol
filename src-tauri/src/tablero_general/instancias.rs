@@ -8,6 +8,7 @@ use serde::Deserialize;
 
 use crate::tablero_general::estado::{DeltaPartida, EstadoPartida};
 use crate::tablero_general::modelos::*;
+use crate::tablero_general::papelera;
 use crate::tablero_general::tablero;
 
 /// Dónde se pone una instancia: una casilla de un mapa. `None` (en `Option<Destino>`) = activa pero
@@ -35,7 +36,9 @@ pub fn instanciar(est: &EstadoPartida, id_entidad: u16, destino: Option<Destino>
     }
     let (id_mapa, coordenadas) = colocar(est, tablero::tamano_cuerpo(&entidad.cuerpo), destino)?;
 
-    let id_instancia = match est.instancias_activas.iter().map(|i| i.id_instancia).max() {
+    // Tampoco el de una instancia que está en la papelera (con su ficha, mapa o zona)
+    let reservada = papelera::reservados(est).instancia;
+    let id_instancia = match est.instancias_activas.iter().map(|i| i.id_instancia).chain([reservada]).max().filter(|&m| m > 0) {
         None => 1,
         Some(m) => m.checked_add(1).ok_or("No caben más instancias")?,
     };

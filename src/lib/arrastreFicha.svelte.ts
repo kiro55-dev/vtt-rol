@@ -11,12 +11,16 @@
 import { partida, type Destino, type Entidad, type Instancia } from "$lib/partida.svelte";
 import { ladosInstancia, tamanoCuerpo, type Lados } from "$lib/tablero";
 
-/** Lo que se arrastra: una ficha del banco o una instancia (y de dónde se cogió). */
-export type OrigenArrastre = { entidad: Entidad } | { instancia: Instancia; desde: "activas" | "tablero" };
+/** Lo que se arrastra: una ficha del banco, varias (selección con Ctrl) o una instancia (y de dónde se cogió). */
+export type OrigenArrastre =
+  | { entidad: Entidad }
+  | { entidades: Entidad[] }
+  | { instancia: Instancia; desde: "activas" | "tablero" };
 export type ZonaDestino = "tablero" | "activas" | "banco";
 
 export type AccionArrastre =
   | { tipo: "instanciar"; idEntidad: number; destino: Destino | null }
+  | { tipo: "instanciarVarias"; idsEntidades: number[]; destino: Destino | null }
   | { tipo: "mover"; idInstancia: number; destino: Destino }
   | { tipo: "quitarDelTablero"; idInstancia: number }
   | { tipo: "borrar"; idInstancia: number }
@@ -36,6 +40,7 @@ export function moverEnLista(ids: readonly number[], id: number, indice: number)
  *
  * | origen \ zona          | tablero         | activas                | banco    |
  * | ficha del banco        | instanciar ahí  | instanciar sin casilla | nada     |
+ * | varias del banco       | en cuadrícula   | todas sin casilla      | nada     |
  * | instancia del tablero  | mover ahí       | quitar del tablero     | borrar   |
  * | instancia de activas   | mover ahí       | reordenar              | borrar   |
  */
@@ -52,6 +57,12 @@ export function accionAlSoltar(
     if (zona === "activas") return { tipo: "instanciar", idEntidad, destino: null };
     return null;
   }
+  if ("entidades" in origen) {
+    const idsEntidades = origen.entidades.map((e) => e.id);
+    if (zona === "tablero") return casilla ? { tipo: "instanciarVarias", idsEntidades, destino: casilla } : null;
+    if (zona === "activas") return { tipo: "instanciarVarias", idsEntidades, destino: null };
+    return null;
+  }
   const { id_instancia: idInstancia, coordenadas } = origen.instancia;
   if (zona === "tablero") return casilla ? { tipo: "mover", idInstancia, destino: casilla } : null;
   if (zona === "banco") return { tipo: "borrar", idInstancia };
@@ -65,11 +76,33 @@ export function accionAlSoltar(
   return coordenadas === "NoPuesto" ? null : { tipo: "quitarDelTablero", idInstancia };
 }
 
+/** La ficha que se ve al arrastrar (con varias, la primera). */
+export function baseDe(origen: OrigenArrastre): Entidad {
+  if ("entidad" in origen) return origen.entidad;
+  if ("entidades" in origen) return origen.entidades[0];
+  return origen.instancia.base;
+}
+
+/** Lados en el tablero de una ficha del banco: los de su cuerpo o, si es única y ya está en el tablero,
+ *  los de su instancia (que se reutiliza con su giro), igual que hace Rust. */
+export function ladosDeEntidad(entidad: Entidad): Lados {
+  const existente = entidad.es_unico ? partida.instancias.find((i) => i.base.id === entidad.id) : undefined;
+  return existente ? ladosInstancia(existente) : tamanoCuerpo(entidad.cuerpo);
+}
+
+/** Lados de lo que se arrastra (con varias, los de la primera: es la que cae bajo el cursor). */
+export function ladosDe(origen: OrigenArrastre): Lados {
+  if ("instancia" in origen) return ladosInstancia(origen.instancia);
+  return ladosDeEntidad(baseDe(origen));
+}
+
 /** Lo que hay que hacer en el store para una acción. */
 export function ejecutarAccion(accion: AccionArrastre) {
   switch (accion.tipo) {
     case "instanciar":
       return partida.instanciar(accion.idEntidad, accion.destino);
+    case "instanciarVarias":
+      return partida.instanciarVarias(accion.idsEntidades, accion.destino);
     case "mover":
       return partida.moverInstancia(accion.idInstancia, accion.destino);
     case "quitarDelTablero":
@@ -124,8 +157,8 @@ class ArrastreFicha {
     if (e.button !== 0 || this.actual) return;
     this.#terminar();
     const inicio = { x: e.clientX, y: e.clientY };
-    const base = "entidad" in origen ? origen.entidad : origen.instancia.base;
-    const lados = "entidad" in origen ? tamanoCuerpo(origen.entidad.cuerpo) : ladosInstancia(origen.instancia);
+    const base = baseDe(origen);
+    const lados = ladosDe(origen);
     let empezado = false;
 
     const mover = (ev: PointerEvent) => {
@@ -183,8 +216,10 @@ class ArrastreFicha {
   // manda la posición del cursor ya convertida a px de ESTA ventana (ver $lib/bancoExterno).
   #externo: { origen: OrigenArrastre; foto: string | null; lados: Lados } | null = null;
 
-  externoInicio(entidad: Entidad) {
-    this.#externo = { origen: { entidad }, foto: entidad.foto_url, lados: tamanoCuerpo(entidad.cuerpo) };
+  externoInicio(entidades: Entidad[]) {
+    if (entidades.length === 0) return;
+    const origen: OrigenArrastre = entidades.length === 1 ? { entidad: entidades[0] } : { entidades };
+    this.#externo = { origen, foto: entidades[0].foto_url, lados: ladosDe(origen) };
   }
 
   externoMover(x: number, y: number) {

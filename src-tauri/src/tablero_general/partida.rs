@@ -16,6 +16,7 @@ use crate::tablero_general::imagenes;
 use crate::tablero_general::instancias;
 use crate::tablero_general::miniaturas::{self, Tipo};
 use crate::tablero_general::modelos::*;
+use crate::tablero_general::papelera;
 use crate::tablero_general::partidas;
 use crate::tablero_general::recursos;
 use crate::tablero_general::tablero::{self, AvisoTablero};
@@ -160,7 +161,9 @@ fn cambiar_de_partida(state: &AppState, nombre: &str) -> Result<(), String> {
         return Ok(());
     }
 
-    // 1. Se guarda la que se deja (snapshot atómico + log vacío) ANTES de tocar nada
+    // 1. Se guarda la que se deja (snapshot atómico + log vacío) ANTES de tocar nada. Se sale de ella
+    //    de forma normal, así que su papelera se vacía (si no, sus archivos se quedarían para siempre).
+    vaciar_papelera(&mut est, &state.almacen);
     estado::compactar(&state.almacen, &est).map_err(|e| format!("No se pudo guardar la partida actual: {e}"))?;
 
     // 2. Se abre la nueva; si no se puede leer, se vuelve a la anterior (intacta en memoria)
@@ -398,6 +401,43 @@ pub fn instanciar_entidad(
     Ok(visibilidad::instancias_para_el_master(&[instancia], visibilidad::OCULTAR_PRIVADOS_AL_MASTER).remove(0))
 }
 
+/// Instancia varias fichas del banco de golpe (selección múltiple). Con `destino`, la primera cae en esa
+/// casilla y las demás a su derecha y debajo, en cuadrícula (`tablero::disposicion_en_cuadricula`); sin
+/// él, todas quedan activas sin colocar. Cada una es un delta normal, registrado en orden bajo el mismo lock.
+#[tauri::command]
+pub fn instanciar_entidades(
+    ids: Vec<u16>,
+    destino: Option<instancias::Destino>,
+    state: State<'_, AppState>,
+) -> Result<Vec<Instancia>, String> {
+    let mut est = state.lock();
+    let mut destinos: Vec<Option<instancias::Destino>> = vec![None; ids.len()];
+    if let Some(d) = destino {
+        let mapa = est.mapas.iter().find(|m| m.id == d.id_mapa).ok_or("Ese mapa no existe")?;
+        let lados: Vec<(u16, u16)> = ids
+            .iter()
+            .map(|id| {
+                let e = est.banco_entidades.iter().find(|e| e.id == *id).ok_or("Esa ficha no existe")?;
+                // Una única que ya está en el tablero conserva su giro al moverse
+                let reutilizada = e.es_unico.then(|| est.instancias_activas.iter().find(|i| i.base.id == e.id)).flatten();
+                Ok(reutilizada.map_or_else(|| tablero::tamano_cuerpo(&e.cuerpo), tablero::lados_instancia))
+            })
+            .collect::<Result<_, String>>()?;
+        let casillas = tablero::disposicion_en_cuadricula(tablero::Rejilla::de(mapa), d.casilla, &lados);
+        destinos = casillas.into_iter().map(|casilla| Some(instancias::Destino { id_mapa: d.id_mapa, casilla })).collect();
+    }
+
+    let mut creadas = Vec::new();
+    for (id, destino) in ids.into_iter().zip(destinos) {
+        let delta = instancias::instanciar(&est, id, destino)?;
+        if let DeltaPartida::InstanciaCreada(i) | DeltaPartida::InstanciaModificada(i) = &delta {
+            creadas.push(i.clone());
+        }
+        registrar(&mut est, &state.almacen, delta);
+    }
+    Ok(visibilidad::instancias_para_el_master(&creadas, visibilidad::OCULTAR_PRIVADOS_AL_MASTER))
+}
+
 /// Mueve una instancia a otra casilla o, con `None`, la quita del tablero (sigue activa).
 #[tauri::command]
 pub fn mover_instancia(id_instancia: u16, destino: Option<instancias::Destino>, state: State<'_, AppState>) -> Result<(), String> {
@@ -464,7 +504,8 @@ pub fn crear_zona(state: State<'_, AppState>) -> Zona {
     // simultáneas ya no pueden obtener el mismo id.
     let mut est = state.lock();
 
-    let id = est.zonas.iter().map(|z| z.id).max().unwrap_or(0) + 1;
+    // Nunca el de una zona que está en la papelera: al restaurarla tiene que estar libre
+    let id = est.zonas.iter().map(|z| z.id).max().unwrap_or(0).max(papelera::reservados(&est).zona) + 1;
     let orden = est.zonas.iter().map(|z| z.orden).max().map(|o| o + 1).unwrap_or(0);
 
     let nueva_zona = Zona {
@@ -477,9 +518,13 @@ pub fn crear_zona(state: State<'_, AppState>) -> Zona {
     nueva_zona
 }
 
+/// Manda la zona a la papelera con sus mapas y sus fichas (se puede restaurar con Ctrl+Z).
 #[tauri::command]
-pub fn eliminar_zona(zona: Zona, state: State<'_, AppState>) {
-    procesar_delta(&state, DeltaPartida::ZonaEliminada(zona));
+pub fn eliminar_zona(zona: Zona, state: State<'_, AppState>) -> Result<(), String> {
+    let mut est = state.lock();
+    let delta = papelera::borrar_zona(&est, zona.id)?;
+    registrar(&mut est, &state.almacen, delta);
+    Ok(())
 }
 
 #[tauri::command]
@@ -507,7 +552,7 @@ pub fn crear_mapa(
         .ok_or_else(|| format!("La zona {} no existe", id_zona))?;
 
     // ID secuencial global para evitar cualquier colisión entre zonas
-    let id = est.mapas.iter().map(|m| m.id).max().unwrap_or(0) + 1;
+    let id = est.mapas.iter().map(|m| m.id).max().unwrap_or(0).max(papelera::reservados(&est).mapa) + 1;
     let orden = est
         .mapas
         .iter()
@@ -580,9 +625,13 @@ pub fn corregir_tamanos_mapas(est: &mut EstadoPartida, almacen: &Almacen) {
     }
 }
 
+/// Manda el mapa a la papelera con las instancias que tenía (se puede restaurar con Ctrl+Z).
 #[tauri::command]
-pub fn borrar_mapa(mapa: Mapa, state: State<'_, AppState>) {
-    procesar_delta(&state, DeltaPartida::MapaBorrado(mapa));
+pub fn borrar_mapa(mapa: Mapa, state: State<'_, AppState>) -> Result<(), String> {
+    let mut est = state.lock();
+    let delta = papelera::borrar_mapa(&est, mapa.id)?;
+    registrar(&mut est, &state.almacen, delta);
+    Ok(())
 }
 
 // ========================================================
@@ -662,7 +711,7 @@ pub fn iniciar_borrador_entidad(
         archivos::ruta_segura(&state.almacen.dir(), f, &["imagenes"])?;
     }
 
-    let id = recursos::siguiente_id_entidad(&est.banco_entidades, &reservas);
+    let id = recursos::siguiente_id_entidad(&est, &reservas);
     reservas.insert(id);
 
     // Si quedó una carpeta de una ficha que nunca se guardó (cierre brusco), este id está libre
@@ -794,25 +843,51 @@ pub fn modificar_entidad(mut entidad: Entidad, state: State<'_, AppState>) -> Re
     Ok(())
 }
 
-/// Borra una ficha. Se usa la que está guardada (no la que manda el front), y sus adjuntos y su
-/// foto se liberan solos si nadie más los usa.
+/// Manda una ficha a la papelera con sus instancias (se usa la guardada, no la que manda el front).
+/// Su foto y sus adjuntos siguen en disco hasta que se vacíe la papelera.
 #[tauri::command]
 pub fn borrar_entidad(entidad: Entidad, state: State<'_, AppState>) -> Result<(), String> {
+    borrar_entidades(vec![entidad.id], state)
+}
+
+/// Manda varias fichas a la papelera de una vez (Supr con varias seleccionadas): un Ctrl+Z las devuelve todas.
+#[tauri::command]
+pub fn borrar_entidades(ids: Vec<u16>, state: State<'_, AppState>) -> Result<(), String> {
     let mut est = state.lock();
-
-    let guardada = est
-        .banco_entidades
-        .iter()
-        .find(|e| e.id == entidad.id)
-        .cloned()
-        .ok_or("La ficha ya no existe")?;
-
-    registrar(&mut est, &state.almacen, DeltaPartida::EntidadBorrada(guardada));
-
-    if !est.banco_entidades.iter().any(|e| e.id == entidad.id) {
-        archivos::borrar_carpeta_entidad(&state.almacen.dir(), entidad.id);
-    }
+    let delta = papelera::borrar_entidades(&est, &ids)?;
+    registrar(&mut est, &state.almacen, delta);
     Ok(())
+}
+
+/// Ctrl+Z: devuelve el último grupo de la papelera. `None` si no había nada que restaurar.
+#[tauri::command]
+pub fn restaurar_papelera(state: State<'_, AppState>) -> Result<Option<papelera::Restaurado>, String> {
+    let mut est = state.lock();
+    let Some((delta, restaurado)) = papelera::restaurar(&est)? else { return Ok(None) };
+    registrar(&mut est, &state.almacen, delta);
+    Ok(Some(restaurado))
+}
+
+/// Vacía la papelera (con el lock cogido): se liberan sus imágenes, miniaturas y adjuntos (recursos.rs)
+/// y la carpeta de cada ficha que se va. Solo al cerrar la aplicación o al salir de la partida.
+fn vaciar_papelera(est: &mut EstadoPartida, almacen: &Almacen) {
+    if est.papelera.is_empty() {
+        return;
+    }
+    let fichas = papelera::ids_entidades(est);
+    registrar(est, almacen, DeltaPartida::PapeleraVaciada);
+    for id in fichas.into_iter().filter(|id| !est.banco_entidades.iter().any(|e| e.id == *id)) {
+        archivos::borrar_carpeta_entidad(&almacen.dir(), id);
+    }
+}
+
+/// Al cerrar la ventana principal: se vacía la papelera y se guarda la partida.
+pub fn cerrar_partida(state: &AppState) {
+    let mut est = state.lock();
+    vaciar_papelera(&mut est, &state.almacen);
+    if let Err(e) = estado::compactar(&state.almacen, &est) {
+        eprintln!("[partida] {e}");
+    }
 }
 
 // ========================================================

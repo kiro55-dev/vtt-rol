@@ -158,7 +158,7 @@
 
     <div class="pie">
       {#if !editor.esBorrador}
-        <button type="button" class="btn-borrar" onclick={() => editor.borrar()} disabled={editor.guardando}>Borrar</button>
+        <button type="button" class="btn-borrar" onclick={() => editor.borrar()} disabled={editor.guardando}>Borrar ficha</button>
       {/if}
       <div class="botones-derecha">
         <button type="button" class="btn-cancelar" onclick={() => editor.cancelar()}>Cancelar</button>

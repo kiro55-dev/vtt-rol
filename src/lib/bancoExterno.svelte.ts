@@ -24,9 +24,13 @@ export const EVENTO_ARRASTRE = "banco-arrastre";
 export const EVENTO_ABRIR_FICHA = "banco-abrir-ficha";
 export const EVENTO_PEDIR_ESTADO = "banco-pedir-estado";
 export const EVENTO_CAMBIADO = "banco-cambiado";
+export const EVENTO_TECLA = "banco-tecla";
+
+/** Teclas del banco que hace la ventana principal: Supr (borrar las seleccionadas) y Ctrl+Z (papelera). */
+export type EventoTeclaBanco = { tecla: "suprimir"; ids: number[] } | { tecla: "deshacer" };
 
 export type EventoArrastreBanco =
-  | { fase: "inicio"; idEntidad: number }
+  | { fase: "inicio"; idsEntidades: number[] }
   | { fase: "mover" | "fin"; x: number; y: number }
   | { fase: "cancelar" };
 
@@ -99,6 +103,12 @@ class BancoExterno {
     );
     guardar(listen(EVENTO_PEDIR_ESTADO, () => void this.avisarCambio(true)));
     guardar(
+      listen<EventoTeclaBanco>(EVENTO_TECLA, (e) => {
+        if (e.payload.tecla === "suprimir") void partida.borrarEntidades(e.payload.ids);
+        else void partida.restaurarPapelera();
+      })
+    );
+    guardar(
       // Ojo: con este escuchador, Tauri cierra la ventana con `destroy()` DESPUÉS de él (permiso
       // core:window:allow-destroy) y solo si no falla: sin el permiso, o con una excepción aquí, la
       // aplicación no se cerraría. Por eso se traga cualquier error.
@@ -128,13 +138,13 @@ class BancoExterno {
 
   async #alArrastrar(ev: EventoArrastreBanco) {
     if (ev.fase === "inicio") {
-      const entidad = partida.banco.find((b) => b.id === ev.idEntidad);
-      if (!entidad) return;
+      const entidades = ev.idsEntidades.flatMap((id) => partida.banco.filter((b) => b.id === id));
+      if (entidades.length === 0) return;
       // La posición de la ventana se pide UNA vez; los movimientos esperan a esa misma promesa
       const w = getCurrentWindow();
       this.#ventana = Promise.all([w.innerPosition(), w.scaleFactor()]).then(([p, escala]) => ({ x: p.x, y: p.y, escala }));
       await this.#ventana;
-      arrastre.externoInicio(entidad);
+      arrastre.externoInicio(entidades);
     } else if (ev.fase === "cancelar") {
       this.#ventana = null;
       arrastre.externoCancelar();
@@ -158,11 +168,17 @@ class BancoExterno {
     void emit(EVENTO_ABRIR_FICHA, { id });
   }
 
+  /** Supr / Ctrl+Z en la ventana del banco: los hace la principal (y esta se refresca con `banco-cambiado`). */
+  pedirTecla(ev: EventoTeclaBanco) {
+    void emit(EVENTO_TECLA, ev);
+  }
+
   /**
    * Como `arrastre.preparar`, pero el destino está en otra ventana: manda a la principal la posición
-   * del cursor. Si se suelta casi sin moverse es un clic y se llama a `alClic`.
+   * del cursor. Si se suelta casi sin moverse es un clic y se llama a `alClic`. Con varias fichas
+   * (selección con Ctrl) se arrastran todas.
    */
-  prepararArrastre(e: PointerEvent, entidad: Entidad, alClic: () => void) {
+  prepararArrastre(e: PointerEvent, entidades: Entidad[], alClic: () => void) {
     if (e.button !== 0) return;
     const inicio = { x: e.clientX, y: e.clientY };
     let empezado = false;
@@ -178,7 +194,7 @@ class BancoExterno {
       if (!empezado) {
         if (Math.hypot(ev.clientX - inicio.x, ev.clientY - inicio.y) <= UMBRAL_ARRASTRE_PX) return;
         empezado = true;
-        void emit(EVENTO_ARRASTRE, { fase: "inicio", idEntidad: entidad.id } satisfies EventoArrastreBanco);
+        void emit(EVENTO_ARRASTRE, { fase: "inicio", idsEntidades: entidades.map((x) => x.id) } satisfies EventoArrastreBanco);
       }
       if (enVuelo) return; // una posición a la vez
       enVuelo = true;

@@ -15,6 +15,7 @@ use std::path::PathBuf;
 
 use crate::tablero_general::almacen::Almacen;
 use crate::tablero_general::modelos::*;
+use crate::tablero_general::papelera::{self, GrupoPapelera};
 use crate::tablero_general::tablero;
 
 // ========================================================
@@ -53,6 +54,13 @@ pub enum DeltaPartida {
     InstanciaBorrada(u16),
     /// Nuevo orden de «Fichas activas» (ids de arriba abajo): cada una recibe su posición en `orden`.
     InstanciasReordenadas(Vec<u16>),
+    /// Borrado de fichas, un mapa o una zona: lo quitado se guarda en la papelera (ver papelera.rs).
+    /// Sustituye a `EntidadBorrada`/`MapaBorrado`/`ZonaEliminada`, que solo quedan para logs antiguos.
+    EnviadoAPapelera(GrupoPapelera),
+    /// Ctrl+Z: el grupo con ese id sale de la papelera y vuelve a la partida.
+    RestauradoDePapelera(u64),
+    /// Se vacía la papelera (al cerrar la aplicación o cambiar de partida); sus archivos se liberan.
+    PapeleraVaciada,
 }
 
 /// Línea de deltas.jsonl al LEER.
@@ -90,6 +98,9 @@ pub struct EstadoPartida {
     pub instancias_activas: Vec<Instancia>,
     #[serde(default)]
     pub historial_tiradas: Vec<Tiradas>,
+    /// Lo borrado que aún se puede restaurar con Ctrl+Z, del más antiguo al más reciente.
+    #[serde(default)]
+    pub papelera: Vec<GrupoPapelera>,
 }
 
 // A mano y no con derive: una partida nueva también nace con los parámetros de serie.
@@ -103,6 +114,7 @@ impl Default for EstadoPartida {
             banco_entidades: Vec::new(),
             instancias_activas: Vec::new(),
             historial_tiradas: Vec::new(),
+            papelera: Vec::new(),
         }
     }
 }
@@ -309,6 +321,9 @@ impl EstadoPartida {
                     .sort_by_key(|d| ids.iter().position(|i| *i == d.id).unwrap_or(usize::MAX));
                 self.ajustar_a_definiciones();
             }
+            DeltaPartida::EnviadoAPapelera(grupo) => papelera::aplicar_envio(self, grupo),
+            DeltaPartida::RestauradoDePapelera(id) => papelera::aplicar_restauracion(self, *id),
+            DeltaPartida::PapeleraVaciada => self.papelera.clear(),
         }
     }
 

@@ -2,13 +2,15 @@
 <!-- La ficha que se está arrastrando sigue al cursor. Sobre el tablero no se pinta: allí se ve el
      rectángulo amarillo de las casillas donde caerá. -->
 <script lang="ts">
-  import { arrastre } from "$lib/arrastreFicha.svelte";
+  import { arrastre, baseDe } from "$lib/arrastreFicha.svelte";
   import { arrastreTirada } from "$lib/arrastreTirada.svelte";
   import { miniaturas } from "$lib/miniaturas.svelte";
   import { COLOR_TIPO } from "$lib/fichasTablero";
 
   const a = $derived(arrastre.actual);
-  const base = $derived(a ? ("entidad" in a.origen ? a.origen.entidad : a.origen.instancia.base) : null);
+  const base = $derived(a ? baseDe(a.origen) : null);
+  // Con varias fichas del banco (selección con Ctrl) se ve la primera con «×N»
+  const cuantas = $derived(a && "entidades" in a.origen ? a.origen.entidades.length : 1);
   // La miniatura de la ficha (la misma que usa todo lo demás)
   $effect(() => {
     if (base?.foto_url) miniaturas.asegurarFicha(base);
@@ -17,9 +19,9 @@
   // Qué pasará al soltar aquí, para que no sea una sorpresa
   const pista = $derived.by(() => {
     if (!a) return "";
-    const esFicha = "entidad" in a.origen;
+    const esFicha = !("instancia" in a.origen);
     if (a.zona === "activas") {
-      if (esFicha) return "Activar sin colocar";
+      if (esFicha) return cuantas > 1 ? `Activar las ${cuantas} sin colocar` : "Activar sin colocar";
       return "desde" in a.origen && a.origen.desde === "activas" ? "" : "Quitar del tablero";
     }
     if (a.zona === "banco") return esFicha ? "" : "Eliminar instancia";
@@ -42,6 +44,9 @@
       {/if}
     {:else}
       <span>{base.nombre.charAt(0).toUpperCase()}</span>
+    {/if}
+    {#if cuantas > 1}
+      <span class="cuantas">×{cuantas}</span>
     {/if}
   </div>
   {#if pista}
@@ -82,6 +87,17 @@
     justify-content: center;
     color: #f4f4f5;
     font-weight: bold;
+  }
+  .cuantas {
+    position: absolute;
+    right: 0;
+    bottom: 0;
+    background: #3b82f6;
+    color: white;
+    font-size: 10px;
+    line-height: 1;
+    padding: 2px 4px;
+    border-radius: 6px;
   }
   .fantasma img { width: 100%; height: 100%; object-fit: cover; }
   .pista {

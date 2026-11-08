@@ -56,6 +56,14 @@ Invariants to preserve when adding state changes:
 - Every relative path arriving from the frontend must pass through `archivos::ruta_segura` (blocks absolute paths, `..`, and Windows reserved names).
 - Entity drafts: `iniciar_borrador_entidad` reserves a real id (tracked in `AppState.borradores`) so attachments go straight into `archivos/entidad_<id>/`. Cancelling calls `cancelar_borrador_entidad`.
 
+### Recycle bin (papelera)
+[papelera.rs](src-tauri/src/tablero_general/papelera.rs): deleting a ficha (one or several at once), a map or a zone does not destroy anything.
+- **What goes in.** What is removed, with its cascade (instances, the zone's maps and non-unique fichas, and copies of the unique instances that were only deactivated, `retiradas`), is stored whole as one `GrupoPapelera` in `EstadoPartida.papelera` via the delta `EnviadoAPapelera`. Instances deleted on their own and parameters do NOT go to the bin. The old `ZonaEliminada`/`MapaBorrado`/`EntidadBorrada` deltas stay only to replay old logs.
+- **Ctrl+Z.** `restaurar_papelera` → `RestauradoDePapelera(id)` brings back the LAST group (reverse order). It only undoes deletions, never creations. A `retirada` gets its place back only if it is still unplaced and inactive. A unique ficha re-instanced in the meantime keeps its current instance.
+- **Ids are reserved.** Nothing new takes an id that is in the bin (`papelera::reservados`, used by `crear_zona`, `crear_mapa`, `siguiente_id_entidad` and `instanciar`), so a restore never clashes and no references need rewriting. Fichas need it: their attachments folder carries the id.
+- **Files.** `recursos::referencias()` also walks the bin, so nothing in it is deleted from disk. `PapeleraVaciada` frees everything by reference diffing, and `vaciar_papelera` also removes each emptied ficha's `archivos/entidad_<id>/`.
+- **When it is emptied.** Only on a clean exit: closing the MAIN window (`cerrar_partida` in `lib.rs`; closing the bank window must not empty it) and when switching games (`cambiar_de_partida`). Autosave and startup never empty it, so after a power cut the bin is still there.
+
 ### Domain model
 [modelos.rs](src-tauri/src/tablero_general/modelos.rs) is mirrored by hand in TypeScript interfaces at the top of [src/lib/partida.svelte.ts](src/lib/partida.svelte.ts). Keep the two in sync (serde's default enum encoding, e.g. `Cuerpo = "Pequenio" | { Grande: number[] }`). `Zona` contains `Mapa`s. An `Entidad` (= ficha) is a template in the bank. An `Instancia` is an active copy, placed on a map cell or not (`id_mapa: None`, `NoPuesto`).
 
@@ -67,6 +75,7 @@ Instances:
   - It uses pointer events, not HTML5 DnD (Tauri intercepts it on Windows).
   - Drop zones carry `data-destino`.
   - `accionAlSoltar` holds the whole rule table.
+  - **Several fichas from the bank.** Ctrl+click selects (`partida.idsBancoSeleccionados`, ephemeral; cleared by clicking outside `.banco` or Escape). Dragging a selected row drags the whole selection (`{ entidades }` origin) → `instanciar_entidades`. On the board the first lands on the drop cell and the rest in a near-square grid (`tablero::disposicion_en_cuadricula`, mirrored by `disposicionEnCuadricula` in `tablero.ts` to draw the yellow targets). Supr with a bank selection sends it to the bin as ONE group (`borrar_entidades`); without one, Supr deletes the focused instances.
 - **On the board.** Tokens are drawn by [fichasTablero.ts](src/lib/fichasTablero.ts): a square covering the body with a type-colored border (Enemigo red, NPC blue, Jugador green).
   - Left-drag on a token moves it.
   - Right-click without dragging rotates it 90° clockwise: `Instancia.rotacion`, and `lados_instancia`/`ladosInstancia` swap the sides around the same center.
@@ -74,6 +83,7 @@ Instances:
 - **Visibility** lives in [visibilidad.rs](src-tauri/src/tablero_general/visibilidad.rs): `vista_jugador` keeps only public parameters (and the current value of those) and drops attachments; the same function will filter what is sent over the network.
   - While `OCULTAR_PRIVADOS_AL_MASTER` is `true` (the master streams on Discord), `obtener_instancias_activas` returns that view to the master's own screen too: private values vanish from «Fichas activas», the parameter box and the board shapes. The game keeps everything, and the ficha editor always shows it all.
   - The front never filters by itself: a parameter that is missing from `instancia.base.parametros` is not shown (`veParametro`).
+- **Full-size photo.** Double-clicking a card in «Fichas activas» opens the ORIGINAL photo (`foto_url`, not the thumbnail) in `VisorImagen` ([visorImagen.svelte.ts](src/lib/visorImagen.svelte.ts) holds only the path). It is a small bordered floating window (no backdrop) whose top-right corner sits at the pointer (clamped to the window). Pressing anywhere outside it (the press still does its normal thing), or Escape, closes it, and the `<img>` is unmounted with its `src` emptied so the webview releases it. It bypasses the `imagenDe` / `miniaturas` caches on purpose.
 - **Order and focus.** `Instancia.orden` is the order in «Fichas activas», changed via `InstanciasReordenadas`. Focus is a set (`partida.idsSeleccionados`, Shift adds).
   - Focused tokens draw their parameter shapes, measured from the body's edges so the four reference points land on grid lines (`extremosForma`).
   - A left click anywhere outside elements marked `data-conserva-foco` clears the focus.
@@ -108,7 +118,7 @@ Positions are grid cells, never pixels, like a spreadsheet: `Casilla { x, y }` w
 A small ↗ button in the bank opens it in its own OS window (label `banco`, route `src/routes/banco`) so it does not show when sharing the main window on Discord; while it is open the main window shows a placeholder. Everything is marked `BANCO EXTERNO`: [bancoExterno.svelte.ts](src/lib/bancoExterno.svelte.ts), the route, the marked spots in `BancoEntidades`, `PanelIzquierdo`, `arrastreFicha` and `+page.svelte`, and the window permissions in `src-tauri/capabilities/default.json`. To remove it, delete those.
 - The bank window is a separate JS context: it reads Rust itself and stays current through Tauri events (`banco-cambiado`).
 - Pointer events do not cross windows, so a drag that starts there sends the global cursor position (`cursorPosition()`) to the main window as events. The main window converts it to its own pixels (`aVentana`) and drives the same `arrastre` store (`externoInicio/Mover/Fin`).
-- The ficha editor only exists in the main window, so clicks there are forwarded as events. OS file drops are disabled in the bank window.
+- The ficha editor only exists in the main window, so clicks there are forwarded as events. OS file drops are disabled in the bank window. The bank window has its own Ctrl selection: a drag sends all the ids in `inicio`, and Supr/Ctrl+Z are forwarded to the main window (`banco-tecla`).
 
 ### Dice
 The parser and roller live in Rust ([dados.rs](src-tauri/src/tablero_general/dados.rs), command `tirar_dado`, limit of 999 dice in total). The result breakdown is HTML with `<b>` marking a 1 or the max face. The frontend ([src/lib/tiradas.svelte.ts](src/lib/tiradas.svelte.ts)) only builds command strings (`aplicarDadoAlComando` is a pure, tested function) and keeps the history and arrow-key navigation.

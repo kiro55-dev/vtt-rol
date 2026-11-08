@@ -347,6 +347,61 @@ class Partida {
     ]);
     this.banco = banco;
     this.instancias = instancias;
+    // Las seleccionadas que ya no existen (borradas, o se fue su zona) dejan de estarlo
+    const ids = this.idsBancoSeleccionados.filter((id) => banco.some((e) => e.id === id));
+    if (ids.length !== this.idsBancoSeleccionados.length) this.idsBancoSeleccionados = ids;
+  }
+
+  // ------------------------------------------------------------------
+  // Selección múltiple en el banco (Ctrl+clic). Solo de esta pantalla: no se guarda ni se avisa.
+  // ------------------------------------------------------------------
+
+  /** Fichas del banco seleccionadas, en el orden en que se eligieron. */
+  idsBancoSeleccionados = $state<number[]>([]);
+
+  alternarSeleccionBanco(id: number) {
+    const ids = this.idsBancoSeleccionados;
+    this.idsBancoSeleccionados = ids.includes(id) ? ids.filter((x) => x !== id) : [...ids, id];
+  }
+
+  limpiarSeleccionBanco() {
+    if (this.idsBancoSeleccionados.length > 0) this.idsBancoSeleccionados = [];
+  }
+
+  /** Manda a la papelera varias fichas de una vez (un Ctrl+Z las devuelve todas). */
+  async borrarEntidades(ids: number[]) {
+    if (ids.length === 0) return;
+    try {
+      await invoke("borrar_entidades", { ids });
+    } catch (err) {
+      console.error("borrar_entidades:", err);
+    }
+    await this.recargarEntidades();
+    if (this.entidadEnEdicion && ids.includes(this.entidadEnEdicion.id)) this.cerrarEditorEntidad();
+    this.idsBancoSeleccionados = this.idsBancoSeleccionados.filter((id) => !ids.includes(id));
+  }
+
+  /**
+   * Ctrl+Z: devuelve lo último que se borró (fichas, un mapa o una zona). Las creaciones no se
+   * deshacen. Devuelve false si la papelera estaba vacía.
+   */
+  async restaurarPapelera(): Promise<boolean> {
+    let r: { zonas: number[]; mapas: number[]; entidades: number[] } | null;
+    try {
+      r = await invoke("restaurar_papelera");
+    } catch (err) {
+      console.error("restaurar_papelera:", err);
+      return false;
+    }
+    if (!r) return false;
+    await this.recargarZonas();
+    if (this.zonaId === null || r.zonas.length > 0) {
+      // Se abre la zona recuperada (o, si no había ninguna abierta, la primera)
+      await this.seleccionarZona(r.zonas[0] ?? this.zonasOrdenadas[0]?.id ?? null);
+    }
+    await this.recargarMapas(this.mapaActual === null ? (r.mapas[0] ?? undefined) : undefined);
+    await this.recargarEntidades();
+    return true;
   }
 
   // ------------------------------------------------------------------
@@ -512,6 +567,16 @@ class Partida {
   async instanciar(idEntidad: number, destino: Destino | null) {
     const instancia = await this.#cambiarInstancias<Instancia>("instanciar_entidad", { idEntidad, destino });
     if (instancia) this.seleccionarInstancia(instancia);
+  }
+
+  /**
+   * Instancia varias fichas del banco de golpe (selección múltiple). En el tablero la primera cae en
+   * `destino` y las demás en cuadrícula a su lado (Rust); con null, todas activas sin colocar.
+   * Quedan todas con el foco.
+   */
+  async instanciarVarias(idsEntidades: number[], destino: Destino | null) {
+    const creadas = await this.#cambiarInstancias<Instancia[]>("instanciar_entidades", { ids: idsEntidades, destino });
+    if (creadas?.length) this.#cambiarFoco(creadas.map((i) => i.id_instancia));
   }
 
   /** Pone una instancia en otra casilla (la casilla final la encaja Rust). */

@@ -33,6 +33,14 @@ describe("accionAlSoltar", () => {
     expect(accionAlSoltar(origen, null, null)).toBeNull();
   });
 
+  it("varias fichas del banco (selección con Ctrl) se instancian todas de golpe", () => {
+    const origen = { entidades: [base(7), base(3), base(9)] };
+    expect(accionAlSoltar(origen, "tablero", destino)).toEqual({ tipo: "instanciarVarias", idsEntidades: [7, 3, 9], destino });
+    expect(accionAlSoltar(origen, "activas", null)).toEqual({ tipo: "instanciarVarias", idsEntidades: [7, 3, 9], destino: null });
+    expect(accionAlSoltar(origen, "tablero", null)).toBeNull();
+    expect(accionAlSoltar(origen, "banco", null)).toBeNull();
+  });
+
   it("una instancia se mueve en el tablero, sale de él en «Fichas activas» y se elimina en el banco", () => {
     const colocada = { instancia: instancia(4, 1, { x: 0, y: 0 }), desde: "tablero" as const };
     expect(accionAlSoltar(colocada, "tablero", destino)).toEqual({ tipo: "mover", idInstancia: 4, destino });

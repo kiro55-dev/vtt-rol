@@ -3,10 +3,10 @@
   import { onMount, untrack, onDestroy } from 'svelte';
   import { urlDeImagen } from '$lib/imagenes';
   import {
-    rejillaDe, pantallaAMundo, casillaEn, casillaMasCercana, extenderRecorrido, origenAlSoltar
+    rejillaDe, pantallaAMundo, casillaEn, casillaMasCercana, extenderRecorrido, origenAlSoltar, disposicionEnCuadricula
   } from '$lib/tablero';
   import { partida, numeroDe, veParametro } from '$lib/partida.svelte';
-  import { arrastre } from '$lib/arrastreFicha.svelte';
+  import { arrastre, baseDe, ladosDeEntidad } from '$lib/arrastreFicha.svelte';
   import { miniaturas } from '$lib/miniaturas.svelte';
   import {
     fichasDelMapa, fichaEnPunto, imagenDe, dibujarFicha, dibujarDestino, dibujarFormas, rectanguloFicha
@@ -436,7 +436,7 @@
     // Las miniaturas se piden aquí y se leen para que, al llegar, se repinten las fichas
     const a = arrastre.actual;
     const bases = fichas.map((f) => f.instancia.base);
-    if (a) bases.push('instancia' in a.origen ? a.origen.instancia.base : a.origen.entidad);
+    if (a) bases.push(baseDe(a.origen));
     for (const b of bases) {
       miniaturas.asegurarFicha(b);
       void miniaturas.deFicha(b);
@@ -485,9 +485,17 @@
     const a = arrastre.actual;
     if (!a || a.zona !== 'tablero') return;
     const destino = arrastre.casillaActual();
-    if (destino && destino.id_mapa === idMapa()) dibujarDestino(ctx, cam, casillas, destino.casilla, a.lados);
+    if (destino && destino.id_mapa === idMapa()) {
+      if ('entidades' in a.origen) {
+        // Varias fichas del banco: dónde caerá cada una (la misma cuadrícula que hará Rust)
+        const lados = a.origen.entidades.map(ladosDeEntidad);
+        disposicionEnCuadricula(casillas, destino.casilla, lados).forEach((c, k) => dibujarDestino(ctx, cam, casillas, c, lados[k]));
+      } else {
+        dibujarDestino(ctx, cam, casillas, destino.casilla, a.lados);
+      }
+    }
 
-    const instancia = 'instancia' in a.origen ? a.origen.instancia : fichaDeEntidad(a.origen.entidad);
+    const instancia = 'instancia' in a.origen ? a.origen.instancia : fichaDeEntidad(baseDe(a.origen));
     const caja = contenedor.getBoundingClientRect();
     const w = a.lados[0] * casillas.anchoCasilla * cam.zoom;
     const h = a.lados[1] * casillas.altoCasilla * cam.zoom;

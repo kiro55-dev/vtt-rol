@@ -8,6 +8,7 @@ pub mod instancias;
 pub mod miniaturas;
 pub mod partidas;
 pub mod modelos;
+pub mod papelera;
 pub mod partida;
 pub mod recursos;
 pub mod tablero;

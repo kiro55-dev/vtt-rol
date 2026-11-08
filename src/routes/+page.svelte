@@ -13,22 +13,42 @@
   import BarraDados from "./componentes/BarraDados.svelte";
   import VentanaFicha from "./componentes/VentanaFicha.svelte";
   import FantasmaFicha from "./componentes/comunes/FantasmaFicha.svelte";
+  import VisorImagen from "./componentes/comunes/VisorImagen.svelte";
   let fichaParaEditar = $state<any>(null); // por ahora nadie abre el modal; se tipará con Entidad/Instancia
 
   // Un clic izquierdo en cualquier parte quita el foco de las fichas, salvo en lo que lo gestiona
   // por su cuenta (tablero, «Fichas activas», parámetros, menús): lo marcan con data-conserva-foco.
   function alPulsarEnLaVentana(e: PointerEvent) {
-    if (e.button !== 0 || partida.idsSeleccionados.length === 0) return;
-    if ((e.target as Element | null)?.closest?.("[data-conserva-foco]")) return;
+    if (e.button !== 0) return;
+    const objetivo = e.target as Element | null;
+    // La selección del banco (Ctrl+clic) se quita al pulsar fuera del banco
+    if (!objetivo?.closest?.(".banco")) partida.limpiarSeleccionBanco();
+    if (partida.idsSeleccionados.length === 0) return;
+    if (objetivo?.closest?.("[data-conserva-foco]")) return;
     partida.seleccionarInstancia(null);
   }
 
-  // Supr: borra las fichas con foco. ↑ / ↓: con una sola ficha con foco, pasa a la anterior / siguiente de «Fichas activas»
+  // Supr: borra las fichas seleccionadas del banco (a la papelera) o, si no hay, las instancias con foco.
+  // Ctrl+Z: restaura lo último que se borró de la papelera. ↑ / ↓: con una sola ficha con foco, pasa a la
+  // anterior / siguiente de «Fichas activas».
   function alPulsarTecla(e: KeyboardEvent) {
     const t = e.target as HTMLElement | null;
-    // Supr: elimina las instancias con foco, igual que arrastrarlas al banco (a la izquierda)
+    // Dentro de un campo de texto las teclas son del campo (Supr borra letras, Ctrl+Z deshace lo escrito)
+    if (t?.closest?.("input, textarea, select, [contenteditable='true']")) return;
+    if (e.key === "Escape") partida.limpiarSeleccionBanco();
+    if ((e.ctrlKey || e.metaKey) && !e.shiftKey && e.key.toLowerCase() === "z") {
+      e.preventDefault();
+      void partida.restaurarPapelera();
+      return;
+    }
     if (e.key === "Delete") {
-      if (t?.closest?.("input, textarea, select, [contenteditable='true']")) return;
+      const delBanco = [...partida.idsBancoSeleccionados];
+      if (delBanco.length > 0) {
+        e.preventDefault();
+        void partida.borrarEntidades(delBanco);
+        return;
+      }
+      // Instancias con foco: igual que arrastrarlas al banco (no van a la papelera)
       const ids = [...partida.idsSeleccionados];
       if (ids.length === 0) return;
       e.preventDefault();
@@ -102,6 +122,9 @@
 
   <!-- La ficha que se arrastra entre el banco, el tablero y «Fichas activas» -->
   <FantasmaFicha />
+
+  <!-- La foto de una ficha activa a resolución completa, en una ventanita junto al puntero (doble clic en su tarjeta) -->
+  <VisorImagen />
 </div>
 
 <style>

@@ -9,6 +9,7 @@ import {
   extenderRecorrido,
   pasosEntre,
   casillasOcupadas,
+  disposicionEnCuadricula,
   encajar,
   extension,
   mundoAPantalla,
@@ -181,5 +182,17 @@ describe("instancias giradas y formas", () => {
     expect(extremosForma(c(5, 5), [1, 1], 2)).toEqual({ izquierda: 3, derecha: 8, arriba: 3, abajo: 8, cx: 5.5, cy: 5.5 });
     // 2×3 en (5,5) (x 5..6, y 4..6), valor 1
     expect(extremosForma(c(5, 5), [2, 3], 1)).toEqual({ izquierda: 4, derecha: 8, arriba: 3, abajo: 8, cx: 6, cy: 5.5 });
+  });
+});
+
+describe("varias fichas a la vez", () => {
+  it("se ponen en cuadrícula sin solaparse (mismos casos que Rust)", () => {
+    const r = cuadricula(20, 20);
+    expect(disposicionEnCuadricula(r, c(5, 5), [[1, 1]])).toEqual([c(5, 5)]);
+    expect(disposicionEnCuadricula(r, c(5, 5), Array(4).fill([1, 1]))).toEqual([c(5, 5), c(6, 5), c(5, 6), c(6, 6)]);
+    const lados = [[1, 1], [2, 2], [1, 1], [1, 1], [1, 1]] as const;
+    expect(disposicionEnCuadricula(r, c(2, 2), lados)).toEqual([c(2, 2), c(4, 2), c(6, 2), c(2, 4), c(4, 4)]);
+    expect(disposicionEnCuadricula(r, c(19, 19), Array(4).fill([1, 1]))).toEqual(Array(4).fill(c(19, 19)));
+    expect(disposicionEnCuadricula(r, c(0, 0), [])).toEqual([]);
   });
 });

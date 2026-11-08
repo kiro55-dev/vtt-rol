@@ -103,6 +103,34 @@ fn encajar_eje(centro: u16, lado: u16, casillas: u16) -> u16 {
     i32::from(centro).clamp(minimo, maximo) as u16
 }
 
+/// Columnas de la cuadrícula para `n` fichas: la más pequeña `c` con `c·c >= n` (casi cuadrada).
+fn columnas_cuadricula(n: usize) -> usize {
+    let mut c = 1;
+    while c * c < n {
+        c += 1;
+    }
+    c
+}
+
+/// Dónde cae cada ficha al soltar varias a la vez: la primera en `casilla` y las demás a su derecha y
+/// debajo, en una cuadrícula casi cuadrada. El paso es el cuerpo más ancho y el más alto, así que no se
+/// solapan (salvo las que `encajar` tenga que meter en el mapa). Igual que `disposicionEnCuadricula` del front.
+pub fn disposicion_en_cuadricula(rejilla: Rejilla, casilla: Casilla, lados: &[(u16, u16)]) -> Vec<Casilla> {
+    let columnas = columnas_cuadricula(lados.len());
+    let paso_x = lados.iter().map(|l| l.0.max(1)).max().unwrap_or(1);
+    let paso_y = lados.iter().map(|l| l.1.max(1)).max().unwrap_or(1);
+    lados
+        .iter()
+        .enumerate()
+        .map(|(k, &l)| {
+            let (col, fila) = ((k % columnas) as u32, (k / columnas) as u32);
+            let x = (u32::from(casilla.x) + col * u32::from(paso_x)).min(u32::from(u16::MAX)) as u16;
+            let y = (u32::from(casilla.y) + fila * u32::from(paso_y)).min(u32::from(u16::MAX)) as u16;
+            encajar(rejilla, Casilla { x, y }, l)
+        })
+        .collect()
+}
+
 /// Las casillas que cubre el cuerpo (las que caerían en negativo no existen y se omiten).
 #[allow(dead_code)] // la usará la colocación de instancias
 pub fn casillas_ocupadas(centro: Casilla, lados: (u16, u16)) -> impl Iterator<Item = Casilla> {
@@ -193,6 +221,31 @@ mod tests {
 
     const fn c(x: u16, y: u16) -> Casilla {
         Casilla { x, y }
+    }
+
+    #[test]
+    fn varias_fichas_se_ponen_en_cuadricula_sin_solaparse() {
+        let r = Rejilla { columnas: 20, filas: 20 };
+        // 1 ficha: donde se suelta
+        assert_eq!(disposicion_en_cuadricula(r, c(5, 5), &[(1, 1)]), vec![c(5, 5)]);
+        // 4 fichas 1×1: 2×2
+        assert_eq!(
+            disposicion_en_cuadricula(r, c(5, 5), &[(1, 1); 4]),
+            vec![c(5, 5), c(6, 5), c(5, 6), c(6, 6)]
+        );
+        // 5 fichas: 3 columnas; con una de 2×2 el paso es 2
+        let lados = [(1, 1), (2, 2), (1, 1), (1, 1), (1, 1)];
+        let pos = disposicion_en_cuadricula(r, c(2, 2), &lados);
+        assert_eq!(pos, vec![c(2, 2), c(4, 2), c(6, 2), c(2, 4), c(4, 4)]);
+        // Ninguna casilla compartida
+        let mut ocupadas: Vec<Casilla> = pos.iter().zip(lados).flat_map(|(&p, l)| casillas_ocupadas(p, l)).collect();
+        let total = ocupadas.len();
+        ocupadas.sort_by_key(|c| (c.y, c.x));
+        ocupadas.dedup();
+        assert_eq!(ocupadas.len(), total);
+        // En el borde se encajan dentro del mapa
+        assert_eq!(disposicion_en_cuadricula(r, c(19, 19), &[(1, 1); 4]), vec![c(19, 19); 4]);
+        assert!(disposicion_en_cuadricula(r, c(0, 0), &[]).is_empty());
     }
 
     #[test]

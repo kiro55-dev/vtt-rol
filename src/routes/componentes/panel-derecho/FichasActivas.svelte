@@ -4,6 +4,7 @@
      derecha, el «actual/máx» de los parámetros con forma «Resumen».
      - Pulsar = foco (con Shift, añadirla o quitarla del foco). Pulsar el hueco vacío = quitar el foco.
      - Arrastrar dentro de la lista = reordenar; al tablero = colocarla; al banco = eliminarla.
+     - Doble clic = la foto de la ficha a resolución completa, en una ventanita junto al puntero (se cierra pulsando fuera).
      - Clic derecho = menú con «Eliminar instancia».
      Soltar aquí una ficha del banco la activa sin colocar; una del tablero, la quita de él. -->
 <script lang="ts">
@@ -11,6 +12,7 @@
   import { arrastre, moverEnLista } from "$lib/arrastreFicha.svelte";
   import { arrastreTirada } from "$lib/arrastreTirada.svelte";
   import { miniaturas } from "$lib/miniaturas.svelte";
+  import { visorImagen } from "$lib/visorImagen.svelte";
   import MenuContextual from "../comunes/MenuContextual.svelte";
 
   // La miniatura de cada ficha activa (la misma que usan el banco, el arrastre y el tablero)
@@ -82,11 +84,12 @@
       data-indice={i}
       onpointerdown={(e) => arrastre.preparar(e, { instancia: ficha, desde: "activas" })}
       onclick={(e) => alPulsar(e, ficha)}
+      ondblclick={(e) => visorImagen.abrir(ficha.base.foto_url, e.clientX, e.clientY)}
       oncontextmenu={(e) => {
         e.preventDefault();
         menu = { x: e.clientX, y: e.clientY, instancia: ficha };
       }}
-      title="Clic: foco (Shift: varias) · Arrastrar: reordenar o llevar al tablero · Clic derecho: eliminar"
+      title="Clic: foco (Shift: varias) · Doble clic: ver la foto · Arrastrar: reordenar o llevar al tablero · Clic derecho: eliminar"
     >
       <div class="foto {forma}">
         {#if ficha.base.foto_url}

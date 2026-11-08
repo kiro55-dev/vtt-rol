@@ -31,6 +31,7 @@ function crearBackend() {
     definiciones: [
       { id: 1, clave: "Vida", valor_por_defecto: { Numero: 10 }, tiene_maximo: true, representar_mapa: null, visibilidad: "Variable", unidad: null, atenuar_si_negativo: false }
     ],
+    papelera: [] as { zonas: any[]; banco: any[] }[],
     partidas: ["A", "B"] as string[],
     actual: "A",
     llamadas: [] as { cmd: string; args: Args }[],
@@ -72,6 +73,7 @@ function crearBackend() {
         }
         case "modificar_zona": b.zonas = b.zonas.map((z) => (z.id === args.zona.id ? clon(args.zona) : z)); return;
         case "eliminar_zona": {
+          b.papelera.push({ zonas: clon(b.zonas.filter((z) => z.id === args.zona.id)), banco: [] });
           const quitados = b.mapas.filter((m) => m.id_zona === args.zona.id).map((m) => m.id);
           b.zonas = b.zonas.filter((z) => z.id !== args.zona.id);
           b.mapas = b.mapas.filter((m) => m.id_zona !== args.zona.id);
@@ -109,6 +111,30 @@ function crearBackend() {
           return;
         }
         case "borrar_instancia": b.instancias = b.instancias.filter((x) => x.id_instancia !== args.idInstancia); return;
+        case "instanciar_entidades": {
+          // Imita a Rust: una tras otra; en el tablero, la primera en la casilla y el resto a su derecha
+          const creadas = [];
+          for (const [k, idEntidad] of (args.ids as number[]).entries()) {
+            const destino = args.destino && { id_mapa: args.destino.id_mapa, casilla: { x: args.destino.casilla.x + k, y: args.destino.casilla.y } };
+            creadas.push(await b.invoke("instanciar_entidad", { idEntidad, destino }));
+          }
+          return creadas;
+        }
+        // Papelera: imita lo justo de Rust (las reglas de verdad se prueban en papelera.rs)
+        case "borrar_entidades": {
+          const quitadas = b.banco.filter((e) => args.ids.includes(e.id));
+          if (quitadas.length === 0) throw "No hay fichas que borrar";
+          b.banco = b.banco.filter((e) => !args.ids.includes(e.id));
+          b.papelera.push({ zonas: [], banco: clon(quitadas) });
+          return;
+        }
+        case "restaurar_papelera": {
+          const g = b.papelera.pop();
+          if (!g) return null;
+          b.zonas.push(...g.zonas);
+          b.banco.push(...g.banco);
+          return { zonas: g.zonas.map((z: any) => z.id), mapas: [], entidades: g.banco.map((e: any) => e.id) };
+        }
         case "avisar_tablero": return;
         case "rotar_instancia": {
           const i = b.instancias.find((x) => x.id_instancia === args.idInstancia)!;
@@ -600,5 +626,55 @@ describe("lo privado no llega a la pantalla", () => {
     const orco = partida.instancias[0]; // trae la vida (id 1)
     expect(veParametro(orco, 1)).toBe(true);
     expect(veParametro(orco, 2)).toBe(false);
+  });
+});
+
+describe("banco: selección múltiple y papelera", () => {
+  it("Ctrl+clic alterna la selección; las que desaparecen del banco dejan de estar seleccionadas", async () => {
+    const partida = await nuevoStore();
+    partida.alternarSeleccionBanco(2);
+    partida.alternarSeleccionBanco(1);
+    expect(partida.idsBancoSeleccionados).toEqual([2, 1]);
+    partida.alternarSeleccionBanco(2);
+    expect(partida.idsBancoSeleccionados).toEqual([1]);
+
+    backend.banco = backend.banco.filter((e) => e.id !== 1);
+    await partida.recargarEntidades();
+    expect(partida.idsBancoSeleccionados).toEqual([]);
+  });
+
+  it("Supr manda las seleccionadas a la papelera en UNA llamada y Ctrl+Z las devuelve", async () => {
+    const partida = await nuevoStore();
+    partida.alternarSeleccionBanco(1);
+    partida.alternarSeleccionBanco(2);
+    await partida.borrarEntidades([...partida.idsBancoSeleccionados]);
+    expect(llamadas("borrar_entidades")).toHaveLength(1);
+    expect(partida.banco).toEqual([]);
+    expect(partida.idsBancoSeleccionados).toEqual([]);
+
+    expect(await partida.restaurarPapelera()).toBe(true);
+    expect(partida.banco.map((e) => e.id).sort()).toEqual([1, 2]);
+    expect(await partida.restaurarPapelera()).toBe(false); // vacía: no hace nada
+  });
+
+  it("Ctrl+Z tras borrar la zona abierta la recupera y la vuelve a abrir", async () => {
+    const partida = await nuevoStore();
+    await partida.borrarZona(partida.zonasOrdenadas[0]);
+    expect(partida.zonaId).toBe(2);
+    await partida.restaurarPapelera();
+    expect(partida.zonas.map((z) => z.id)).toContain(1);
+    expect(partida.zonaId).toBe(1);
+  });
+
+  it("varias fichas se instancian de golpe y quedan todas con el foco", async () => {
+    const partida = await nuevoStore();
+    await partida.instanciarVarias([1, 2], { id_mapa: 1, casilla: { x: 4, y: 4 } });
+    expect(llamadas("instanciar_entidades")).toHaveLength(1);
+    const nuevas = partida.instancias.filter((i) => i.id_instancia > 2);
+    expect(nuevas).toHaveLength(2);
+    expect(partida.idsSeleccionados).toEqual(nuevas.map((i) => i.id_instancia));
+
+    await partida.instanciarVarias([1], null);
+    expect(partida.instancias.at(-1)?.coordenadas).toBe("NoPuesto");
   });
 });

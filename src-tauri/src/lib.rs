@@ -18,7 +18,7 @@ use tablero_general::partida::{
     modificar_entidad, modificar_mapa, modificar_zona, obtener_banco_entidades, obtener_definiciones_parametros,
     obtener_dir_datos,
     obtener_historial_personal, obtener_historial_tiradas, obtener_instancias_activas,
-    instanciar_entidad, mover_instancia, borrar_instancia, modificar_valor_actual, rotar_instancia,
+    instanciar_entidad, instanciar_entidades, borrar_entidades, restaurar_papelera, cerrar_partida, mover_instancia, borrar_instancia, modificar_valor_actual, rotar_instancia,
     reordenar_instancias,
     obtener_mapas_zona, obtener_miniatura, guardar_miniatura_ficha, obtener_zonas, renombrar_archivo_adjunto,
 };
@@ -76,7 +76,13 @@ pub fn run() {
         .on_window_event(|window, event| {
             if let tauri::WindowEvent::CloseRequested { .. } = event {
                 let state = window.state::<AppState>();
-                compactar_partida(&state);
+                // Solo la ventana principal cierra la aplicación: vacía la papelera y guarda. Cerrar la del
+                // banco (BANCO EXTERNO) no puede vaciarla; solo guarda.
+                if window.label() == "main" {
+                    cerrar_partida(&state);
+                } else {
+                    compactar_partida(&state);
+                }
             }
         })
         .invoke_handler(tauri::generate_handler![
@@ -94,6 +100,7 @@ pub fn run() {
             obtener_banco_entidades,
             obtener_instancias_activas,
             instanciar_entidad,
+            instanciar_entidades,
             mover_instancia,
             borrar_instancia,
             modificar_valor_actual,
@@ -112,6 +119,8 @@ pub fn run() {
             avisar_tablero,
             crear_entidad,
             borrar_entidad,
+            borrar_entidades,
+            restaurar_papelera,
             modificar_entidad,
             importar_archivo,
             guardar_archivo_texto,

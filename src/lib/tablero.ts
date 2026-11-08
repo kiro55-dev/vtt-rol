@@ -95,6 +95,21 @@ export function encajar(rejilla: RejillaTablero, centro: Casilla, lados: Lados):
   };
 }
 
+/**
+ * Dónde cae cada ficha al soltar varias a la vez: la primera en `casilla` y las demás a su derecha y
+ * debajo, en una cuadrícula casi cuadrada (columnas = la menor c con c·c >= n). El paso es el cuerpo
+ * más ancho y el más alto, así no se solapan. Igual que `disposicion_en_cuadricula` de Rust.
+ */
+export function disposicionEnCuadricula(rejilla: RejillaTablero, casilla: Casilla, lados: readonly Lados[]): Casilla[] {
+  let columnas = 1;
+  while (columnas * columnas < lados.length) columnas++;
+  const pasoX = Math.max(1, ...lados.map((l) => Math.max(1, entero(l[0]))));
+  const pasoY = Math.max(1, ...lados.map((l) => Math.max(1, entero(l[1]))));
+  return lados.map((l, k) =>
+    encajar(rejilla, { x: casilla.x + (k % columnas) * pasoX, y: casilla.y + Math.floor(k / columnas) * pasoY }, l)
+  );
+}
+
 /** Casillas que cubre el cuerpo (sin las que caerían en negativo). */
 export function casillasOcupadas(centro: Casilla, lados: Lados): Casilla[] {
   const { x0, y0, x1, y1 } = extremos(centro, lados);
