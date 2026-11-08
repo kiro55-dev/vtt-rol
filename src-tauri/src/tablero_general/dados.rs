@@ -10,6 +10,8 @@ pub struct Tirada {
     pub bonificador: Option<i32>,
     pub ventaja: bool,
     pub desventaja: bool,
+    /// Multiplica la suma de ESTE término de dados (`2*3d20`). 1 = sin multiplicar.
+    pub multiplicador: i32,
 }
 
 // Resalta en negrita si es 1 (pifia) o el valor máximo de caras (crítico)
@@ -52,6 +54,21 @@ fn parsear_comando(comando: &str) -> Result<Vec<Tirada>, String> {
 
     // 2. Parseamos cada término
     for (signo, termino) in terminos {
+        // Multiplicador opcional delante de un término de dados: `2*3d20`
+        let (multiplicador, termino) = match termino.split_once('*') {
+            Some((m, resto)) => {
+                let m: i32 = m.trim().parse().map_err(|_| "Multiplicador inválido")?;
+                if m <= 0 {
+                    return Err("El multiplicador debe ser mayor a 0".into());
+                }
+                if !resto.contains(|c| c == 'd' || c == 'D') {
+                    return Err("El multiplicador solo se aplica a dados".into());
+                }
+                (m, resto.trim().to_string())
+            }
+            None => (1, termino),
+        };
+
         if let Some(pos_d) = termino.find(|c| c == 'd' || c == 'D') {
             let (veces_str, resto_str) = termino.split_at(pos_d);
             let resto = resto_str[1..].trim();
@@ -92,6 +109,7 @@ fn parsear_comando(comando: &str) -> Result<Vec<Tirada>, String> {
                     && t.signo == signo
                     && t.ventaja == ventaja
                     && t.desventaja == desventaja
+                    && t.multiplicador == multiplicador
             }) {
                 existente.veces += veces;
             } else {
@@ -102,6 +120,7 @@ fn parsear_comando(comando: &str) -> Result<Vec<Tirada>, String> {
                     bonificador: None,
                     ventaja,
                     desventaja,
+                    multiplicador,
                 });
             }
         } else {
@@ -113,6 +132,7 @@ fn parsear_comando(comando: &str) -> Result<Vec<Tirada>, String> {
                 bonificador: Some(bonif),
                 ventaja: false,
                 desventaja: false,
+                multiplicador: 1,
             });
         }
     }
@@ -156,6 +176,9 @@ fn ejecutar_tiradas(tiradas: &[Tirada]) -> Result<(String, i32), String> {
         } else {
             ""
         };
+        if t.multiplicador != 1 {
+            let _ = write!(resultado, "{}*", t.multiplicador);
+        }
         let _ = write!(resultado, "{}d{}{} (", t.veces, t.d, mod_tipo);
 
         let mut subtotal_dados: i64 = 0;
@@ -193,7 +216,12 @@ fn ejecutar_tiradas(tiradas: &[Tirada]) -> Result<(String, i32), String> {
         }
         resultado.push(')');
 
-        total += i64::from(t.signo) * subtotal_dados;
+        let multiplicado = subtotal_dados
+            .checked_mul(i64::from(t.multiplicador))
+            .ok_or("El resultado es demasiado grande")?;
+        total = total
+            .checked_add(i64::from(t.signo) * multiplicado)
+            .ok_or("El resultado es demasiado grande")?;
     }
 
     let total = i32::try_from(total).map_err(|_| "El resultado es demasiado grande".to_string())?;
@@ -252,6 +280,26 @@ mod tests {
         assert!(parsear_comando("500d6 + 499d8").is_ok());
         assert!(parsear_comando("500d6 + 500d8").is_err());
         assert!(parsear_comando("600d6 + 600d6").is_err(), "iguales: se agruparían en 1200");
+    }
+
+    #[test]
+    fn el_multiplicador_afecta_solo_a_su_termino_de_dados() {
+        assert_eq!(tirar("2*3d1").unwrap().1, 6);
+        assert_eq!(tirar("2*3d1 + 4").unwrap().1, 10);
+        assert_eq!(tirar("2*3d1 + 2d1").unwrap().1, 8);
+        assert_eq!(tirar("10 - 2*3d1").unwrap().1, 4);
+        let (d, _) = tirar("2*3d1").unwrap();
+        assert!(d.starts_with("2*3d1 ("));
+        // con distinto multiplicador no se agrupan
+        assert_eq!(parsear_comando("2*1d6 + 3*1d6").unwrap().len(), 2);
+    }
+
+    #[test]
+    fn el_multiplicador_invalido_es_un_error() {
+        for malo in ["0*1d6", "x*1d6", "2*5", "2*", "*1d6"] {
+            assert!(parsear_comando(malo).is_err(), "{malo:?}");
+        }
+        assert!(tirar("2000000000*999d2000000000").is_err());
     }
 
     #[test]
