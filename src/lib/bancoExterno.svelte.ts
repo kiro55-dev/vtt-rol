@@ -99,8 +99,15 @@ class BancoExterno {
     );
     guardar(listen(EVENTO_PEDIR_ESTADO, () => void this.avisarCambio(true)));
     guardar(
+      // Ojo: con este escuchador, Tauri cierra la ventana con `destroy()` DESPUÉS de él (permiso
+      // core:window:allow-destroy) y solo si no falla: sin el permiso, o con una excepción aquí, la
+      // aplicación no se cerraría. Por eso se traga cualquier error.
       getCurrentWindow().onCloseRequested(async () => {
-        await this.cerrar();
+        try {
+          await this.cerrar();
+        } catch (err) {
+          console.warn("No se pudo cerrar la ventana del banco:", err);
+        }
       })
     );
     void WebviewWindow.getByLabel(ETIQUETA)
