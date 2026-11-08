@@ -234,6 +234,32 @@ pub fn normalizar_parametros(defs: &[DefinicionParametro], parametros: &mut Vec<
 // ENTIDADES E INSTANCIAS
 // ========================================================
 
+pub const ZOOM_MIN: u16 = 100;
+pub const ZOOM_MAX: u16 = 400;
+
+/// Cómo se encuadra la foto de una ficha en su miniatura (lo elige el usuario en el editor, que recorta
+/// el WebP y lo manda a Rust). `zoom` en % (100 = la foto cubre justo el cuadrado, hasta `ZOOM_MAX`);
+/// `x` e `y` (0-100) eligen qué parte de lo que sobra se ve: 0 = arriba/izquierda, 50 = centro. Se guarda
+/// para que, al volver a abrir la ficha, la foto aparezca como se dejó y se pueda seguir moviendo.
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
+pub struct EncuadreFoto {
+    pub x: u8,
+    pub y: u8,
+    pub zoom: u16,
+}
+
+impl Default for EncuadreFoto {
+    fn default() -> Self {
+        EncuadreFoto { x: 50, y: 50, zoom: ZOOM_MIN }
+    }
+}
+
+impl EncuadreFoto {
+    pub fn es_valido(&self) -> bool {
+        self.x <= 100 && self.y <= 100 && (ZOOM_MIN..=ZOOM_MAX).contains(&self.zoom)
+    }
+}
+
 // Representa la definición de una entidad
 #[derive(Serialize, Deserialize, Clone, Debug)]
 #[serde(from = "EntidadGuardada")]
@@ -248,6 +274,14 @@ pub struct Entidad {
 
     // Una criatura o NPC puede no tener foto (en JS llegará como string o null)
     pub foto_url: Option<String>,
+
+    /// Miniatura propia de la ficha (`miniaturas/ficha/entidad_<id>_<versión>.webp`): la que el usuario
+    /// encuadró en el editor; el front la recorta y Rust la guarda tal cual. La pone solo el delta
+    /// `MiniaturaFichaCambiada`; lo que mande el front en `modificar_entidad` se ignora. Sin ella, todo
+    /// usa la miniatura automática de `foto_url`.
+    pub miniatura_url: Option<String>,
+    /// Encuadre con el que se hizo esa miniatura (ver `EncuadreFoto`).
+    pub foto_encuadre: EncuadreFoto,
 
     /* Concepto incorrecto debido a que prefiero que sea modular lo que es publico y que no
     * Además, una ficha (excepto si es jugador) como concepto es público si tiene una instancia
@@ -272,6 +306,10 @@ struct EntidadGuardada {
     zona_id: u16,
     #[serde(default)]
     foto_url: Option<String>,
+    #[serde(default)]
+    miniatura_url: Option<String>,
+    #[serde(default)]
+    foto_encuadre: EncuadreFoto,
     // Si falta en el JSON, se asume lista vacía []
     #[serde(default)]
     archivos_adjuntos: Vec<Option<String>>,
@@ -315,6 +353,8 @@ impl From<EntidadGuardada> for Entidad {
             cuerpo: g.cuerpo,
             zona_id: g.zona_id,
             foto_url: g.foto_url,
+            miniatura_url: g.miniatura_url,
+            foto_encuadre: g.foto_encuadre,
             archivos_adjuntos: g.archivos_adjuntos,
             es_unico: g.es_unico,
         }
@@ -421,6 +461,27 @@ mod tests {
         assert!(!guardada.contains("vida_max"), "{guardada}");
         let releida: Entidad = serde_json::from_str(&guardada).unwrap();
         assert_eq!(releida.parametros, e.parametros);
+    }
+
+    #[test]
+    fn el_encuadre_de_la_foto_se_guarda_y_las_fichas_antiguas_salen_centradas() {
+        // Sin el campo (partida anterior): centrada y sin zoom
+        let antigua = r#"{"id":3,"nombre":"Orco","tipo":"Enemigo","parametros":[],"cuerpo":"Pequenio",
+            "zona_id":1,"foto_url":null,"archivos_adjuntos":[],"es_unico":false}"#;
+        let e: Entidad = serde_json::from_str(antigua).unwrap();
+        assert_eq!(e.foto_encuadre, EncuadreFoto { x: 50, y: 50, zoom: 100 });
+        assert_eq!(e.miniatura_url, None);
+
+        // Con encuadre: se conserva al guardar y releer
+        let mut e = e;
+        e.foto_encuadre = EncuadreFoto { x: 10, y: 80, zoom: 250 };
+        let releida: Entidad = serde_json::from_str(&serde_json::to_string(&e).unwrap()).unwrap();
+        assert_eq!(releida.foto_encuadre, EncuadreFoto { x: 10, y: 80, zoom: 250 });
+
+        assert!(EncuadreFoto::default().es_valido());
+        assert!(!EncuadreFoto { x: 101, y: 0, zoom: 100 }.es_valido());
+        assert!(!EncuadreFoto { x: 0, y: 0, zoom: 99 }.es_valido());
+        assert!(!EncuadreFoto { x: 0, y: 0, zoom: 401 }.es_valido());
     }
 
     #[test]

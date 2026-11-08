@@ -6,6 +6,7 @@
 // props ni callbacks (`onRecargarZonas`...) que atravesar de padre a hijo.
 //
 // Rust sigue siendo la fuente de verdad: cada método escribe en Rust y vuelve a leer.
+import type { Encuadre } from "$lib/recorteFoto";
 import { invoke } from "@tauri-apps/api/core";
 import { iniciarImagenes, importarImagen } from "$lib/imagenes";
 import { miniaturas } from "$lib/miniaturas.svelte";
@@ -104,6 +105,10 @@ export interface Entidad {
   cuerpo: Cuerpo;
   zona_id: number;
   foto_url: string | null;
+  /** Miniatura propia de la ficha (la que encuadró el usuario); la pone Rust, nunca el front. Sin ella se usa la automática de la foto. */
+  miniatura_url: string | null;
+  /** Encuadre de la foto en la miniatura (zoom 100-400 %, x e y 0-100): se guarda para poder seguir moviéndola al reabrir la ficha. */
+  foto_encuadre: Encuadre;
   archivos_adjuntos: (string | null)[];
   es_unico: boolean;
 }

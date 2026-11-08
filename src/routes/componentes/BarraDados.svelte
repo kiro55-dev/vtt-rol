@@ -131,6 +131,6 @@
   .bonif { display: flex; align-items: center; gap: 4px; font-size: 11px; }
   .bonif input { width: 40px; background: #09090b; border: 1px solid #3f3f46; color: white; padding: 4px; border-radius: 3px; }
   .btn-tirar {
-    background: #dc2626; color: white; border: none; font-weight: bold; padding: 6px 14px; border-radius: 4px; cursor: pointer;
+    background: #00A2E8; color: white; border: none; font-weight: bold; padding: 6px 14px; border-radius: 4px; cursor: pointer;
   }
 </style>

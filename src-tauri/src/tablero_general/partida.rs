@@ -681,6 +681,8 @@ pub fn iniciar_borrador_entidad(
         cuerpo: Cuerpo::Pequenio,
         zona_id,
         foto_url,
+        miniatura_url: None,
+        foto_encuadre: Default::default(),
         archivos_adjuntos: vec![],
         es_unico: false,
     })
@@ -739,6 +741,9 @@ fn validar_entidad(est: &EstadoPartida, dir: &Path, e: &Entidad) -> Result<(), S
     if let Some(f) = e.foto_url.as_deref().filter(|f| !f.trim().is_empty()) {
         archivos::ruta_segura(dir, f, &["imagenes"])?;
     }
+    if !e.foto_encuadre.es_valido() {
+        return Err("El encuadre de la foto no es válido".into());
+    }
     for a in e.archivos_adjuntos.iter().flatten() {
         archivos::ruta_segura(dir, a, &["archivos"])?;
     }
@@ -759,6 +764,7 @@ pub fn crear_entidad(mut entidad: Entidad, state: State<'_, AppState>) -> Result
     }
     normalizar_parametros(&est.definiciones_parametros, &mut entidad.parametros);
     validar_entidad(&est, &state.almacen.dir(), &entidad)?;
+    entidad.miniatura_url = None; // solo la pone `guardar_miniatura_ficha`
 
     reservas.remove(&entidad.id);
     registrar(&mut est, &state.almacen, DeltaPartida::EntidadCreada(entidad.clone()));
@@ -770,8 +776,16 @@ pub fn crear_entidad(mut entidad: Entidad, state: State<'_, AppState>) -> Result
 pub fn modificar_entidad(mut entidad: Entidad, state: State<'_, AppState>) -> Result<(), String> {
     let mut est = state.lock();
 
-    if !est.banco_entidades.iter().any(|e| e.id == entidad.id) {
+    let Some(guardada) = est.banco_entidades.iter().find(|e| e.id == entidad.id) else {
         return Err("La ficha ya no existe (¿se borró su zona?)".into());
+    };
+    // La miniatura propia es de Rust (la cambia `guardar_miniatura_ficha`): se conserva la guardada, y si
+    // la foto es otra deja de valer (era un recorte de la anterior): se vuelve a la automática, centrada.
+    if entidad.foto_url == guardada.foto_url {
+        entidad.miniatura_url = guardada.miniatura_url.clone();
+    } else {
+        entidad.miniatura_url = None;
+        entidad.foto_encuadre = EncuadreFoto::default();
     }
     normalizar_parametros(&est.definiciones_parametros, &mut entidad.parametros);
     validar_entidad(&est, &state.almacen.dir(), &entidad)?;
@@ -909,6 +923,20 @@ pub async fn obtener_miniatura(
     tauri::async_runtime::spawn_blocking(move || miniaturas::asegurar(&dir, &ruta, tipo))
         .await
         .map_err(|e| format!("No se pudo generar la miniatura: {e}"))?
+}
+
+/// Guarda la miniatura propia de una ficha: el front recorta la foto con el encuadre del editor y manda el
+/// WebP ya hecho; el archivo se guarda tal cual y el cambio entra como delta (`MiniaturaFichaCambiada`),
+/// con lo que queda en el log y en el snapshot, y recursos.rs borra la miniatura anterior.
+#[tauri::command]
+pub fn guardar_miniatura_ficha(id: u16, datos: Vec<u8>, state: State<'_, AppState>) -> Result<(), String> {
+    let mut est = state.lock();
+    if !est.banco_entidades.iter().any(|e| e.id == id) {
+        return Err("La ficha no existe".into());
+    }
+    let ruta = miniaturas::guardar_de_ficha(&state.almacen.dir(), id, &datos)?;
+    registrar(&mut est, &state.almacen, DeltaPartida::MiniaturaFichaCambiada { id, ruta: Some(ruta) });
+    Ok(())
 }
 
 #[cfg(test)]

@@ -24,6 +24,8 @@ pub struct Referencias {
     pub imagenes: HashSet<String>,
     /// Rutas relativas "archivos/..." (adjuntos de las fichas)
     pub archivos: HashSet<String>,
+    /// Rutas relativas "miniaturas/ficha/..." propias de las fichas (las que encuadró el usuario)
+    pub miniaturas: HashSet<String>,
 }
 
 fn es_ruta_de(ruta: &str, carpeta: &str) -> bool {
@@ -42,6 +44,9 @@ pub fn referencias(estado: &EstadoPartida) -> Referencias {
     let mut anota = |e: &Entidad| {
         if let Some(f) = e.foto_url.as_deref().filter(|f| es_ruta_de(f, "imagenes")) {
             r.imagenes.insert(f.to_string());
+        }
+        if let Some(m) = e.miniatura_url.as_deref().filter(|m| es_ruta_de(m, "miniaturas")) {
+            r.miniaturas.insert(m.to_string());
         }
         for a in e.archivos_adjuntos.iter().flatten() {
             if es_ruta_de(a, "archivos") {
@@ -68,6 +73,7 @@ pub fn afecta_a_recursos(delta: &DeltaPartida) -> bool {
             | DeltaPartida::MapaBorrado(_)
             | DeltaPartida::EntidadModificada(_)
             | DeltaPartida::EntidadBorrada(_)
+            | DeltaPartida::MiniaturaFichaCambiada { .. }
             | DeltaPartida::InstanciaBorrada(_)
     )
 }
@@ -88,6 +94,11 @@ pub fn liberar(dir_datos: &Path, antes: &Referencias, despues: &Referencias) -> 
     }
     for ruta in antes.archivos.difference(&despues.archivos) {
         if archivos::borrar_archivo(dir_datos, ruta) {
+            borradas.push(ruta.clone());
+        }
+    }
+    for ruta in antes.miniaturas.difference(&despues.miniaturas) {
+        if archivos::ruta_segura(dir_datos, ruta, &["miniaturas"]).is_ok_and(|p| std::fs::remove_file(p).is_ok()) {
             borradas.push(ruta.clone());
         }
     }
@@ -157,7 +168,7 @@ mod tests {
     fn ficha(id: u16, zona: u16, foto: Option<&str>, adj: &[&str], unica: bool) -> Entidad {
         Entidad {
             id, nombre: format!("F{id}"), tipo: TipoEntidad::Enemigo, parametros: vec![], cuerpo: Cuerpo::Pequenio, zona_id: zona,
-            foto_url: foto.map(String::from), archivos_adjuntos: adj.iter().map(|s| Some(s.to_string())).collect(), es_unico: unica,
+            foto_url: foto.map(String::from), miniatura_url: None, foto_encuadre: Default::default(), archivos_adjuntos: adj.iter().map(|s| Some(s.to_string())).collect(), es_unico: unica,
         }
     }
     fn zona(id: u16) -> Zona {
@@ -211,6 +222,37 @@ mod tests {
         // La foto de una ficha cuenta como uso: el mapa 2 suelta la imagen y se conserva
         aplicar(&d, &mut est, DeltaPartida::MapaModificado(mapa(2, 1, None)));
         assert!(existe(&d, "imagenes/compartida.png"));
+    }
+
+    #[test]
+    fn la_miniatura_propia_se_libera_al_cambiarla_al_borrar_la_ficha_y_al_borrar_su_zona() {
+        let d = dir();
+        for n in ["entidad_1_1", "entidad_1_2", "entidad_2_1"] {
+            crear(&d, &format!("miniaturas/ficha/{n}.webp"));
+        }
+        let mut est = EstadoPartida::default();
+        est.zonas = vec![zona(1)];
+        let mut f1 = ficha(1, 1, None, &[], false);
+        f1.miniatura_url = Some("miniaturas/ficha/entidad_1_1.webp".into());
+        let mut f2 = ficha(2, 1, None, &[], false);
+        f2.miniatura_url = Some("miniaturas/ficha/entidad_2_1.webp".into());
+        est.banco_entidades = vec![f1.clone(), f2];
+
+        // Cambiarla: se borra la anterior y se conserva la nueva
+        let nueva = DeltaPartida::MiniaturaFichaCambiada { id: 1, ruta: Some("miniaturas/ficha/entidad_1_2.webp".into()) };
+        assert!(afecta_a_recursos(&nueva));
+        let borradas = aplicar(&d, &mut est, nueva);
+        assert_eq!(borradas, vec!["miniaturas/ficha/entidad_1_1.webp"]);
+        assert!(!existe(&d, "miniaturas/ficha/entidad_1_1.webp") && existe(&d, "miniaturas/ficha/entidad_1_2.webp"));
+
+        // Borrar la ficha: se va con ella
+        f1.miniatura_url = est.banco_entidades[0].miniatura_url.clone();
+        aplicar(&d, &mut est, DeltaPartida::EntidadBorrada(f1));
+        assert!(!existe(&d, "miniaturas/ficha/entidad_1_2.webp") && existe(&d, "miniaturas/ficha/entidad_2_1.webp"));
+
+        // Borrar su zona entera (que se lleva las fichas sin pasar por «borrar ficha»): también
+        aplicar(&d, &mut est, DeltaPartida::ZonaEliminada(zona(1)));
+        assert!(!existe(&d, "miniaturas/ficha/entidad_2_1.webp"));
     }
 
     #[test]

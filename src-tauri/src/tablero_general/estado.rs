@@ -34,6 +34,9 @@ pub enum DeltaPartida {
     EntidadCreada(Entidad),
     EntidadBorrada(Entidad),
     EntidadModificada(Entidad),
+    /// La ficha `id` tiene una miniatura propia nueva (o `None`: vuelve a la automática de su foto).
+    /// El archivo ya está escrito en `miniaturas/ficha/`; la anterior se libera sola (recursos.rs).
+    MiniaturaFichaCambiada { id: u16, ruta: Option<String> },
     /// Define un parámetro nuevo (o reemplaza el de ese id). Las fichas lo reciben con su valor por defecto.
     ParametroCreado(DefinicionParametro),
     /// Cambia la configuración de un parámetro existente (mismo id). Las fichas conservan sus valores.
@@ -255,6 +258,16 @@ impl EstadoPartida {
                 // 3. Si el cuerpo creció, puede salirse del mapa: se reencaja
                 self.reencajar_instancias(|i| i.base.id == entidad.id);
             }
+            DeltaPartida::MiniaturaFichaCambiada { id, ruta } => {
+                // Plantilla del banco y copia de cada instancia activa de esa ficha
+                let bases = self
+                    .banco_entidades
+                    .iter_mut()
+                    .chain(self.instancias_activas.iter_mut().map(|i| &mut i.base));
+                for base in bases.filter(|b| b.id == *id) {
+                    base.miniatura_url = ruta.clone();
+                }
+            }
             DeltaPartida::EntidadBorrada(entidad) => {
                 // 1. La eliminamos del banco de entidades
                 self.banco_entidades.retain(|e| e.id != entidad.id);
@@ -461,6 +474,8 @@ mod tests {
                 cuerpo: Cuerpo::Pequenio,
                 zona_id: 1,
                 foto_url: None,
+                miniatura_url: None,
+                foto_encuadre: Default::default(),
                 archivos_adjuntos: vec![],
                 es_unico: false,
             },
@@ -656,6 +671,32 @@ mod tests {
         let mut e = e;
         e.aplicar_delta(&DeltaPartida::InstanciaModificada(instancia(9, 1)));
         assert_eq!(e.instancias_activas.len(), 1);
+    }
+
+    #[test]
+    fn la_miniatura_propia_llega_al_banco_y_a_las_instancias_y_se_reproduce_desde_el_log() {
+        let dir = dir_temporal("miniatura_ficha_log");
+        let ruta = "miniaturas/ficha/entidad_1_5.webp".to_string();
+        {
+            let a = Almacen::abrir(&dir).unwrap();
+            let mut e = EstadoPartida::default();
+            let inst = instancia(1, 20);
+            e.registrar(&a, DeltaPartida::EntidadCreada(inst.base.clone())).unwrap();
+            e.registrar(&a, DeltaPartida::InstanciaCreada(inst)).unwrap();
+            e.registrar(&a, DeltaPartida::MiniaturaFichaCambiada { id: 1, ruta: Some(ruta.clone()) }).unwrap();
+            // De otra ficha: no le afecta
+            e.registrar(&a, DeltaPartida::MiniaturaFichaCambiada { id: 2, ruta: Some("miniaturas/ficha/otra.webp".into()) }).unwrap();
+            assert_eq!(e.banco_entidades[0].miniatura_url.as_deref(), Some(ruta.as_str()));
+            assert_eq!(e.instancias_activas[0].base.miniatura_url.as_deref(), Some(ruta.as_str()));
+        }
+        let (e, _) = cargar(&Almacen::abrir(&dir).unwrap()).unwrap();
+        assert_eq!(e.banco_entidades[0].miniatura_url.as_deref(), Some(ruta.as_str()));
+        assert_eq!(e.instancias_activas[0].base.miniatura_url.as_deref(), Some(ruta.as_str()));
+
+        // Quitarla: vuelve a la automática
+        let mut e = e;
+        e.aplicar_delta(&DeltaPartida::MiniaturaFichaCambiada { id: 1, ruta: None });
+        assert_eq!(e.banco_entidades[0].miniatura_url, None);
     }
 
     #[test]

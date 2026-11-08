@@ -55,6 +55,8 @@ mod tests {
                 cuerpo: Cuerpo::Pequenio,
                 zona_id: 1,
                 foto_url: None,
+                miniatura_url: None,
+                foto_encuadre: Default::default(),
                 archivos_adjuntos: vec![Some("archivos/entidad_1/notas.txt".into())],
                 es_unico: false,
             },

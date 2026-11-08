@@ -9,7 +9,8 @@
 // Rust nunca borra lo que la partida guardada referencia, así que pasarle de más no es peligroso.
 import { invoke } from "@tauri-apps/api/core";
 import { partida, type DefinicionParametro, type Entidad, type Parametro } from "$lib/partida.svelte";
-import { importarImagen } from "$lib/imagenes";
+import { importarImagen, urlDeImagen } from "$lib/imagenes";
+import { cargarImagen, encuadreCentrado, miniaturaWebp, type Encuadre } from "$lib/recorteFoto";
 
 interface ArchivoAdjunto {
   ruta: string;
@@ -75,10 +76,21 @@ export class EditorFicha {
   #modificados = new Set<string>();
   #sesion: string[] = [];
 
+  // El encuadre de la foto (`entidad.foto_encuadre`, lo mueve CajaFoto) se guarda con la ficha. Si se tocó
+  // o cambió la foto, al guardar se recorta aquí y se manda a Rust la miniatura ya hecha.
+  #encuadreTocado = false;
+  #fotoCambiada = false;
+
+  /** CajaFoto avisa cuando el usuario mueve o acerca la foto. */
+  encuadreCambiado() {
+    this.#encuadreTocado = true;
+  }
+
   constructor(entidad: Entidad, esBorrador: boolean, definiciones: DefinicionParametro[] = partida.definiciones) {
     this.entidad = entidad;
     this.esBorrador = esBorrador;
     this.definiciones = definiciones;
+    entidad.foto_encuadre ??= encuadreCentrado(); // fichas de antes del encuadre
     // Sin definiciones (no se pudieron leer) no se toca nada, para no perder los valores de la ficha
     if (definiciones.length > 0) entidad.parametros = normalizarParametros(definiciones, entidad.parametros ?? []);
     // La foto con la que nace un borrador (ficha creada arrastrando una imagen) es de esta sesión
@@ -292,6 +304,11 @@ export class EditorFicha {
   async ponerFoto(origen: string) {
     try {
       const nueva = await importarImagen(origen, "ficha");
+      if (nueva !== this.entidad.foto_url) {
+        // Otra foto: se empieza centrada y hay que rehacer la miniatura (la propia era de la foto anterior)
+        this.entidad.foto_encuadre = encuadreCentrado();
+        this.#fotoCambiada = true;
+      }
       this.entidad.foto_url = nueva;
       if (!this.#sesion.includes(nueva)) this.#sesion.push(nueva);
     } catch (err) {
@@ -321,6 +338,20 @@ export class EditorFicha {
     }
   }
 
+  /** Recorta la foto con el encuadre elegido y manda la miniatura a Rust. Un fallo aquí no impide guardar la ficha. */
+  async #guardarMiniatura() {
+    const foto = this.entidad.foto_url;
+    if (!foto || !(this.#encuadreTocado || this.#fotoCambiada)) return;
+    try {
+      const datos = await miniaturaWebp(await cargarImagen(urlDeImagen(foto)), $state.snapshot(this.entidad.foto_encuadre) as Encuadre);
+      await invoke("guardar_miniatura_ficha", { id: this.entidad.id, datos });
+      await partida.recargarEntidades(); // la ficha ya tiene la ruta de la miniatura nueva
+      this.#encuadreTocado = this.#fotoCambiada = false;
+    } catch (err) {
+      console.warn("No se pudo guardar la miniatura de la ficha:", err);
+    }
+  }
+
   /**
    * Valida, escribe los .txt modificados y guarda la ficha. Si algo falla la ventana sigue
    * abierta con el motivo a la vista y no se descarta nada. Devuelve true si se guardó.
@@ -341,6 +372,7 @@ export class EditorFicha {
       }
 
       if (!(await partida.guardarEntidad(this.entidad))) return false;
+      await this.#guardarMiniatura();
       // Fotos/archivos de la sesión que al final no se usaron (cambió de foto, quitó un adjunto...)
       await this.#descartarSesion();
       return true;

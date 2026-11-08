@@ -68,7 +68,7 @@
 
   <div class="cuerpo-ficha">
     <div class="fila-superior">
-      <CajaFoto foto={ficha.foto_url} onElegir={(origen) => editor.ponerFoto(origen)} />
+      <CajaFoto foto={ficha.foto_url} bind:encuadre={ficha.foto_encuadre} onCambio={() => editor.encuadreCambiado()} onElegir={(origen) => editor.ponerFoto(origen)} />
 
       <div class="columna-campos">
         <div class="fila">

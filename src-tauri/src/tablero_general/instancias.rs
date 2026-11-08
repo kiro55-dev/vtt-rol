@@ -172,6 +172,8 @@ mod tests {
             cuerpo,
             zona_id: 1,
             foto_url: None,
+            miniatura_url: None,
+            foto_encuadre: Default::default(),
             archivos_adjuntos: vec![],
             es_unico,
         }

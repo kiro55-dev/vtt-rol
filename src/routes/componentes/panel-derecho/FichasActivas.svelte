@@ -1,6 +1,6 @@
 <!-- src/routes/componentes/panel-derecho/FichasActivas.svelte -->
-<!-- Las instancias activas, en su orden. Como las filas del banco pero más grandes y con la foto a
-     resolución completa, en la forma de su tipo (cuadrado rojo, rombo azul, círculo verde). A la
+<!-- Las instancias activas, en su orden. Como las filas del banco pero más grandes y con la misma
+     miniatura de la ficha, en la forma de su tipo (cuadrado rojo, rombo azul, círculo verde). A la
      derecha, el «actual/máx» de los parámetros con forma «Resumen».
      - Pulsar = foco (con Shift, añadirla o quitarla del foco). Pulsar el hueco vacío = quitar el foco.
      - Arrastrar dentro de la lista = reordenar; al tablero = colocarla; al banco = eliminarla.
@@ -10,8 +10,13 @@
   import { partida, numeroDe, veParametro, type Instancia } from "$lib/partida.svelte";
   import { arrastre, moverEnLista } from "$lib/arrastreFicha.svelte";
   import { arrastreTirada } from "$lib/arrastreTirada.svelte";
-  import { urlDeImagen } from "$lib/imagenes";
+  import { miniaturas } from "$lib/miniaturas.svelte";
   import MenuContextual from "../comunes/MenuContextual.svelte";
+
+  // La miniatura de cada ficha activa (la misma que usan el banco, el arrastre y el tablero)
+  $effect(() => {
+    for (const i of partida.instanciasOrdenadas) miniaturas.asegurarFicha(i.base);
+  });
 
   const FORMA_TIPO = { Enemigo: "cuadrado", NPC: "rombo", Jugador: "circulo" } as const;
 
@@ -85,7 +90,10 @@
     >
       <div class="foto {forma}">
         {#if ficha.base.foto_url}
-          <img src={urlDeImagen(ficha.base.foto_url)} alt="" draggable="false" />
+          {@const mini = miniaturas.deFicha(ficha.base)}
+          {#if mini}
+            <img src={mini} alt="" draggable="false" />
+          {/if}
         {:else}
           <span class="inicial">{ficha.base.nombre.charAt(0).toUpperCase()}</span>
         {/if}

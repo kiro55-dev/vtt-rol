@@ -20,7 +20,7 @@ use tablero_general::partida::{
     obtener_historial_personal, obtener_historial_tiradas, obtener_instancias_activas,
     instanciar_entidad, mover_instancia, borrar_instancia, modificar_valor_actual, rotar_instancia,
     reordenar_instancias,
-    obtener_mapas_zona, obtener_miniatura, obtener_zonas, renombrar_archivo_adjunto,
+    obtener_mapas_zona, obtener_miniatura, guardar_miniatura_ficha, obtener_zonas, renombrar_archivo_adjunto,
 };
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -123,6 +123,7 @@ pub fn run() {
             iniciar_borrador_entidad,
             cancelar_borrador_entidad,
             obtener_miniatura,
+            guardar_miniatura_ficha,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

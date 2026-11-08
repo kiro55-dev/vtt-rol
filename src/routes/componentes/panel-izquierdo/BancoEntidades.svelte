@@ -37,7 +37,7 @@
   // Las filas que salen de pantalla dejan de pintar su <img>, así que el webview libera esos píxeles.
   $effect(() => {
     for (const e of entidadesFiltradas) {
-      if (visibles[e.id] && e.foto_url) miniaturas.asegurarFicha(e.foto_url);
+      if (visibles[e.id] && e.foto_url) miniaturas.asegurarFicha(e);
     }
   });
 
@@ -50,7 +50,7 @@
         if (entry.isIntersecting) {
           const ent = partida.banco.find((b) => b.id === id);
           if (ent?.foto_url) {
-            miniaturas.asegurarFicha(ent.foto_url);
+            miniaturas.asegurarFicha(ent);
           }
         }
       },
@@ -169,7 +169,7 @@
   <div class="sub-entidades">
     {#each entidadesFiltradas as item (item.id)}
       {@const estaEnPantalla = visibles[item.id] ?? false}
-      {@const mini = estaEnPantalla && item.foto_url ? miniaturas.deFicha(item.foto_url) : ""}
+      {@const mini = estaEnPantalla && item.foto_url ? miniaturas.deFicha(item) : ""}
 
       <button
         type="button"

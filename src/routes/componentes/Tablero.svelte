@@ -7,6 +7,7 @@
   } from '$lib/tablero';
   import { partida, numeroDe, veParametro } from '$lib/partida.svelte';
   import { arrastre } from '$lib/arrastreFicha.svelte';
+  import { miniaturas } from '$lib/miniaturas.svelte';
   import {
     fichasDelMapa, fichaEnPunto, imagenDe, dibujarFicha, dibujarDestino, dibujarFormas, rectanguloFicha
   } from '$lib/fichasTablero';
@@ -432,6 +433,14 @@
   $effect(() => {
     void [fichas, partida.idsSeleccionados, partida.idsFocoAjeno, partida.definiciones, cam, ancho, alto, dpr, casillas, arrastre.actual];
     void Object.values(partida.valoresPendientes); // la barra de vida y los radios siguen a la rueda
+    // Las miniaturas se piden aquí y se leen para que, al llegar, se repinten las fichas
+    const a = arrastre.actual;
+    const bases = fichas.map((f) => f.instancia.base);
+    if (a) bases.push('instancia' in a.origen ? a.origen.instancia.base : a.origen.entidad);
+    for (const b of bases) {
+      miniaturas.asegurarFicha(b);
+      void miniaturas.deFicha(b);
+    }
     fichasPendientes = true;
     programar();
   });
@@ -443,8 +452,12 @@
       fichasPendientes = true;
       programar();
     };
-    /** @param {string | null} foto */
-    const imagen = (foto) => (foto ? imagenDe(urlDeImagen(foto), repintar) : null);
+    // La foto de la ficha es su miniatura (la misma que usa todo lo demás); null hasta que esté lista
+    /** @param {import("$lib/partida.svelte").Entidad} base */
+    const imagen = (base) => {
+      const url = base.foto_url ? miniaturas.deFicha(base) : '';
+      return url ? imagenDe(url, repintar) : null;
+    };
 
     // 1. Las formas de los parámetros de las fichas con foco (debajo de todas las fichas). Se quedan
     //    donde estaba la ficha aunque se esté arrastrando: así se ve hasta dónde puede llegar.
@@ -461,7 +474,7 @@
     // 2. Las fichas (la que se arrastra no se dibuja en su sitio: va bajo el cursor)
     for (const f of fichas) {
       if (arrastre.arrastrando(f.instancia.id_instancia)) continue;
-      dibujarFicha(ctx, cam, casillas, f, imagen(f.instancia.base.foto_url), {
+      dibujarFicha(ctx, cam, casillas, f, imagen(f.instancia.base), {
         seleccionada: partida.estaSeleccionada(f.instancia.id_instancia),
         focoAjeno: partida.idsFocoAjeno.includes(f.instancia.id_instancia),
         apagada: partida.estaCaida(f.instancia)
@@ -480,7 +493,7 @@
     const h = a.lados[1] * casillas.altoCasilla * cam.zoom;
     const agarre = a.agarre ?? { x: 0.5, y: 0.5 };
     const en = { x: a.x - caja.left - agarre.x * w, y: a.y - caja.top - agarre.y * h };
-    dibujarFicha(ctx, cam, casillas, { instancia, casilla: { x: 0, y: 0 } }, imagen(instancia.base.foto_url), { en, sombra: true });
+    dibujarFicha(ctx, cam, casillas, { instancia, casilla: { x: 0, y: 0 } }, imagen(instancia.base), { en, sombra: true });
   }
 
   // Una ficha del banco aún sin instancia, para poder dibujarla igual que una instancia

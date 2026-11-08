@@ -113,6 +113,48 @@ fn decodificar(ruta: &Path) -> Option<DynamicImage> {
     Some(imagen)
 }
 
+// ------------------------------------------------------------------
+// Miniatura propia de una ficha: la encuadra el usuario en el editor, el front la recorta y manda el
+// WebP ya hecho; aquí solo se guarda tal cual. Va por id de ficha (`entidad_<id>_<versión>.webp`) y no
+// por hash de la foto, porque dos fichas con la misma foto pueden encuadrarla distinto. La versión
+// cambia en cada guardado, así el webview nunca enseña una miniatura vieja de la caché. Quién la usa y
+// cuándo se borra lo decide el modelo (`Entidad.miniatura_url`, delta `MiniaturaFichaCambiada`, recursos.rs).
+// ------------------------------------------------------------------
+
+/// Lo máximo que se acepta (una miniatura de 128x128 son unos pocos KB).
+pub const MAX_BYTES_MINIATURA_FICHA: usize = 512 * 1024;
+
+fn prefijo_de_ficha(id: u16) -> String {
+    format!("entidad_{id}_")
+}
+
+/// Guarda el WebP de la ficha como archivo nuevo y devuelve su ruta relativa. La anterior no se toca
+/// aquí: cuando el delta cambie la ruta de la ficha, recursos.rs borra la que ya no se usa.
+pub fn guardar_de_ficha(dir_datos: &Path, id: u16, datos: &[u8]) -> Result<String, String> {
+    if datos.len() > MAX_BYTES_MINIATURA_FICHA {
+        return Err("La miniatura es demasiado grande".into());
+    }
+    if datos.len() < 12 || &datos[0..4] != b"RIFF" || &datos[8..12] != b"WEBP" {
+        return Err("La miniatura no es un WebP".into());
+    }
+    let carpeta = dir_datos.join("miniaturas/ficha");
+    fs::create_dir_all(&carpeta).map_err(|e| format!("No se pudo crear la carpeta de miniaturas: {e}"))?;
+
+    let version = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis())
+        .unwrap_or(0);
+    let nombre = format!("{}{version}.webp", prefijo_de_ficha(id));
+    let destino = carpeta.join(&nombre);
+
+    // Temporal + rename: nunca queda una miniatura a medias con el nombre definitivo.
+    let tmp = carpeta.join(format!("{nombre}.tmp"));
+    fs::write(&tmp, datos).map_err(|e| format!("No se pudo guardar la miniatura: {e}"))?;
+    fs::rename(&tmp, &destino).map_err(|e| format!("No se pudo guardar la miniatura: {e}"))?;
+
+    Ok(format!("miniaturas/ficha/{nombre}"))
+}
+
 /// Borra las miniaturas de una imagen (todos los tamaños).
 pub fn borrar_miniaturas(dir_datos: &Path, ruta_imagen: &str) {
     for tipo in Tipo::TODOS {
@@ -222,5 +264,36 @@ mod tests {
         asegurar(&d, "imagenes/abc.png", Tipo::Mapa).unwrap();
         borrar_miniaturas(&d, "imagenes/abc.png");
         assert!(!d.join("miniaturas/ficha/abc.webp").exists() && !d.join("miniaturas/mapa/abc.webp").exists());
+    }
+
+    fn webp_falso(relleno: u8) -> Vec<u8> {
+        let mut v = b"RIFF\0\0\0\0WEBP".to_vec();
+        v.push(relleno);
+        v
+    }
+
+    #[test]
+    fn la_miniatura_propia_de_una_ficha_se_guarda_tal_cual_con_una_version_nueva_cada_vez() {
+        let d = dir();
+        let primera = guardar_de_ficha(&d, 7, &webp_falso(1)).unwrap();
+        assert!(primera.starts_with("miniaturas/ficha/entidad_7_") && primera.ends_with(".webp"));
+        assert_eq!(fs::read(d.join(&primera)).unwrap(), webp_falso(1));
+
+        // Otra versión: archivo nuevo (el viejo lo libera recursos.rs, no esta función)
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        let segunda = guardar_de_ficha(&d, 7, &webp_falso(2)).unwrap();
+        assert_ne!(primera, segunda);
+        assert!(d.join(&primera).exists() && d.join(&segunda).exists());
+    }
+
+    #[test]
+    fn la_miniatura_propia_rechaza_lo_que_no_es_un_webp_o_es_enorme() {
+        let d = dir();
+        assert!(guardar_de_ficha(&d, 1, b"esto no es un webp").is_err());
+        assert!(guardar_de_ficha(&d, 1, &[]).is_err());
+        let mut grande = webp_falso(0);
+        grande.resize(MAX_BYTES_MINIATURA_FICHA + 1, 0);
+        assert!(guardar_de_ficha(&d, 1, &grande).is_err());
+        assert!(!d.join("miniaturas").exists(), "no se deja nada");
     }
 }

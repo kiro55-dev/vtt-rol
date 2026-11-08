@@ -4,11 +4,16 @@
 <script lang="ts">
   import { arrastre } from "$lib/arrastreFicha.svelte";
   import { arrastreTirada } from "$lib/arrastreTirada.svelte";
-  import { urlDeImagen } from "$lib/imagenes";
+  import { miniaturas } from "$lib/miniaturas.svelte";
   import { COLOR_TIPO } from "$lib/fichasTablero";
 
   const a = $derived(arrastre.actual);
   const base = $derived(a ? ("entidad" in a.origen ? a.origen.entidad : a.origen.instancia.base) : null);
+  // La miniatura de la ficha (la misma que usa todo lo demás)
+  $effect(() => {
+    if (base?.foto_url) miniaturas.asegurarFicha(base);
+  });
+  const mini = $derived(base?.foto_url ? miniaturas.deFicha(base) : "");
   // Qué pasará al soltar aquí, para que no sea una sorpresa
   const pista = $derived.by(() => {
     if (!a) return "";
@@ -32,7 +37,9 @@
 {#if a && base && a.zona !== "tablero"}
   <div class="fantasma" style:left="{a.x}px" style:top="{a.y}px" style:border-color={COLOR_TIPO[base.tipo]}>
     {#if base.foto_url}
-      <img src={urlDeImagen(base.foto_url)} alt="" draggable="false" />
+      {#if mini}
+        <img src={mini} alt="" draggable="false" />
+      {/if}
     {:else}
       <span>{base.nombre.charAt(0).toUpperCase()}</span>
     {/if}

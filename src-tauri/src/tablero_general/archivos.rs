@@ -295,7 +295,7 @@ mod tests {
     pub fn entidad(id: u16, adj: &[&str]) -> Entidad {
         Entidad {
             id, nombre: "Orco".into(), tipo: TipoEntidad::Enemigo, parametros: vec![], cuerpo: Cuerpo::Pequenio,
-            zona_id: 1, foto_url: None, archivos_adjuntos: adj.iter().map(|s| Some(s.to_string())).collect(), es_unico: false,
+            zona_id: 1, foto_url: None, miniatura_url: None, foto_encuadre: Default::default(), archivos_adjuntos: adj.iter().map(|s| Some(s.to_string())).collect(), es_unico: false,
         }
     }
 

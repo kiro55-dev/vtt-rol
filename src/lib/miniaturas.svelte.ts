@@ -5,6 +5,12 @@
 // Se cachean por la RUTA de la imagen original (que es el hash de su contenido), así que
 // no hay nada que invalidar.
 //
+// Una ficha puede tener además una miniatura PROPIA (`Entidad.miniatura_url`): la que el usuario
+// encuadró en su editor (ver `$lib/recorteFoto`), que el front recorta y Rust guarda tal cual con un
+// delta. Si la tiene se usa esa directamente (su nombre lleva una versión, así que no hay caché que
+// invalidar) y todo lo que dibuja la ficha (banco, «Fichas activas», arrastre, tablero) enseña la
+// misma; si no, la automática de su foto.
+//
 // Memoria: lo que se guarda aquí es solo una ruta (unos bytes). Los píxeles los gestiona el
 // webview, que descarta las imágenes de las filas que se desmontan al salir de pantalla
 // (BancoEntidades solo pinta el <img> de las filas visibles). Por eso no hay límite ni LRU.
@@ -12,6 +18,12 @@ import { invoke } from "@tauri-apps/api/core";
 import { alImportarImagen, urlDeImagen } from "$lib/imagenes";
 
 type Tipo = "ficha" | "mapa";
+
+/** Lo que hace falta de una ficha para saber qué miniatura tiene (sirve una `Entidad`). */
+export interface FotoFicha {
+  foto_url: string | null;
+  miniatura_url: string | null;
+}
 
 class Miniaturas {
   // ruta original -> URL de la miniatura (o de la original si no se pudo reducir)
@@ -25,17 +37,19 @@ class Miniaturas {
     return ruta ? (this.#mapas[ruta] ?? "") : "";
   }
 
-  /** Miniatura de una ficha ("" mientras no esté lista). No lanza peticiones. */
-  deFicha(ruta: string | null | undefined): string {
-    return ruta ? (this.#fichas[ruta] ?? "") : "";
+  /** Miniatura de una ficha ("" mientras no esté lista o si no tiene foto). No lanza peticiones. */
+  deFicha(ficha: FotoFicha): string {
+    if (ficha.miniatura_url) return urlDeImagen(ficha.miniatura_url);
+    return ficha.foto_url ? (this.#fichas[ficha.foto_url] ?? "") : "";
   }
 
   asegurar(ruta: string | null | undefined) {
     this.#pedir(ruta, "mapa");
   }
 
-  asegurarFicha(ruta: string | null | undefined) {
-    this.#pedir(ruta, "ficha");
+  /** Pide la automática de la foto, salvo que la ficha ya tenga la propia. */
+  asegurarFicha(ficha: FotoFicha) {
+    if (!ficha.miniatura_url) this.#pedir(ficha.foto_url, "ficha");
   }
 
   /** La imagen se acaba de (re)importar: su miniatura pudo haberse borrado, se vuelve a pedir. */
