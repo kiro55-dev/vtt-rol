@@ -54,10 +54,14 @@ class Miniaturas {
 
   /** La imagen se acaba de (re)importar: su miniatura pudo haberse borrado, se vuelve a pedir. */
   olvidar(ruta: string) {
-    this.#pedidas.delete(`mapa:${ruta}`);
-    this.#pedidas.delete(`ficha:${ruta}`);
+    const eraMapa = this.#pedidas.delete(`mapa:${ruta}`);
+    const eraFicha = this.#pedidas.delete(`ficha:${ruta}`);
     delete this.#mapas[ruta];
     delete this.#fichas[ruta];
+    // Quien la usaba (p. ej. un mapa cuyo fondo es esta misma imagen) no vuelve a pedirla solo:
+    // se repone aquí. Rust devuelve la miniatura que ya existe o la regenera.
+    if (eraMapa) this.#pedir(ruta, "mapa");
+    if (eraFicha) this.#pedir(ruta, "ficha");
   }
 
   /** Se cambió de partida: las URLs guardadas apuntan a la carpeta de la anterior, se empieza de cero. */

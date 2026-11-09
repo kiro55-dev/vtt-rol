@@ -100,6 +100,22 @@ export class FormularioParametro {
     };
   }
 
+  /** Los campos tal cual están ahora, en una cadena: sirve para saber si se tocó algo desde `cargar`. */
+  huella(): string {
+    return JSON.stringify([
+      this.clave,
+      this.tipo,
+      this.valorNumero,
+      this.valorTexto,
+      this.tieneMaximo,
+      this.unidad,
+      this.visibilidad,
+      this.forma,
+      this.atenuar,
+      this.color
+    ]);
+  }
+
   /** Rellena el formulario con un parámetro existente para editarlo. */
   cargar(d: DefinicionParametro) {
     this.idEditando = d.id;

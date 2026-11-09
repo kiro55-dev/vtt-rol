@@ -114,7 +114,7 @@
         e.preventDefault();
         if (partida.controla(ficha)) menu = { x: e.clientX, y: e.clientY, instancia: ficha };
       }}
-      title={ayuda("Clic: foco (Ctrl: varias) · Doble clic: ver la foto · Arrastrar: reordenar o llevar al tablero · Clic derecho: eliminar")}
+      title={ayuda("Clic: foco\nCtrl+clic: foco en varias\nDoble clic: ver la foto\nArrastrar: reordenar o llevar al tablero\nClic derecho: eliminar")}
     >
       <div class="foto {forma}">
         {#if ficha.base.foto_url}

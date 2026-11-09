@@ -27,6 +27,7 @@
     alReordenar: async (ids) => {
       error = "";
       try {
+        await guardarSiCambio();
         await partida.reordenarDefiniciones(ids);
       } catch (err) {
         error = String(err); // la lista vuelve sola al orden real al recargar
@@ -38,13 +39,38 @@
   // El orden de la lista de definiciones ES el orden: se numera para la lista ordenable
   $effect(() => lista.sincronizar(partida.definiciones.map((d, i) => ({ ...d, orden: i }))));
 
-  function editar(d: DefinicionParametro) {
+  // Cómo estaba el formulario al cargar el parámetro: si no coincide, hay cambios sin guardar
+  let huellaOriginal = "";
+
+  /** Guarda lo editado de un parámetro que ya existe, si se tocó algo. false = no se pudo (error ya mostrado). */
+  async function guardarSiCambio(): Promise<boolean> {
+    if (!creando || formulario.idEditando === null || formulario.huella() === huellaOriginal) return true;
+    if (guardando) return false;
+    guardando = true;
+    error = "";
+    try {
+      const definicion = formulario.aDefinicion();
+      await partida.modificarDefinicion({ ...definicion, id: formulario.idEditando });
+      return true;
+    } catch (err) {
+      error = err instanceof Error ? err.message : String(err);
+      return false;
+    } finally {
+      guardando = false;
+    }
+  }
+
+  async function editar(d: DefinicionParametro) {
+    if (creando && formulario.idEditando === d.id) return;
+    if (!(await guardarSiCambio())) return; // si lo editado no vale, se queda en él con el error a la vista
     formulario.cargar(d);
+    huellaOriginal = formulario.huella();
     creando = true;
     error = "";
   }
 
-  function nuevo() {
+  async function nuevo() {
+    if (!(await guardarSiCambio())) return;
     formulario.reiniciar();
     creando = true;
     error = "";
@@ -56,8 +82,13 @@
     error = "";
   }
 
+  async function cerrar() {
+    if (await guardarSiCambio()) onCerrar();
+  }
+
   async function borrar(d: DefinicionParametro) {
     error = "";
+    if (formulario.idEditando === d.id) cancelarFormulario(); // se borra: lo editado ya no importa
     try {
       await partida.borrarDefinicion(d.id);
     } catch (err) {
@@ -83,7 +114,7 @@
   }
 
   function alTeclear(e: KeyboardEvent) {
-    if (e.key === "Escape") onCerrar();
+    if (e.key === "Escape") cerrar();
     else if (e.key === "Enter" && creando && (e.target as HTMLElement).tagName === "INPUT") {
       e.preventDefault();
       guardar();
@@ -106,7 +137,7 @@
   <div class="cabecera" role="presentation" onpointerdown={(e) => moverVentana(e, pos, ventana)}>
     <span class="icono-drag">⋮⋮</span>
     <span class="titulo">Parámetros de esta partida</span>
-    <button type="button" class="btn-cerrar" aria-label="Cerrar" onclick={onCerrar}>✕</button>
+    <button type="button" class="btn-cerrar" aria-label="Cerrar" onclick={cerrar}>✕</button>
   </div>
 
   <div class="cuerpo">

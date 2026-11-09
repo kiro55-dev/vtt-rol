@@ -14,7 +14,7 @@
       class:error={t.total === null}
       class:arrastrable={t.total !== null}
       role="listitem"
-      title={ayuda(t.total === null ? undefined : "Arrastra sobre un valor de una ficha: botón izquierdo quita, derecho suma")}
+      title={ayuda(t.total === null ? undefined : "Arrastrar sobre un valor de una ficha:\nBotón izquierdo: quita\nBotón derecho: suma")}
       onpointerdown={(e) => t.total !== null && arrastreTirada.preparar(e, t.total)}
     >
       {#if t.total !== null}

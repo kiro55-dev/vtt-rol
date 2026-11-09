@@ -137,8 +137,8 @@
   onpointerup={alSoltar}
   onpointercancel={alSoltar}
   title={ayuda(hayFoto
-    ? "Arrastra para mover la foto · Rueda para acercar o alejar · Clic derecho para cambiar la imagen"
-    : "Clic derecho para elegir imagen o arrastra una aquí")}
+    ? "Arrastrar: mover la foto\nRueda: acercar o alejar\nClic derecho: cambiar la imagen"
+    : "Clic derecho: elegir imagen\nArrastrar una imagen aquí: ponerla")}
 >
   {#if foto}
     <img

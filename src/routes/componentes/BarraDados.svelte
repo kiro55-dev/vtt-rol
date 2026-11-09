@@ -49,7 +49,7 @@
         onwheel={(e) => rueda(e, d)}
         onclick={() => onSumarAlChat(formatearDado(d))}
         oncontextmenu={(e) => { e.preventDefault(); onRestarDelChat(formatearDado(d)); }}
-        title={ayuda("Rueda: cantidad | Clic: sumar | Clic derecho: restar")}
+        title={ayuda("Rueda: cantidad\nClic: sumar\nClic derecho: restar")}
       >
         <span class="cant">{d.cantidad}x</span>
         <span class="label">{d.tipo}</span>

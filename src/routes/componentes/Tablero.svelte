@@ -884,7 +884,7 @@
   data-conserva-foco
   role="application"
   aria-label="Tablero de juego"
-  title={ayuda("Rueda: zoom · Arrastrar: mover la vista o una ficha (las que tienen foco, juntas) · Ctrl+clic: añadir o quitar del foco · Ctrl+arrastrar en el fondo: seleccionar con un recuadro · Doble clic: centrar · Clic central: aviso · Arrastrar botón derecho medir · Click derecho rotar (ctrl + click derecho rotar espejo)")}
+  title={ayuda("Rueda: zoom\nArrastrar: mover la vista o una ficha (las que tienen foco, juntas)\nCtrl+clic: añadir o quitar del foco\nCtrl+arrastrar en el fondo: seleccionar con un recuadro\nDoble clic: centrar\nClic central: aviso\nArrastrar con botón derecho: medir\nClic derecho: rotar\nCtrl+clic derecho: rotar y espejar")}
   onwheel={alRueda}
   onpointerdown={alPresionar}
   onpointermove={alMover}
