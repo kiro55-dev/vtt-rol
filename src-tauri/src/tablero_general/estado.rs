@@ -16,7 +16,7 @@ use std::path::PathBuf;
 use crate::tablero_general::almacen::Almacen;
 use crate::tablero_general::cambios_entidad::{self, CambioEntidad};
 use crate::tablero_general::modelos::*;
-use crate::tablero_general::papelera::{self, GrupoPapelera};
+use crate::tablero_general::papelera::{self, Borrado, GrupoPapelera};
 use crate::tablero_general::tablero;
 
 // ========================================================
@@ -70,6 +70,9 @@ pub enum DeltaPartida {
     PapeleraVaciada,
     /// Alta de un jugador en la partida (o reemplazo del de ese id). Ver jugadores.rs.
     JugadorRegistrado(Jugador),
+    /// El jugador sale del registro de la partida y deja de ser propietario de nada (sus fichas pasan a ser solo
+    /// del host, también las que estén en la papelera). Ver `comandos::eliminar_jugador`.
+    JugadorEliminado(IdJugador),
     /// Solo para reproducir logs antiguos (había un único mapa público): deja compartido ese y ningún otro.
     MapaPublicoCambiado(Option<u16>),
     /// La casilla de un mapa: lo ven (o dejan de ver) los jugadores de la sala.
@@ -117,6 +120,43 @@ pub struct EstadoPartida {
     /// Jugadores registrados (sin el host). Sus ids son los de `Entidad.propietarios`.
     #[serde(default)]
     pub jugadores: Vec<Jugador>,
+    /// Qué mapa tiene abierto el host (lo ven los jugadores). Efímero: no se guarda ni va al log, como el foco.
+    #[serde(skip)]
+    pub mapa_del_host: MapaDelHost,
+}
+
+/// El mapa que el host tiene abierto y el último COMPARTIDO que abrió: el jugador sigue al host, pero si este entra
+/// en un mapa que no se comparte, el jugador se queda en el último que sí. Ver `visibilidad::mapa_visible`.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct MapaDelHost {
+    pub abierto: Option<u16>,
+    pub ultimo_publico: Option<u16>,
+}
+
+impl EstadoPartida {
+    /// Quita `jugador` de los propietarios de todas las fichas: el banco, las instancias y la papelera.
+    fn quitar_propietario(&mut self, jugador: IdJugador) {
+        let limpiar = |e: &mut Entidad| e.propietarios.retain(|p| *p != jugador);
+        self.banco_entidades.iter_mut().for_each(limpiar);
+        self.instancias_activas.iter_mut().for_each(|i| limpiar(&mut i.base));
+        for grupo in self.papelera.iter_mut() {
+            for borrado in grupo.borrados.iter_mut() {
+                match borrado {
+                    Borrado::Entidad { entidad, instancias } => {
+                        limpiar(entidad);
+                        instancias.iter_mut().for_each(|i| limpiar(&mut i.base));
+                    }
+                    Borrado::Mapa { instancias, retiradas, .. } => {
+                        instancias.iter_mut().chain(retiradas.iter_mut()).for_each(|i| limpiar(&mut i.base));
+                    }
+                    Borrado::Zona { entidades, instancias, retiradas, .. } => {
+                        entidades.iter_mut().for_each(limpiar);
+                        instancias.iter_mut().chain(retiradas.iter_mut()).for_each(|i| limpiar(&mut i.base));
+                    }
+                }
+            }
+        }
+    }
 }
 
 // A mano y no con derive: una partida nueva también nace con los parámetros de serie.
@@ -132,6 +172,7 @@ impl Default for EstadoPartida {
             historial_tiradas: Vec::new(),
             papelera: Vec::new(),
             jugadores: Vec::new(),
+            mapa_del_host: MapaDelHost::default(),
         }
     }
 }
@@ -360,6 +401,10 @@ impl EstadoPartida {
                 Some(pos) => self.jugadores[pos] = jugador.clone(),
                 None => self.jugadores.push(jugador.clone()),
             },
+            DeltaPartida::JugadorEliminado(id) => {
+                self.jugadores.retain(|j| j.id != *id);
+                self.quitar_propietario(*id);
+            }
             DeltaPartida::MapaPublicoCambiado(id) => {
                 for m in self.mapas.iter_mut() {
                     m.compartido = Some(m.id) == *id;
@@ -903,6 +948,43 @@ mod tests {
 
         let antigua: EstadoPartida = serde_json::from_str(r#"{"ultimo_seq":3}"#).unwrap();
         assert!(antigua.jugadores.is_empty());
+    }
+
+    #[test]
+    fn eliminar_un_jugador_lo_quita_del_registro_y_de_los_propietarios_hasta_en_la_papelera() {
+        let dir = dir_temporal("jugador_eliminado");
+        let con_dueno = |id: u16, duenos: &[IdJugador]| Entidad { propietarios: duenos.to_vec(), ..instancia(id, 5).base };
+        {
+            let a = Almacen::abrir(&dir).unwrap();
+            let mut e = EstadoPartida::default();
+            for (id, n) in [(1, "Ana"), (2, "Luis")] {
+                e.registrar(&a, DeltaPartida::JugadorRegistrado(Jugador { id, nombre: n.into() })).unwrap();
+            }
+            e.banco_entidades = vec![con_dueno(1, &[1, 2]), con_dueno(2, &[1]), con_dueno(3, &[])];
+            e.instancias_activas = vec![Instancia { base: con_dueno(1, &[1, 2]), ..instancia(1, 5) }];
+            e.papelera = vec![GrupoPapelera {
+                id: 1,
+                borrados: vec![
+                    Borrado::Entidad { entidad: con_dueno(9, &[1, 2]), instancias: vec![Instancia { base: con_dueno(9, &[1]), ..instancia(9, 5) }] },
+                    Borrado::Zona { zona: Zona { id: 1, nombre: "Z".into(), orden: 0 }, mapas: vec![], entidades: vec![con_dueno(8, &[1])], instancias: vec![], retiradas: vec![] },
+                ],
+            }];
+            e.registrar(&a, DeltaPartida::JugadorEliminado(1)).unwrap();
+            assert_eq!(e.jugadores, vec![Jugador { id: 2, nombre: "Luis".into() }]);
+            let duenos = |e: &Entidad| e.propietarios.clone();
+            assert_eq!(e.banco_entidades.iter().map(duenos).collect::<Vec<_>>(), vec![vec![2], vec![], vec![]]);
+            assert_eq!(e.instancias_activas[0].base.propietarios, vec![2]);
+            let Borrado::Entidad { entidad, instancias } = &e.papelera[0].borrados[0] else { panic!() };
+            assert_eq!((duenos(entidad), duenos(&instancias[0].base)), (vec![2], vec![]));
+            let Borrado::Zona { entidades, .. } = &e.papelera[0].borrados[1] else { panic!() };
+            assert!(entidades[0].propietarios.is_empty());
+            // Eliminar a uno que no existe no rompe nada
+            e.registrar(&a, DeltaPartida::JugadorEliminado(77)).unwrap();
+        }
+        // Y al reproducir el log queda igual
+        let (e, _) = cargar(&Almacen::abrir(&dir).unwrap()).unwrap();
+        assert_eq!(e.jugadores.len(), 1);
+        assert!(e.banco_entidades.iter().all(|f| !f.propietarios.contains(&1)));
     }
 
     #[test]

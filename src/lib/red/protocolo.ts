@@ -5,7 +5,7 @@
 import type { AvisoTablero } from "$lib/avisosTablero";
 import type { DefinicionParametro, Entidad, Instancia, Mapa, Zona } from "$lib/partida.svelte";
 
-export const VERSION_PROTOCOLO = 4;
+export const VERSION_PROTOCOLO = 5;
 
 export interface Jugador {
   id: number;
@@ -30,6 +30,8 @@ export interface VistaJugador {
   definiciones: DefinicionParametro[];
   /** El chat de tiradas, de todos, la más reciente primero. */
   historial_tiradas: TiradaChat[];
+  /** El mapa que debe tener abierto (el del host, si lo comparte). `null`/ausente: aún ninguno. */
+  mapa_visible?: number | null;
 }
 
 /** `red::vista::Cambios`: lo que no aparece, sigue igual. */
@@ -44,6 +46,9 @@ export interface Cambios {
   entidades_quitadas?: number[];
   definiciones?: DefinicionParametro[];
   historial_tiradas?: TiradaChat[];
+  /** Cambió el mapa que debe ver (`mapa_visible` puede venir vacío: ninguno). */
+  mapa_visible_cambiado?: boolean;
+  mapa_visible?: number | null;
 }
 
 export type MensajeCliente =

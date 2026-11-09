@@ -109,7 +109,7 @@ imágenes) y `bunx vitest run` (enlace, réplica, respuesta al reto con el mismo
 | `red/servidor.rs` | axum en 127.0.0.1: `/ws` (saludo y envíos) y `/imagen` |
 | `red/tunel.rs` | descarga verificada de cloudflared y arranque del túnel |
 | `red/vista.rs` | qué ve cada jugador y la diferencia con lo último enviado |
-| `red/protocolo.rs` | los mensajes (espejo: `src/lib/red/protocolo.ts`); versión 4 |
+| `red/protocolo.rs` | los mensajes (espejo: `src/lib/red/protocolo.ts`); versión 5 |
 | `red/peticiones.rs` | lo que un jugador puede pedir: lista blanca, permisos y ejecución |
 | `red/comandos.rs` | comandos de la ventana «Configuración de sala» |
 | `src/lib/modo.ts`, `src/lib/backend.ts` | host o jugador; la puerta única de datos |
@@ -142,6 +142,12 @@ su pantalla relee. Las peticiones de un jugador se ejecutan **en orden**, una a 
 - **Pantalla del host.** Tras una acción de un jugador el host emite `partida-cambiada` (`tiradas` o `entidades`)
   y su store relee (`partida.alCambiarPartida`); el ping y el recorrido de un jugador llegan al host como el
   evento `aviso-tablero` y a los demás jugadores como `Aviso`.
+- **El jugador sigue el mapa del host.** No elige mapa: ve el que el host tiene abierto si lo comparte (el host se lo
+  dice a Rust con `abrir_mapa`; efímero, no se guarda). Si el host entra en un mapa que no comparte, el jugador no
+  nota nada (sigue en el último compartido), tampoco al volver; si abre otro compartido, lo ve. Las miniaturas de todos
+  los mapas compartidos siguen en su lista (pulsarlas no cambia lo que ve). Protocolo 5 (`mapa_visible`).
+- **Quitar jugadores.** «Quitar de la partida» (⚙ → Configuración de sala) borra su registro y lo echa de la sala; sus
+  fichas no se bloquean ni se borran: pasan a ser solo del host.
 - **Arrastre en vivo.** Mientras alguien arrastra una ficha por el tablero, los demás la ven pasar de casilla en casilla
   (semitransparente): `Arrastre` y `ArrastreFin` son avisos efímeros, como el recorrido (protocolo 4). La posición
   guardada solo cambia al soltar. Un jugador solo puede avisar del arrastre de sus fichas. Solo se ve el arrastre de

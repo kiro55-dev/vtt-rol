@@ -95,6 +95,12 @@ class Sala {
     await this.recargar();
   }
 
+  /** Lo quita de la partida (y de la sala, si está): sus fichas se quedan, pero sin dueño. */
+  async eliminar(id: number) {
+    await invoke("eliminar_jugador", { id });
+    await this.recargar();
+  }
+
   /** El jugador pasa a controlar la ficha (soltarlo encima, ver arrastreJugador). */
   async asignar(idJugador: number, idEntidad: number) {
     await invoke("asignar_propietario", { idEntidad, idJugador });

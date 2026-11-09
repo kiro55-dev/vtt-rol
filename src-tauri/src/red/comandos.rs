@@ -10,7 +10,7 @@ use crate::red::EstadoSala;
 use crate::tablero_general::cambios_entidad::CambioEntidad;
 use crate::tablero_general::estado::DeltaPartida;
 use crate::tablero_general::jugadores;
-use crate::tablero_general::modelos::IdJugador;
+use crate::tablero_general::modelos::{IdJugador, ID_HOST};
 use crate::tablero_general::partida::{self, AppState};
 
 #[tauri::command]
@@ -52,6 +52,29 @@ pub async fn poner_contrasena(contrasena: Option<String>, state: State<'_, AppSt
 #[tauri::command]
 pub fn expulsar_jugador(id: IdJugador, state: State<'_, AppState>) -> Result<(), String> {
     state.red.expulsar(id)
+}
+
+/// Quita a un jugador de la partida: lo echa de la sala si está (y olvida su navegador y sus fichas nuevas a medias) y
+/// borra su registro. Sus fichas no se bloquean ni se borran: pasan a ser solo del host.
+#[tauri::command]
+pub fn eliminar_jugador(id: IdJugador, state: State<'_, AppState>) -> Result<(), String> {
+    eliminar_jugador_en(&state, id)
+}
+
+pub fn eliminar_jugador_en(state: &AppState, id: IdJugador) -> Result<(), String> {
+    if id == ID_HOST {
+        return Err("El host no se puede quitar".into());
+    }
+    if !state.lock().jugadores.iter().any(|j| j.id == id) {
+        return Err("Ese jugador no existe".into());
+    }
+    state.red.expulsar(id)?; // sin el estado cogido (orden de bloqueo: estado, luego la sala)
+    {
+        let mut est = state.lock();
+        partida::registrar(&mut est, &state.almacen, DeltaPartida::JugadorEliminado(id));
+    }
+    state.red.avisar();
+    Ok(())
 }
 
 #[derive(Serialize)]
@@ -110,4 +133,40 @@ pub fn asignar_propietario(id_entidad: u16, id_jugador: IdJugador, state: State<
 #[tauri::command]
 pub fn quitar_propietario(id_entidad: u16, id_jugador: IdJugador, state: State<'_, AppState>) -> Result<(), String> {
     cambiar_propietario(&state, id_entidad, id_jugador, false)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::tablero_general::almacen::pruebas::dir_temporal;
+    use crate::tablero_general::almacen::Almacen;
+    use crate::tablero_general::estado::EstadoPartida;
+    use crate::tablero_general::modelos::*;
+
+    fn estado() -> AppState {
+        let dir = dir_temporal("eliminar_jugador");
+        AppState::nuevo(EstadoPartida::default(), Almacen::abrir(&dir).unwrap(), dir)
+    }
+
+    #[test]
+    fn quitar_a_un_jugador_con_fichas_no_se_bloquea_y_las_deja_sin_dueno() {
+        let state = estado();
+        {
+            let mut est = state.lock();
+            let ficha = |id: u16, duenos: Vec<IdJugador>| Entidad {
+                id, nombre: format!("F{id}"), tipo: TipoEntidad::Jugador, parametros: vec![], cuerpo: Cuerpo::Pequenio, zona_id: 1,
+                foto_url: None, miniatura_url: None, foto_encuadre: Default::default(), archivos_adjuntos: vec![], es_unico: false,
+                propietarios: duenos,
+            };
+            partida::registrar(&mut est, &state.almacen, DeltaPartida::JugadorRegistrado(Jugador { id: 1, nombre: "Ana".into() }));
+            partida::registrar(&mut est, &state.almacen, DeltaPartida::EntidadCreada(ficha(10, vec![1])));
+        }
+        assert!(eliminar_jugador_en(&state, ID_HOST).is_err(), "el host no se quita");
+        assert!(eliminar_jugador_en(&state, 5).is_err(), "no existe");
+
+        eliminar_jugador_en(&state, 1).unwrap();
+        let est = state.lock();
+        assert!(est.jugadores.is_empty());
+        assert!(est.banco_entidades[0].propietarios.is_empty(), "la ficha sigue, solo del host");
+    }
 }

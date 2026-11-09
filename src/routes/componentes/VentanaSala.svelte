@@ -21,6 +21,8 @@
   });
 
   let error = $state("");
+  // Jugador cuya baja de la partida está pendiente de confirmar
+  let quitando = $state<number | null>(null);
   let copiado = $state(false);
   let contrasena = $state("");
   let confirmandoEnlace = $state(false);
@@ -182,6 +184,13 @@
             {#if j.conectado}
               <button type="button" class="btn-expulsar" title="Lo saca de la sala; para volver tendrá que poner la contraseña" onclick={() => hacer(() => sala.expulsar(j.id))}>Expulsar</button>
             {/if}
+            {#if quitando === j.id}
+              <span class="nota">¿Quitarlo de la partida? Sus fichas se quedan sin dueño.</span>
+              <button type="button" class="btn-expulsar" onclick={() => { quitando = null; void hacer(() => sala.eliminar(j.id)); }}>Sí, quitar</button>
+              <button type="button" class="btn-no" onclick={() => (quitando = null)}>No</button>
+            {:else}
+              <button type="button" class="btn-expulsar" title="Lo borra de esta partida (también lo saca de la sala). Sus fichas no se borran: se quedan sin dueño" onclick={() => (quitando = j.id)}>Quitar de la partida</button>
+            {/if}
           </div>
         {:else}
           <span class="nota">Aún no ha entrado nadie. Los que entren se quedan guardados en esta partida.</span>
@@ -265,6 +274,7 @@
   .fichas { display: flex; gap: 3px; flex-wrap: wrap; flex: 1; }
   .ficha { background: #14532d; color: #bbf7d0; border-radius: 3px; padding: 1px 4px; font-size: 10px; display: flex; gap: 3px; align-items: center; }
   .ficha button { background: none; border: none; color: #86efac; cursor: pointer; font-size: 9px; padding: 0; }
+  .btn-no { background: none; border: none; color: #a1a1aa; font-size: 10px; cursor: pointer; }
   .btn-expulsar { background: none; border: none; color: #f87171; font-size: 10px; cursor: pointer; }
   .error { margin: 0; color: #f87171; font-size: 12px; }
 

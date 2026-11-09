@@ -5,7 +5,7 @@ mod tablero_general;
 use tauri::{Emitter, Manager};
 
 use red::comandos::{
-    abrir_sala, asignar_propietario, cerrar_sala, estado_sala, expulsar_jugador, obtener_jugadores, poner_contrasena,
+    abrir_sala, asignar_propietario, cerrar_sala, estado_sala, eliminar_jugador, expulsar_jugador, obtener_jugadores, poner_contrasena,
     quitar_propietario, regenerar_enlace,
 };
 
@@ -25,7 +25,7 @@ use tablero_general::partida::{
     obtener_dir_datos,
     obtener_historial_personal, obtener_historial_tiradas, obtener_instancias_activas,
     instanciar_entidad, instanciar_entidades, borrar_entidades, restaurar_papelera, cerrar_partida, mover_instancia, mover_instancias, borrar_instancia, modificar_valor_actual, rotar_instancia, espejar_instancia,
-    reordenar_instancias, compartir_mapa,
+    reordenar_instancias, compartir_mapa, abrir_mapa,
     obtener_mapas_zona, obtener_miniatura, guardar_miniatura_ficha, obtener_zonas, renombrar_archivo_adjunto,
 };
 
@@ -134,12 +134,14 @@ pub fn run() {
             espejar_instancia,
             reordenar_instancias,
             compartir_mapa,
+            abrir_mapa,
             estado_sala,
             abrir_sala,
             cerrar_sala,
             regenerar_enlace,
             poner_contrasena,
             expulsar_jugador,
+            eliminar_jugador,
             obtener_jugadores,
             asignar_propietario,
             quitar_propietario,

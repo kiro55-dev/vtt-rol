@@ -30,6 +30,10 @@ pub struct VistaJugador {
     pub definiciones: Vec<DefinicionParametro>,
     /// El chat de tiradas: es de todos (cada tirada lleva el nombre de quien la hizo), la más reciente primero.
     pub historial_tiradas: Vec<Tiradas>,
+    /// El mapa que debe tener abierto: el del host si lo comparte (ver `visibilidad::mapa_visible`). El jugador no
+    /// elige mapa. `None`: ninguno aún (abre el primero compartido).
+    #[serde(default)]
+    pub mapa_visible: Option<u16>,
 }
 
 /// Lo que cambió en la vista de un jugador. Lo que no aparece, sigue igual.
@@ -58,6 +62,11 @@ pub struct Cambios {
     /// El chat entero cuando cambia (son 20 tiradas como mucho).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub historial_tiradas: Option<Vec<Tiradas>>,
+    /// Cambió el mapa que debe ver (puede pasar a ninguno, por eso va aparte del valor).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub mapa_visible_cambiado: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mapa_visible: Option<u16>,
 }
 
 impl Cambios {
@@ -80,7 +89,11 @@ pub fn vista_para(jugador: IdJugador, est: &EstadoPartida) -> VistaJugador {
         .flat_map(|e| e.parametros.iter().map(|p| p.id_definicion))
         .collect();
     let definiciones = est.definiciones_parametros.iter().filter(|d| usadas.contains(&d.id)).cloned().collect();
-    VistaJugador { zonas, mapas, instancias, entidades, definiciones, historial_tiradas: est.historial_tiradas.clone() }
+    VistaJugador {
+        zonas, mapas, instancias, entidades, definiciones,
+        historial_tiradas: est.historial_tiradas.clone(),
+        mapa_visible: visibilidad::mapa_visible(est),
+    }
 }
 
 /// Qué hay que enviar para pasar de `antes` a `despues`. `None` si no cambió nada.
@@ -95,6 +108,10 @@ pub fn diferencias(antes: &VistaJugador, despues: &VistaJugador) -> Option<Cambi
     }
     if antes.historial_tiradas != despues.historial_tiradas {
         c.historial_tiradas = Some(despues.historial_tiradas.clone());
+    }
+    if antes.mapa_visible != despues.mapa_visible {
+        c.mapa_visible_cambiado = true;
+        c.mapa_visible = despues.mapa_visible;
     }
     (!c.esta_vacio()).then_some(c)
 }
@@ -132,6 +149,9 @@ pub fn aplicar(vista: &mut VistaJugador, cambios: &Cambios) {
     }
     if let Some(h) = &cambios.historial_tiradas {
         vista.historial_tiradas = h.clone();
+    }
+    if cambios.mapa_visible_cambiado {
+        vista.mapa_visible = cambios.mapa_visible;
     }
 }
 
@@ -204,6 +224,29 @@ mod tests {
         assert_eq!(ids(&otro.instancias, |i| i.id_instancia), vec![2]);
         assert!(otro.entidades.is_empty());
         assert!(otro.definiciones.iter().all(|d| d.id != ID_VIDA), "ni el nombre de la vida privada");
+    }
+
+    #[test]
+    fn el_mapa_visible_llega_al_jugador_solo_cuando_cambia_de_verdad() {
+        let mut e = estado(); // el mapa 1 está compartido; el 2, no
+        let antes = vista_para(1, &e);
+        assert_eq!(antes.mapa_visible, None);
+
+        e.mapa_del_host.abierto = Some(1);
+        e.mapa_del_host.ultimo_publico = Some(1);
+        let con_mapa = vista_para(1, &e);
+        let c = diferencias(&antes, &con_mapa).expect("el host abrió un mapa compartido");
+        assert!(c.mapa_visible_cambiado && c.mapa_visible == Some(1));
+        let mut replica = antes.clone();
+        aplicar(&mut replica, &c);
+        assert_eq!(replica, con_mapa);
+
+        // El host entra en un mapa que no se comparte: el jugador no recibe nada
+        e.mapa_del_host.abierto = Some(2);
+        assert_eq!(diferencias(&con_mapa, &vista_para(1, &e)), None);
+        // Y al volver al de antes, tampoco
+        e.mapa_del_host.abierto = Some(1);
+        assert_eq!(diferencias(&con_mapa, &vista_para(1, &e)), None);
     }
 
     #[test]

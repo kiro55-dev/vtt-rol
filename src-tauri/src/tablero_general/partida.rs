@@ -771,6 +771,23 @@ pub fn migrar_fondos_antiguos(est: &mut EstadoPartida, almacen: &Almacen) {
     }
 }
 
+/// El host abre un mapa (o ninguno). Los jugadores no eligen mapa: ven el que el host tiene abierto si lo
+/// comparte, y si entra en uno que no se comparte no notan nada (ver `visibilidad::mapa_visible`). Es efímero: no
+/// cambia la partida, no se guarda ni va al log.
+#[tauri::command]
+pub fn abrir_mapa(id: Option<u16>, state: State<'_, AppState>) {
+    abrir_mapa_en(id, &state)
+}
+
+pub fn abrir_mapa_en(id: Option<u16>, state: &AppState) {
+    let mut est = state.lock();
+    est.mapa_del_host.abierto = id;
+    if let Some(compartido) = id.filter(|i| est.mapas.iter().any(|m| m.id == *i && m.compartido)) {
+        est.mapa_del_host.ultimo_publico = Some(compartido);
+    }
+    state.red.tras_cambio(&est);
+}
+
 /// La casilla de un mapa: lo ven (o dejan de ver) los jugadores de la sala, al instante. Es independiente
 /// del mapa que tenga abierto el host, así puede preparar otros sin que se vean.
 #[tauri::command]
@@ -780,6 +797,10 @@ pub fn compartir_mapa(id: u16, compartido: bool, state: State<'_, AppState>) -> 
         let mapa = est.mapas.iter().find(|m| m.id == id).ok_or("Ese mapa no existe")?;
         if mapa.compartido == compartido {
             return Ok(());
+        }
+        // Si es el que el host tiene abierto, pasa a ser también el último que ven los jugadores
+        if compartido && est.mapa_del_host.abierto == Some(id) {
+            est.mapa_del_host.ultimo_publico = Some(id);
         }
         registrar(&mut est, &state.almacen, DeltaPartida::MapaCompartido { id, compartido });
     }

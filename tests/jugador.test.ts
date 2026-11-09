@@ -208,6 +208,50 @@ describe("un jugador solo cambia las fichas que son suyas", () => {
     expect(partida.editorEsBorrador).toBe(true);
   });
 
+  it("el jugador ve el mapa del host y no elige: entrar el host en uno privado no cambia nada", async () => {
+    vi.resetModules();
+    vi.doMock("$lib/modo", () => ({ esJugador: true }));
+    vi.doMock("$lib/red/conexion.svelte", () => ({ conexion: null }));
+    const zona = (id: number) => ({ id, nombre: `Z${id}`, orden: id });
+    const mapa = (id: number, id_zona: number) => ({ id, id_zona, nombre: `M${id}`, orden: id, url_imagen_fondo: null, ancho: 100, alto: 100, rejilla: 10, color_opacidad: [255, 255, 255, 76], grosor: 1, compartido: true });
+    const mapas = [mapa(1, 1), mapa(2, 1), mapa(3, 2)];
+    let visible: any = mapas[0];
+    vi.doMock("$lib/backend", () => ({
+      invoke: async (cmd: string, args: any) => {
+        if (cmd === "obtener_zonas") return [zona(1), zona(2)];
+        if (cmd === "obtener_mapas_zona") return mapas.filter((m) => m.id_zona === args.zonaId);
+        if (cmd === "obtener_mapa_visible") return visible;
+        return [];
+      },
+      listen: async () => () => {},
+      emitirLocal: () => {},
+      EVENTO_PARTIDA_CAMBIADA: "partida-cambiada"
+    }));
+    const { partida } = await import("$lib/partida.svelte");
+    await partida.iniciar();
+    expect(partida.mapaActual?.id).toBe(1);
+
+    // Pulsar otra miniatura no cambia lo que ve
+    await partida.seleccionarMapa(mapas[1] as any);
+    expect(partida.mapaActual?.id).toBe(1);
+
+    // Mirar otra zona en la lista tampoco le cambia el mapa
+    await partida.seleccionarZona(2);
+    expect(partida.mapas.map((m) => m.id)).toEqual([3]);
+    expect(partida.mapaActual?.id).toBe(1);
+
+    // El host abre otro mapa compartido (de otra zona): lo ve, y su lista salta a esa zona
+    visible = mapas[2];
+    await partida.alCambiarPartida({ mapas: true });
+    expect(partida.mapaActual?.id).toBe(3);
+    expect(partida.zonaId).toBe(2);
+
+    // Si el host entra en uno que no ve, Rust sigue diciendo el mismo (el último compartido): sin cambios
+    await partida.alCambiarPartida({ mapas: true });
+    expect(partida.mapaActual?.id).toBe(3);
+    vi.doUnmock("$lib/backend");
+  });
+
   it("un aviso se enseña y se quita solo", async () => {
     vi.useFakeTimers();
     try {

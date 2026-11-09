@@ -12,7 +12,8 @@ export const vistaVacia = (): VistaJugador => ({
   instancias: [],
   entidades: [],
   definiciones: [],
-  historial_tiradas: []
+  historial_tiradas: [],
+  mapa_visible: null
 });
 
 function poner<T>(lista: readonly T[], nuevas: readonly T[] = [], quitadas: readonly number[] = [], id: (x: T) => number): T[] {
@@ -32,7 +33,8 @@ export function aplicarCambios(vista: VistaJugador, c: Cambios): VistaJugador {
     instancias: poner(vista.instancias, c.instancias, c.instancias_quitadas, (i) => i.id_instancia),
     entidades: poner(vista.entidades, c.entidades, c.entidades_quitadas, (e) => e.id),
     definiciones: c.definiciones ?? vista.definiciones,
-    historial_tiradas: c.historial_tiradas ?? vista.historial_tiradas
+    historial_tiradas: c.historial_tiradas ?? vista.historial_tiradas,
+    mapa_visible: c.mapa_visible_cambiado ? (c.mapa_visible ?? null) : (vista.mapa_visible ?? null)
   };
 }
 
@@ -49,7 +51,7 @@ export function partesCambiadas(c: Cambios): PartesCambiadas {
   const algo = (a?: unknown[], b?: unknown[]) => !!(a?.length || b?.length);
   return {
     zonas: algo(c.zonas, c.zonas_quitadas),
-    mapas: algo(c.mapas, c.mapas_quitados),
+    mapas: algo(c.mapas, c.mapas_quitados) || !!c.mapa_visible_cambiado,
     entidades: algo(c.instancias, c.instancias_quitadas) || algo(c.entidades, c.entidades_quitadas),
     definiciones: c.definiciones !== undefined,
     tiradas: c.historial_tiradas !== undefined
@@ -119,6 +121,15 @@ export function responder(cmd: string, args: Record<string, unknown>, vista: Vis
       return copia(vista.instancias);
     case "obtener_definiciones_parametros":
       return copia(vista.definiciones);
+    case "obtener_mapa_visible": {
+      // El que tiene abierto el host (si lo comparte); si aún no hay, el primero que ve. Puede ser de cualquier zona.
+      const orden = new Map(vista.zonas.map((z) => [z.id, z.orden]));
+      const primero = [...vista.mapas].sort(
+        (a, b) => (orden.get(a.id_zona) ?? 0) - (orden.get(b.id_zona) ?? 0) || a.orden - b.orden
+      )[0];
+      const mapa = vista.mapas.find((m) => m.id === vista.mapa_visible) ?? primero;
+      return mapa ? copia(mapa) : null;
+    }
     case "obtener_historial_tiradas":
       return copia(vista.historial_tiradas);
     case "obtener_historial_personal":

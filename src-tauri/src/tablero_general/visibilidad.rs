@@ -77,6 +77,15 @@ pub fn instancias_para(jugador: IdJugador, instancias: &[Instancia], compartidos
         .collect()
 }
 
+/// El mapa que ven los jugadores: el que el host tiene abierto si está compartido; si no, el último compartido que
+/// abrió (si sigue compartido). `None`: aún ninguno (el jugador cae en el primer mapa compartido). Los jugadores no
+/// eligen mapa: siguen al host, y no notan que este entre en uno que no ven.
+pub fn mapa_visible(est: &EstadoPartida) -> Option<u16> {
+    let compartido = |id: &u16| est.mapas.iter().any(|m| m.id == *id && m.compartido);
+    let host = &est.mapa_del_host;
+    host.abierto.filter(compartido).or_else(|| host.ultimo_publico.filter(compartido))
+}
+
 /// Los mapas que recibe `jugador`: el host todos; un jugador los compartidos (la casilla de cada mapa).
 pub fn mapas_para(jugador: IdJugador, mapas: &[Mapa]) -> Vec<Mapa> {
     if jugador == ID_HOST {
@@ -339,6 +348,30 @@ mod tests {
             Some(vec![CambioEntidad::Nombre("Orco jefe".into()), CambioEntidad::Parametro(publico)])
         );
         assert_eq!(cambios_para(4, &ficha, true, &[CambioEntidad::Adjuntos(vec![])]), None, "nada que enviarle");
+    }
+
+    #[test]
+    fn el_jugador_sigue_el_mapa_del_host_pero_solo_si_se_comparte() {
+        let mut est = EstadoPartida::default();
+        est.mapas = vec![mapa(1, 1, "a", true), mapa(2, 1, "b", false), mapa(3, 1, "c", true)];
+        assert_eq!(mapa_visible(&est), None, "el host aún no abrió ninguno");
+
+        est.mapa_del_host.abierto = Some(1);
+        est.mapa_del_host.ultimo_publico = Some(1);
+        assert_eq!(mapa_visible(&est), Some(1));
+        // Entra en uno que no se comparte: el jugador sigue donde estaba
+        est.mapa_del_host.abierto = Some(2);
+        assert_eq!(mapa_visible(&est), Some(1));
+        // Vuelve: nada cambia; abre otro compartido: ese
+        est.mapa_del_host.abierto = Some(1);
+        assert_eq!(mapa_visible(&est), Some(1));
+        est.mapa_del_host.abierto = Some(3);
+        assert_eq!(mapa_visible(&est), Some(3));
+        // Si el último compartido deja de serlo, no se le sigue enseñando
+        est.mapa_del_host.abierto = Some(2);
+        est.mapa_del_host.ultimo_publico = Some(3);
+        est.mapas[2].compartido = false;
+        assert_eq!(mapa_visible(&est), None);
     }
 
     #[test]

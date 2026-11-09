@@ -277,8 +277,38 @@ class Partida {
     await iniciarImagenes(); // hace falta antes de mostrar ningún mapa con imagen
     this.definiciones = await invoke<DefinicionParametro[]>("obtener_definiciones_parametros");
     await this.recargarZonas();
+    if (esJugador) {
+      // El jugador empieza en el mapa que tiene abierto el host (si lo comparte)
+      await this.#seguirAlHost();
+      if (this.zonaId !== null) {
+        await this.recargarMapas();
+        await this.recargarEntidades();
+        return;
+      }
+    }
     await this.seleccionarZona(this.zonasOrdenadas[0]?.id ?? null);
     await this.recargarEntidades();
+  }
+
+  /** Último mapa del host que el jugador pasó a ver (para saber cuándo CAMBIA de verdad). */
+  #mapaDelHostSeguido: number | null = null;
+
+  /**
+   * Solo jugador: el mapa que ve lo decide el host. Si el host abrió otro mapa (compartido), su lista salta a la
+   * zona de ese mapa; si no cambió, ver otra zona en la lista no le mueve el mapa.
+   */
+  async #seguirAlHost() {
+    const visible = await invoke<Mapa | null>("obtener_mapa_visible");
+    if (!visible) {
+      this.#mapaDelHostSeguido = null;
+      return;
+    }
+    if (visible.id === this.#mapaDelHostSeguido) return;
+    this.#mapaDelHostSeguido = visible.id;
+    if (visible.id_zona !== this.zonaId && this.zonas.some((z) => z.id === visible.id_zona)) {
+      this.#desenfocar();
+      this.zonaId = visible.id_zona;
+    }
   }
 
   #escuchando = false;
@@ -301,6 +331,7 @@ class Partida {
     if (partes.definiciones) await this.recargarDefiniciones();
     if (partes.zonas || partes.mapas) {
       await this.recargarZonas();
+      if (esJugador) await this.#seguirAlHost();
       if (this.zonaId === null || !this.zonas.some((z) => z.id === this.zonaId)) {
         await this.seleccionarZona(this.zonasOrdenadas[0]?.id ?? null);
       } else {
@@ -367,6 +398,12 @@ class Partida {
    */
   async recargarMapas(preferido?: number | null) {
     await this.guardarRejilla(); // que no se pierdan cambios de rejilla en curso al refrescar
+    if (esJugador) {
+      // La lista es de la zona que mira (sus miniaturas); el mapa abierto lo decide el host
+      this.mapas = this.zonaId === null ? [] : await invoke<Mapa[]>("obtener_mapas_zona", { zonaId: this.zonaId });
+      this.#abrirMapa(await invoke<Mapa | null>("obtener_mapa_visible"));
+      return;
+    }
     const quiero = preferido === undefined ? (this.mapaActual?.id ?? null) : preferido;
 
     if (this.zonaId === null) {
@@ -494,6 +531,7 @@ class Partida {
   }
 
   async seleccionarMapa(mapa: Mapa | null) {
+    if (esJugador) return; // el jugador no elige mapa: ve el que tiene abierto el host
     if (!mapa || mapa.id === this.mapaActual?.id) return;
     this.#desenfocar();
     await this.guardarRejilla();
@@ -947,6 +985,8 @@ class Partida {
 
   #abrirMapa(mapa: Mapa | null) {
     this.mapaActual = mapa;
+    // Los jugadores ven el mapa que el host tiene abierto (si lo comparte): se le dice a Rust. Un fallo no importa.
+    if (!esJugador) void Promise.resolve(invoke("abrir_mapa", { id: mapa?.id ?? null })).catch(() => {});
     if (!mapa) return;
 
     this.rejilla.tamano = mapa.rejilla;

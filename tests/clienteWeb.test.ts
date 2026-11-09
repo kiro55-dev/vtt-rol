@@ -67,12 +67,29 @@ describe("réplica: aplicar los cambios del host", () => {
     expect(partesCambiadas({ mapas: [mapa(1)], definiciones: [] })).toEqual({ zonas: false, mapas: true, entidades: false, definiciones: true, tiradas: false });
     expect(partesCambiadas({ zonas_quitadas: [3], entidades: [] })).toEqual({ zonas: true, mapas: false, entidades: false, definiciones: false, tiradas: false });
     expect(partesCambiadas({ historial_tiradas: [] })).toEqual({ zonas: false, mapas: false, entidades: false, definiciones: false, tiradas: true });
+    expect(partesCambiadas({ mapa_visible_cambiado: true, mapa_visible: 3 })).toEqual({ zonas: false, mapas: true, entidades: false, definiciones: false, tiradas: false });
+  });
+
+  it("el mapa que debe ver el jugador es el del host: llega por los cambios, y puede quedarse en ninguno", () => {
+    let v = aplicarCambios(vistaVacia(), { mapa_visible_cambiado: true, mapa_visible: 4 });
+    expect(v.mapa_visible).toBe(4);
+    v = aplicarCambios(v, { zonas: [zona(1)] }); // otros cambios no lo tocan
+    expect(v.mapa_visible).toBe(4);
+    v = aplicarCambios(v, { mapa_visible_cambiado: true }); // ya no hay ninguno
+    expect(v.mapa_visible).toBeNull();
   });
 });
 
 describe("réplica: contesta los comandos de la app como lo haría Rust", () => {
   const chat = [{ total: 9, comando: "1d10 (9)", hora: "10:00", jugador: 1, autor: "Ana" }];
   const vista = { zonas: [zona(1), zona(2)], mapas: [mapa(1, 1), mapa(2, 2), mapa(3, 1)], instancias: [inst(5)], entidades: [{ id: 9 }] as any, definiciones: [{ id: 1 }] as any, historial_tiradas: chat };
+
+  it("obtener_mapa_visible da el mapa del host (de cualquier zona) o, si aún no hay, el primero que ve", () => {
+    expect((responder("obtener_mapa_visible", {}, { ...vista, mapa_visible: 2 }) as any).id).toBe(2);
+    expect((responder("obtener_mapa_visible", {}, { ...vista, mapa_visible: null }) as any).id).toBe(1);
+    expect((responder("obtener_mapa_visible", {}, { ...vista, mapa_visible: 99 }) as any).id).toBe(1);
+    expect(responder("obtener_mapa_visible", {}, { ...vista, mapas: [] })).toBeNull();
+  });
 
   it("las lecturas salen de la réplica (copias, para que nadie la cambie sin querer)", () => {
     expect(responder("obtener_zonas", {}, vista)).toEqual(vista.zonas);
