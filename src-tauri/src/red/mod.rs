@@ -48,6 +48,10 @@ pub const URL_CLIENTE: &str = match option_env!("OPENROLL_URL_CLIENTE") {
 /// Fallos de contraseña permitidos por conexión antes de echarla, y en total por minuto.
 const FALLOS_POR_CONEXION: u32 = 5;
 const FALLOS_POR_MINUTO: usize = 20;
+/// Jugadores nuevos por minuto (cada alta queda en la partida para siempre).
+const ALTAS_POR_MINUTO: usize = 5;
+/// Conexiones que pueden estar a la vez saludando o escribiendo su nombre (sin ser aún nadie).
+pub(crate) const MAX_SIN_IDENTIFICAR: usize = 16;
 
 /// En qué punto está la sala (lo enseña la ventana «Configuración de sala»).
 #[derive(Serialize, Clone, Debug, PartialEq)]
@@ -98,6 +102,8 @@ struct SalaAbierta {
     sesiones: HashMap<IdJugador, String>,
     /// Fallos de contraseña del último minuto, de cualquier conexión.
     fallos: VecDeque<Instant>,
+    /// Altas de jugadores nuevos del último minuto.
+    altas: VecDeque<Instant>,
     apagar_servidor: Option<oneshot::Sender<()>>,
     proceso_tunel: Option<tokio::process::Child>,
     /// Imágenes que ha subido cada jugador en esta sala (rutas relativas): solo él las puede ver y usar en
@@ -138,6 +144,17 @@ pub struct Red {
     /// sala, se le expulsa o cambia el enlace) se anulan con `limpiador`, para no dejar ids reservados.
     borradores: Mutex<HashMap<IdJugador, HashSet<u16>>>,
     limpiador: Mutex<Option<Limpiador>>,
+    /// Conexiones que aún no son ningún jugador (ver `MAX_SIN_IDENTIFICAR`).
+    sin_identificar: std::sync::atomic::AtomicUsize,
+}
+
+/// Una plaza de conexión sin identificar; se libera sola al soltarla.
+pub(crate) struct PlazaSaludo<'a>(&'a Red);
+
+impl Drop for PlazaSaludo<'_> {
+    fn drop(&mut self) {
+        self.0.sin_identificar.fetch_sub(1, Ordering::Relaxed);
+    }
 }
 
 type Limpiador = Arc<dyn Fn(Vec<u16>) + Send + Sync>;
@@ -193,7 +210,15 @@ impl Red {
             ejecutor: Mutex::new(None),
             borradores: Mutex::new(HashMap::new()),
             limpiador: Mutex::new(None),
+            sin_identificar: std::sync::atomic::AtomicUsize::new(0),
         }
+    }
+
+    /// Ocupa una plaza para saludar. `None` si ya hay demasiadas conexiones sin identificar.
+    pub(crate) fn plaza_saludo(&self) -> Option<PlazaSaludo<'_>> {
+        let antes = self.sin_identificar.fetch_add(1, Ordering::Relaxed);
+        let plaza = PlazaSaludo(self);
+        (antes < MAX_SIN_IDENTIFICAR).then_some(plaza)
     }
 
     pub fn poner_limpiador(&self, f: impl Fn(Vec<u16>) + Send + Sync + 'static) {
@@ -333,6 +358,7 @@ impl Red {
                 sesiones: HashMap::new(),
                 subidas: HashMap::new(),
                 fallos: VecDeque::new(),
+                altas: VecDeque::new(),
                 apagar_servidor: None,
                 proceso_tunel: None,
                 generacion,
@@ -412,9 +438,22 @@ impl Red {
         if let Some(mut p) = s.proceso_tunel.take() {
             let _ = p.start_kill();
         }
+        let subidas: Vec<String> = s.subidas.drain().flat_map(|(_, r)| r).collect();
+        let dir = s.dir.clone();
         drop(s);
         self.anular_borradores(None);
+        self.descartar_subidas(&dir, subidas);
         self.avisar();
+    }
+
+    /// Borra del disco las imágenes que subieron los jugadores y no usa nada de la partida (una foto subida y
+    /// luego no guardada en ninguna ficha). Sin `dentro` cogido: coge el estado (orden estado → red).
+    fn descartar_subidas(&self, dir: &std::path::Path, rutas: Vec<String>) {
+        if rutas.is_empty() {
+            return;
+        }
+        let est = self.estado_partida();
+        crate::tablero_general::recursos::descartar(dir, &est, &rutas);
     }
 
     // ------------------------------------------------------------------
@@ -450,14 +489,16 @@ impl Red {
             s.regenerar();
             Ok(())
         })?;
+        let mut subidas = (PathBuf::new(), Vec::new());
         if let Some(s) = self.dentro().as_mut() {
             s.sesiones.clear();
-            s.subidas.clear();
+            subidas = (s.dir.clone(), s.subidas.drain().flat_map(|(_, r)| r).collect());
             for (_, c) in s.conexiones.drain() {
                 let _ = c.enviar.send(MensajeHost::Rechazado { motivo: "El host ha cambiado el enlace de la sala".into() });
             }
         }
         self.anular_borradores(None);
+        self.descartar_subidas(&subidas.0, subidas.1);
         self.avisar();
         Ok(())
     }
@@ -472,14 +513,16 @@ impl Red {
             s.revocar(id);
             Ok(())
         })?;
+        let mut subidas = (PathBuf::new(), Vec::new());
         if let Some(c) = self.dentro().as_mut().and_then(|s| {
             s.sesiones.remove(&id);
-            s.subidas.remove(&id);
+            subidas = (s.dir.clone(), s.subidas.remove(&id).unwrap_or_default().into_iter().collect());
             s.conexiones.remove(&id)
         }) {
             let _ = c.enviar.send(MensajeHost::Rechazado { motivo: "El host te ha sacado de la sala".into() });
         }
         self.anular_borradores(Some(id));
+        self.descartar_subidas(&subidas.0, subidas.1);
         self.avisar();
         Ok(())
     }
@@ -564,6 +607,21 @@ impl Red {
         s.fallos.len() <= FALLOS_POR_MINUTO
     }
 
+    /// Anota un alta nueva si no se pasó del límite por minuto. `false`: ahora no se admiten más.
+    fn anotar_alta(&self) -> bool {
+        let mut dentro = self.dentro();
+        let Some(s) = dentro.as_mut() else { return false };
+        let ahora = Instant::now();
+        while s.altas.front().is_some_and(|t| ahora.duration_since(*t) > Duration::from_secs(60)) {
+            s.altas.pop_front();
+        }
+        if s.altas.len() >= ALTAS_POR_MINUTO {
+            return false;
+        }
+        s.altas.push_back(ahora);
+        true
+    }
+
     fn demasiados_fallos(&self) -> bool {
         let dentro = self.dentro();
         let Some(s) = dentro.as_ref() else { return true };
@@ -611,7 +669,14 @@ impl Red {
     fn jugador_de_sesion(&self, sesion: &str) -> Option<IdJugador> {
         let dentro = self.dentro();
         let s = dentro.as_ref()?;
-        s.sesiones.iter().find(|(_, x)| x.as_str() == sesion).map(|(id, _)| *id)
+        // Se recorren todas en tiempo constante (que el tiempo no diga cuánto se acertó)
+        let mut encontrado = None;
+        for (id, x) in &s.sesiones {
+            if sala::iguales(x, sesion) {
+                encontrado = Some(*id);
+            }
+        }
+        encontrado
     }
 
     /// Carpeta de la partida de la sala abierta.
@@ -635,6 +700,7 @@ impl Red {
             sesiones: HashMap::new(),
             subidas: HashMap::new(),
             fallos: VecDeque::new(),
+            altas: VecDeque::new(),
             apagar_servidor: None,
             proceso_tunel: None,
             generacion: 0,
@@ -656,6 +722,7 @@ impl Red {
             sesiones: HashMap::new(),
             subidas: HashMap::new(),
             fallos: VecDeque::new(),
+            altas: VecDeque::new(),
             apagar_servidor: None,
             proceso_tunel: None,
             generacion: 0,

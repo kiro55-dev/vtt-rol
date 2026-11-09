@@ -19,6 +19,13 @@ pub struct Destino {
     pub casilla: Casilla,
 }
 
+/// El menor id de instancia que no usa nadie (ni una activa ni una de la papelera).
+fn id_instancia_libre(est: &EstadoPartida) -> Option<u16> {
+    let mut usados: std::collections::HashSet<u16> = est.instancias_activas.iter().map(|i| i.id_instancia).collect();
+    usados.extend(papelera::ids_instancias(est));
+    (1..=u16::MAX).find(|id| !usados.contains(id))
+}
+
 /// Instancia una ficha del banco.
 ///  * Si es ÚNICA y ya tiene instancia, se reutiliza esa (mismo id y mismos valores actuales; solo
 ///    cambian el sitio y la copia de la ficha).
@@ -41,7 +48,12 @@ pub fn instanciar(est: &EstadoPartida, id_entidad: u16, destino: Option<Destino>
     let reservada = papelera::reservados(est).instancia;
     let id_instancia = match est.instancias_activas.iter().map(|i| i.id_instancia).chain([reservada]).max().filter(|&m| m > 0) {
         None => 1,
-        Some(m) => m.checked_add(1).ok_or("No caben más instancias")?,
+        Some(m) => match m.checked_add(1) {
+            Some(id) => id,
+            // Se llegó al último id: se reutiliza el menor libre (ni activo ni en la papelera), así nadie puede
+            // dejar la partida sin ids creando y borrando instancias
+            None => id_instancia_libre(est).ok_or("No caben más instancias")?,
+        },
     };
     Ok(DeltaPartida::InstanciaCreada(Instancia {
         id_instancia,
@@ -265,6 +277,17 @@ mod tests {
         let d = construir(e).unwrap();
         e.aplicar_delta(&d);
         d
+    }
+
+    #[test]
+    fn al_llegar_al_ultimo_id_se_reutiliza_el_menor_libre() {
+        let mut e = estado();
+        hacer(&mut e, |e| instanciar(e, 1, None));
+        let DeltaPartida::InstanciaCreada(mut ultima) = instanciar(&e, 1, None).unwrap() else { panic!() };
+        ultima.id_instancia = u16::MAX;
+        e.aplicar_delta(&DeltaPartida::InstanciaCreada(ultima));
+        let DeltaPartida::InstanciaCreada(nueva) = instanciar(&e, 1, None).unwrap() else { panic!("debía crearla") };
+        assert_eq!(nueva.id_instancia, 2, "el 1 está ocupado y el 65535 también");
     }
 
     #[test]

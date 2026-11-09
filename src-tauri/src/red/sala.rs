@@ -76,7 +76,7 @@ fn sha256_hex(texto: &str) -> String {
 }
 
 /// Igualdad en tiempo constante (no revela por el tiempo cuántos caracteres acertó quien prueba).
-fn iguales(a: &str, b: &str) -> bool {
+pub(crate) fn iguales(a: &str, b: &str) -> bool {
     a.len() == b.len() && bool::from(a.as_bytes().ct_eq(b.as_bytes()))
 }
 

@@ -975,9 +975,33 @@ fn validar_parametros(defs: &[DefinicionParametro], parametros: &[Parametro]) ->
     Ok(())
 }
 
+/// Topes de lo que se escribe en una ficha (también llegan de los jugadores: sin ellos cada guardado podría
+/// meter medio mega en el log de deltas).
+pub const MAX_NOMBRE_FICHA: usize = 100;
+pub const MAX_TEXTO_PARAMETRO: usize = 2000;
+pub const MAX_ADJUNTOS_FICHA: usize = 50;
+
 fn validar_entidad(est: &EstadoPartida, dir: &Path, e: &Entidad) -> Result<(), String> {
     if e.nombre.trim().is_empty() {
         return Err("La ficha necesita un nombre".into());
+    }
+    if e.nombre.chars().count() > MAX_NOMBRE_FICHA {
+        return Err(format!("El nombre de la ficha no puede pasar de {MAX_NOMBRE_FICHA} caracteres"));
+    }
+    if e.nombre.chars().any(jugadores::caracter_enganoso) {
+        return Err("El nombre de la ficha tiene caracteres no permitidos".into());
+    }
+    for (d, p) in est.definiciones_parametros.iter().zip(&e.parametros) {
+        if matches!(&p.valor, ValorParametro::Texto(t) if t.chars().count() > MAX_TEXTO_PARAMETRO) {
+            return Err(format!("{}: el texto no puede pasar de {MAX_TEXTO_PARAMETRO} caracteres", d.clave));
+        }
+    }
+    let adjuntos: Vec<&String> = e.archivos_adjuntos.iter().flatten().collect();
+    if adjuntos.len() > MAX_ADJUNTOS_FICHA {
+        return Err(format!("Una ficha no puede tener más de {MAX_ADJUNTOS_FICHA} archivos"));
+    }
+    if adjuntos.iter().collect::<std::collections::HashSet<_>>().len() != adjuntos.len() {
+        return Err("Hay un archivo adjunto repetido".into());
     }
     validar_parametros(&est.definiciones_parametros, &e.parametros)?;
     if let Cuerpo::Grande(dim) = &e.cuerpo {

@@ -42,9 +42,16 @@ const MAX_MENSAJE: usize = 512 * 1024;
 const PETICIONES_POR_SEGUNDO: u32 = 30;
 const TIEMPO_SALUDO: Duration = Duration::from_secs(15);
 /// Tiempo para escribir nombre y contraseña.
-const TIEMPO_IDENTIFICARSE: Duration = Duration::from_secs(600);
+const TIEMPO_IDENTIFICARSE: Duration = Duration::from_secs(180);
 /// Cloudflare corta un WebSocket sin tráfico a los 100 s.
 const CADA_PING: Duration = Duration::from_secs(30);
+/// Peticiones de un jugador esperando a hacerse. Con la cola llena se contesta «vas demasiado rápido».
+const MAX_PETICIONES_EN_COLA: usize = 64;
+/// Mensajes para un jugador sin enviar todavía (su conexión no da abasto o no lee). Pasado esto se le corta: al
+/// reconectar recibe su vista entera, así que no pierde nada, y el host no acumula memoria por él.
+const MAX_MENSAJES_PENDIENTES: usize = 2000;
+/// Tiempo máximo para enviar un mensaje a un jugador.
+const TIEMPO_ENVIO: Duration = Duration::from_secs(30);
 
 /// Arranca el servidor en un puerto libre de 127.0.0.1. Devuelve el puerto y cómo apagarlo.
 pub async fn arrancar(red: Arc<Red>) -> Result<(u16, oneshot::Sender<()>), String> {
@@ -109,6 +116,10 @@ async fn rechazar(tx: &mut Emisor, motivo: &str) {
 
 async fn atender(red: Arc<Red>, socket: WebSocket) {
     let (mut tx, mut rx) = socket.split();
+    // Mientras no es nadie ocupa una plaza: así no se pueden abrir cientos de conexiones que se quedan esperando
+    let Some(plaza) = red.plaza_saludo() else {
+        return rechazar(&mut tx, "Hay demasiada gente entrando a la vez: prueba en un momento").await;
+    };
 
     // 1. Reto y Hola: el enlace (y la prueba, si el navegador ya entró antes)
     let reto = crate::red::sala::reto();
@@ -151,6 +162,8 @@ async fn atender(red: Arc<Red>, socket: WebSocket) {
         },
     };
 
+    drop(plaza);
+
     // 3. Bienvenida y vista inicial. A partir de aquí, todo lo que se le envía pasa por su canal.
     let Some(sesion) = red.sesion_de(yo.id) else {
         return rechazar(&mut tx, "La sala se ha cerrado").await;
@@ -173,7 +186,7 @@ async fn atender(red: Arc<Red>, socket: WebSocket) {
 
     // Las acciones del jugador se ejecutan en orden, una tras otra (mover y luego girar no se cruzan), en un
     // hilo aparte porque los comandos son bloqueantes. Cada respuesta va por el mismo canal que los cambios.
-    let (pedidas, mut cola) = mpsc::unbounded_channel::<(u32, serde_json::Value)>();
+    let (pedidas, mut cola) = mpsc::channel::<(u32, serde_json::Value)>(MAX_PETICIONES_EN_COLA);
     let (red2, jugador) = (red.clone(), yo.id);
     tokio::spawn(async move {
         while let Some((id, peticion)) = cola.recv().await {
@@ -198,7 +211,8 @@ async fn atender(red: Arc<Red>, socket: WebSocket) {
             m = salida.recv() => {
                 let Some(m) = m else { break };
                 let fin = matches!(m, MensajeHost::Rechazado { .. } | MensajeHost::SalaCerrada);
-                if enviar(&mut tx, &m).await.is_err() || fin {
+                let enviado = matches!(timeout(TIEMPO_ENVIO, enviar(&mut tx, &m)).await, Ok(Ok(())));
+                if !enviado || fin || salida.len() > MAX_MENSAJES_PENDIENTES {
                     break;
                 }
             }
@@ -206,9 +220,8 @@ async fn atender(red: Arc<Red>, socket: WebSocket) {
                 Some(Ok(Message::Text(t))) => {
                     // Lo que no se entiende se ignora; una acción pasa por el límite y por la cola
                     if let Ok(MensajeCliente::Pedir { id, peticion }) = serde_json::from_str(t.as_str()) {
-                        if limite.permite() {
-                            let _ = pedidas.send((id, peticion));
-                        } else {
+                        let aceptada = limite.permite() && pedidas.try_send((id, peticion)).is_ok();
+                        if !aceptada {
                             let _ = avisos.send(MensajeHost::Respuesta { id, ok: None, error: Some("Vas demasiado rápido".into()) });
                         }
                     }
@@ -282,10 +295,16 @@ async fn identificar(red: &Arc<Red>, tx: &mut Emisor, rx: &mut Receptor, pide_co
             continue;
         }
 
-        // Alta en la partida (un delta normal, bajo el lock del estado)
+        // Alta en la partida (un delta normal, bajo el lock del estado). Con tope por minuto: solo cuenta la que
+        // se va a hacer de verdad (un nombre repetido no gasta el cupo). Estado → red.
         let alta = {
             let mut est = red.estado_partida();
-            jugadores::registrar(&est, &nombre).map(|delta| {
+            jugadores::registrar(&est, &nombre).and_then(|delta| {
+                if !red.anotar_alta() {
+                    return Err("Están entrando demasiados jugadores nuevos: espera un minuto".to_string());
+                }
+                Ok(delta)
+            }).map(|delta| {
                 let DeltaPartida::JugadorRegistrado(j) = &delta else { unreachable!("registrar da de alta") };
                 let j = j.clone();
                 partida::registrar(&mut est, &red.almacen, delta);
@@ -910,6 +929,47 @@ mod tests {
         let mut v = std::io::Cursor::new(Vec::new());
         image::RgbaImage::new(2, 2).write_to(&mut v, image::ImageFormat::Png).unwrap();
         v.into_inner()
+    }
+
+    #[tokio::test]
+    async fn una_foto_subida_que_no_usa_nadie_se_borra_al_cerrar_la_sala() {
+        let sala = sala_con_app("srv_subida_huerfana").await;
+        let (_ana, _, sesion) = entrar(&sala, "Ana").await;
+        let r = reqwest::Client::new()
+            .post(format!("http://127.0.0.1:{}/subir?sesion={sesion}&ext=png", sala.puerto))
+            .header("origin", sala.red.origenes[0].clone())
+            .body(png())
+            .send()
+            .await
+            .unwrap();
+        let ruta = r.json::<Value>().await.unwrap()["ruta"].as_str().unwrap().to_string();
+        let archivo = sala.estado().almacen.dir().join(&ruta);
+        assert!(archivo.is_file());
+        sala.red.cerrar();
+        assert!(!archivo.exists(), "no la usaba ninguna ficha: se borra");
+    }
+
+    #[tokio::test]
+    async fn no_se_pueden_abrir_conexiones_sin_identificar_sin_fin() {
+        let (red, puerto) = red_de_prueba("srv_sin_identificar", None).await;
+        let mut esperando = Vec::new();
+        for _ in 0..crate::red::MAX_SIN_IDENTIFICAR {
+            esperando.push(conectar_con_reto(puerto, &origen(&red)).await);
+        }
+        let mut otra = conectar(puerto, &origen(&red)).await.unwrap();
+        assert!(matches!(leer(&mut otra).await, MensajeHost::Rechazado { .. }), "ya hay demasiadas esperando");
+        drop(esperando);
+        // Al irse, las plazas se liberan (dale un momento al servidor para ver que se cerraron)
+        let mut entra = None;
+        for _ in 0..50 {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+            let mut c = conectar(puerto, &origen(&red)).await.unwrap();
+            if matches!(leer(&mut c).await, MensajeHost::Reto { .. }) {
+                entra = Some(c);
+                break;
+            }
+        }
+        assert!(entra.is_some(), "se puede volver a entrar");
     }
 
     #[tokio::test]

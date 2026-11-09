@@ -100,6 +100,7 @@
               <input
                 type="text"
                 class="input-renombrar"
+                maxlength="80"
                 bind:value={textoEdicion}
                 use:enfocar
                 onblur={() => confirmarRenombrado(i)}

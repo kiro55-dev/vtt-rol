@@ -91,6 +91,15 @@ fn guardar_imagen(dir_datos: &Path, bytes: &[u8], ext: &str) -> Result<String, S
 
 /// Tamaño máximo de una foto que sube un jugador.
 pub const MAX_BYTES_SUBIDA: usize = 8 * 1024 * 1024;
+/// Medidas máximas de una foto subida: pocos MB comprimidos pueden ser una imagen gigantesca («bomba») que cuelga a
+/// quien la abra (el host al hacer la miniatura o al verla entera, y los navegadores de los demás).
+pub const MAX_LADO_SUBIDA: u32 = 8192;
+pub const MAX_PIXELES_SUBIDA: u64 = 40_000_000;
+
+/// Medidas que dice la cabecera de una imagen en memoria (sin decodificarla).
+pub fn dimensiones_de_bytes(bytes: &[u8]) -> Option<(u32, u32)> {
+    ImageReader::new(std::io::Cursor::new(bytes)).with_guessed_format().ok()?.into_dimensions().ok()
+}
 
 /// La foto de una ficha que SUBE un jugador desde su navegador (no hay ruta del disco del host). Solo imágenes
 /// rasterizadas (nada de SVG, que puede llevar scripts) y cuyo contenido sea de verdad una imagen de ese tipo.
@@ -117,6 +126,10 @@ pub fn importar_bytes(dir_datos: &Path, bytes: &[u8], extension: &str) -> Result
     };
     if !esperado.contains(&ext.as_str()) {
         return Err("El archivo no es del tipo que dice su extensión".into());
+    }
+    let (ancho, alto) = dimensiones_de_bytes(bytes).ok_or("La imagen está dañada")?;
+    if ancho == 0 || alto == 0 || ancho > MAX_LADO_SUBIDA || alto > MAX_LADO_SUBIDA || u64::from(ancho) * u64::from(alto) > MAX_PIXELES_SUBIDA {
+        return Err(format!("La imagen es demasiado grande (máximo {MAX_LADO_SUBIDA}×{MAX_LADO_SUBIDA} píxeles)"));
     }
     guardar_imagen(dir_datos, bytes, &ext)
 }
@@ -163,6 +176,36 @@ mod tests {
         assert!(importar(&datos, &origen.join("script.exe"), Uso::Mapa).is_err());
         assert!(importar(&datos, &origen.join("no_existe.png"), Uso::Mapa).is_err());
         assert!(importar(&datos, &origen, Uso::Mapa).is_err()); // un directorio
+    }
+
+    /// Un BMP que dice medir `ancho`×`alto` (solo la cabecera: no hace falta que traiga los píxeles).
+    fn bmp_que_dice(ancho: i32, alto: i32) -> Vec<u8> {
+        let mut b = Vec::new();
+        b.extend_from_slice(b"BM");
+        b.extend_from_slice(&(54u32 + 16).to_le_bytes());
+        b.extend_from_slice(&[0; 4]);
+        b.extend_from_slice(&54u32.to_le_bytes());
+        b.extend_from_slice(&40u32.to_le_bytes());
+        b.extend_from_slice(&ancho.to_le_bytes());
+        b.extend_from_slice(&alto.to_le_bytes());
+        b.extend_from_slice(&1u16.to_le_bytes());
+        b.extend_from_slice(&24u16.to_le_bytes());
+        b.extend_from_slice(&[0; 24]);
+        b.extend_from_slice(&[0; 16]);
+        b
+    }
+
+    #[test]
+    fn una_foto_subida_gigantesca_se_rechaza_aunque_pese_poco() {
+        let datos = dir_temporal("img_bomba");
+        assert_eq!(dimensiones_de_bytes(&bmp_que_dice(20000, 20000)), Some((20000, 20000)));
+        let e = importar_bytes(&datos, &bmp_que_dice(20000, 20000), "bmp").unwrap_err();
+        assert!(e.contains("demasiado grande"), "{e}");
+        assert!(importar_bytes(&datos, &bmp_que_dice(8000, 8000), "bmp").is_err(), "64 Mpx: pasa del total");
+
+        let mut png = Vec::new();
+        image::RgbaImage::new(64, 32).write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png).unwrap();
+        assert!(importar_bytes(&datos, &png, "png").is_ok(), "una normal sí");
     }
 
     #[test]

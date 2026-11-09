@@ -68,6 +68,31 @@ https://kiro55-dev.github.io/vtt-rol/#t=…&s=…&k=…
 - **El chat de tiradas** (fase 2) solo aceptará tiradas: el comando viaja como texto, el host lo interpreta con
   `parsear_comando` y el desglose lo forma Rust con números; además el front lo pinta con `desgloseSeguro`.
 - **Adjuntos de jugadores** (fase 2): solo `.txt` (`adjunto_permitido_a_jugador`). PDF prohibidos.
+- **Topes contra el abuso** (quien tenga el enlace no puede romper la partida ni llenar el disco del host):
+  - Altas: máximo `MAX_JUGADORES` (32) en la partida y `ALTAS_POR_MINUTO` (5); como mucho `MAX_SIN_IDENTIFICAR`
+    (16) conexiones a la vez sin ser nadie, con 180 s para escribir el nombre.
+  - Nombres: sin caracteres invisibles ni de control o de dirección (U+202E…), sin repetir el de otro jugador
+    (da igual mayúsculas y espacios) y sin los reservados («rollmaster», «host», «máster»…), para que nadie se haga
+    pasar por otro en el chat (`jugadores::registrar`). Los nombres de ficha tampoco admiten esos caracteres.
+  - Instancias: sin ids repetidos en una petición y máximo `MAX_INSTANCIAS_PROPIAS` (30) instancias de sus
+    fichas a la vez. Si los ids de instancia llegan a 65535 se reutiliza el menor libre (`instancias.rs`).
+  - Archivos: máximo `MAX_ADJUNTOS_JUGADOR` (10) archivos y 2 MiB por carpeta de ficha con lo que crea un jugador;
+    en cualquier ficha, nombre ≤ 100 caracteres, texto de parámetro ≤ 2000 y ≤ 50 adjuntos sin repetir
+    (`validar_entidad`).
+  - Imágenes subidas: ≤ 8 MiB, ≤ 8192 px por lado y ≤ 40 Mpx (una «bomba» de pocos MB colgaría a quien la abra);
+    la miniatura propia de una ficha, WebP de ≤ 512 px. Las subidas que ninguna ficha usa se borran al cerrar la
+    sala, al expulsar al jugador y al generar enlace nuevo (`recursos::descartar`, nunca borra lo que se usa).
+  - Colas: máximo 64 peticiones esperando por jugador; si un jugador acumula 2000 mensajes sin recibir (o tarda
+    más de 30 s en uno) se le corta y al volver recibe su vista entera.
+- **Webview del host**: CSP en `tauri.conf.json` (solo scripts propios, imágenes de `asset:`/`blob:`/`data:`) y el
+  protocolo `asset:` limitado a la carpeta de datos (`$APPDATA/**`), así que ni un fallo futuro al pintar texto de
+  un jugador daría acceso al resto del disco. En `tauri dev` no hay CSP (`devCsp: null`): **prueba la build de
+  release** tras tocar cómo se cargan scripts, estilos o imágenes.
+- **Privacidad**: las imágenes se sirven tal cual. Una foto de móvil puede llevar la ubicación GPS en sus metadatos
+  EXIF: si es tuya, quítaselos antes de usarla como fondo o foto de una ficha que vean los jugadores.
+- **El origen de la página** (`https://<usuario>.github.io`) lo comparten todas las páginas de GitHub de esa
+  cuenta, también su `localStorage` (donde vive el token). No publiques en esa cuenta otras páginas con código de
+  terceros, o pon la app de los jugadores en un dominio propio.
 
 ## Publicar la app de los jugadores (una vez)
 

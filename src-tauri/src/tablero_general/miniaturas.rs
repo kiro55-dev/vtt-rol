@@ -103,7 +103,13 @@ pub fn asegurar(dir_datos: &Path, ruta_imagen: &str, tipo: Tipo) -> Result<Optio
 
 /// Decodifica respetando la orientación EXIF (las fotos de móvil), como hace el navegador con la original.
 fn decodificar(ruta: &Path) -> Option<DynamicImage> {
-    let lector = ImageReader::open(ruta).ok()?.with_guessed_format().ok()?;
+    let mut lector = ImageReader::open(ruta).ok()?.with_guessed_format().ok()?;
+    // Topes explícitos: una imagen gigantesca no se reduce (se usa la original) en vez de reservar gigas
+    let mut limites = image::Limits::default();
+    limites.max_image_width = Some(16384);
+    limites.max_image_height = Some(16384);
+    limites.max_alloc = Some(512 * 1024 * 1024);
+    lector.limits(limites);
     let mut decodificador = lector.into_decoder().ok()?;
     let orientacion = decodificador.orientation().ok();
     let mut imagen = DynamicImage::from_decoder(decodificador).ok()?;
@@ -123,6 +129,8 @@ fn decodificar(ruta: &Path) -> Option<DynamicImage> {
 
 /// Lo máximo que se acepta (una miniatura de 128x128 son unos pocos KB).
 pub const MAX_BYTES_MINIATURA_FICHA: usize = 512 * 1024;
+/// Lado máximo de esa miniatura (el front la hace de 128 px).
+const MAX_LADO_MINIATURA_FICHA: u32 = 512;
 
 fn prefijo_de_ficha(id: u16) -> String {
     format!("entidad_{id}_")
@@ -136,6 +144,11 @@ pub fn guardar_de_ficha(dir_datos: &Path, id: u16, datos: &[u8]) -> Result<Strin
     }
     if datos.len() < 12 || &datos[0..4] != b"RIFF" || &datos[8..12] != b"WEBP" {
         return Err("La miniatura no es un WebP".into());
+    }
+    // Una cabecera WebP puede decir 16383×16383: quien la pintara reservaría 1 GB. Una miniatura es pequeña.
+    match crate::tablero_general::imagenes::dimensiones_de_bytes(datos) {
+        Some((w, h)) if w > 0 && h > 0 && w <= MAX_LADO_MINIATURA_FICHA && h <= MAX_LADO_MINIATURA_FICHA => {}
+        _ => return Err("La miniatura no es válida o es demasiado grande".into()),
     }
     let carpeta = dir_datos.join("miniaturas/ficha");
     fs::create_dir_all(&carpeta).map_err(|e| format!("No se pudo crear la carpeta de miniaturas: {e}"))?;
@@ -266,9 +279,21 @@ mod tests {
         assert!(!d.join("miniaturas/ficha/abc.webp").exists() && !d.join("miniaturas/mapa/abc.webp").exists());
     }
 
+    /// Un WebP de verdad de 8×8 del color `relleno` (como el que hace el front al recortar).
     fn webp_falso(relleno: u8) -> Vec<u8> {
-        let mut v = b"RIFF\0\0\0\0WEBP".to_vec();
-        v.push(relleno);
+        let img = image::RgbaImage::from_pixel(8, 8, image::Rgba([relleno, 0, 0, 255]));
+        webp::Encoder::from_rgba(img.as_raw(), 8, 8).encode_lossless().to_vec()
+    }
+
+    /// Solo la cabecera VP8X de un WebP que dice medir `lado`×`lado`.
+    fn webp_que_dice(lado: u32) -> Vec<u8> {
+        let mut v = b"RIFF".to_vec();
+        v.extend_from_slice(&22u32.to_le_bytes());
+        v.extend_from_slice(b"WEBPVP8X");
+        v.extend_from_slice(&10u32.to_le_bytes());
+        v.extend_from_slice(&[0; 4]);
+        v.extend_from_slice(&(lado - 1).to_le_bytes()[..3]);
+        v.extend_from_slice(&(lado - 1).to_le_bytes()[..3]);
         v
     }
 
@@ -294,6 +319,8 @@ mod tests {
         let mut grande = webp_falso(0);
         grande.resize(MAX_BYTES_MINIATURA_FICHA + 1, 0);
         assert!(guardar_de_ficha(&d, 1, &grande).is_err());
+        assert!(guardar_de_ficha(&d, 1, &webp_que_dice(16000)).is_err(), "cabecera de un WebP gigantesco");
+        assert!(guardar_de_ficha(&d, 1, b"RIFF\0\0\0\0WEBPbasura").is_err(), "cabecera sin medidas");
         assert!(!d.join("miniaturas").exists(), "no se deja nada");
     }
 }

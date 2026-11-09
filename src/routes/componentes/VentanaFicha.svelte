@@ -89,7 +89,7 @@
       <div class="columna-campos">
         <div class="fila">
           <label for="f-nombre">Nombre:</label>
-          <input id="f-nombre" type="text" class="input-texto" bind:value={ficha.nombre} />
+          <input id="f-nombre" type="text" class="input-texto" maxlength="100" bind:value={ficha.nombre} />
         </div>
 
         <!-- Parámetros de la partida: los numéricos de dos en dos y, debajo de cada pareja, las
@@ -127,6 +127,7 @@
               id="f-param-{d.id}"
               type="text"
               class="input-texto"
+              maxlength="2000"
               bind:value={() => editor.texto(d.id), (v) => editor.ponerTexto(d.id, v)}
             />
           </div>

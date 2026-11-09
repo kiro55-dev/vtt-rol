@@ -153,7 +153,8 @@ pub fn renombrar(
 
     let ext_original = path_viejo.extension().and_then(|e| e.to_str()).unwrap_or("txt").to_string();
 
-    let nombre_saneado = nuevo_nombre
+    let sin_invisibles: String = nuevo_nombre.chars().filter(|c| !crate::tablero_general::jugadores::caracter_enganoso(*c)).collect();
+    let nombre_saneado = sin_invisibles
         .trim()
         .replace(|c: char| matches!(c, '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|'), "_")
         .trim_end_matches(['.', ' '])
@@ -266,6 +267,26 @@ pub fn borrar_archivo(dir_datos: &Path, ruta: &str) -> bool {
         let _ = fs::remove_dir(padre); // solo funciona si está vacía
     }
     borrado
+}
+
+/// Cuántos archivos hay en la carpeta de una ficha y cuánto ocupan en total (sin contar `sin_contar`, el que se
+/// va a sobrescribir). Para los topes de lo que crea un jugador.
+pub fn uso_carpeta_entidad(dir_datos: &Path, entidad_id: u16, sin_contar: Option<&str>) -> (usize, u64) {
+    let Ok(lista) = fs::read_dir(dir_datos.join(format!("archivos/entidad_{entidad_id}"))) else { return (0, 0) };
+    let mut n = 0;
+    let mut bytes = 0;
+    for e in lista.flatten() {
+        if sin_contar.is_some_and(|s| e.file_name().to_str() == Some(s)) {
+            continue;
+        }
+        if let Ok(m) = e.metadata() {
+            if m.is_file() {
+                n += 1;
+                bytes += m.len();
+            }
+        }
+    }
+    (n, bytes)
 }
 
 /// Borra la carpeta entera de una ficha. Quien llama debe asegurarse de que esa ficha ya no existe.

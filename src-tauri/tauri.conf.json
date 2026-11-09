@@ -18,10 +18,11 @@
       }
     ],
     "security": {
-      "csp": null,
+      "csp": "default-src 'self' ipc: http://ipc.localhost; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' asset: http://asset.localhost blob: data:; media-src 'self' asset: http://asset.localhost blob:; connect-src ipc: http://ipc.localhost asset: http://asset.localhost; font-src 'self' data:; object-src 'none'; base-uri 'self'; frame-src 'none'; form-action 'none'",
+      "devCsp": null,
       "assetProtocol": {
         "enable": true,
-        "scope": ["**"]
+        "scope": ["$APPDATA/**"]
       }
     }
   },

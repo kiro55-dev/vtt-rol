@@ -25,14 +25,44 @@ pub const MAX_TEXTO_JUGADOR: usize = 256 * 1024;
 /// que lanzan programas y exploits contra el lector) y no se depende de ningún visor.
 pub const ADJUNTOS_DE_JUGADOR: [&str; 1] = ["txt"];
 
+/// Jugadores que puede tener una partida (cada alta es para siempre: sin tope, quien tenga el enlace podría
+/// registrar miles).
+pub const MAX_JUGADORES: usize = 32;
+
+/// Nombres que nadie puede usar: el chat llama «rollmaster» al host.
+const NOMBRES_RESERVADOS: [&str; 6] = ["rollmaster", "host", "master", "máster", "gm", "dm"];
+
+/// Caracteres invisibles o que cambian la dirección del texto (U+202E da la vuelta a lo que sigue): con ellos un
+/// nombre puede parecer otro. También los de control.
+pub fn caracter_enganoso(c: char) -> bool {
+    c.is_control()
+        || matches!(c, '\u{200B}'..='\u{200F}' | '\u{202A}'..='\u{202E}' | '\u{2060}'..='\u{2069}' | '\u{FEFF}' | '\u{00AD}')
+}
+
+/// Forma de comparar nombres: sin mayúsculas y con los espacios juntos («Ana  » = «ana»).
+fn clave_nombre(nombre: &str) -> String {
+    nombre.split_whitespace().collect::<Vec<_>>().join(" ").to_lowercase()
+}
+
 /// Da de alta a un jugador nuevo con el siguiente id libre (el 0 es del host).
 pub fn registrar(est: &EstadoPartida, nombre: &str) -> Result<DeltaPartida, String> {
-    let nombre = nombre.trim();
+    let limpio: String = nombre.chars().filter(|c| !caracter_enganoso(*c)).collect();
+    let nombre = limpio.split_whitespace().collect::<Vec<_>>().join(" ");
     if nombre.is_empty() {
         return Err("El jugador necesita un nombre".into());
     }
     if nombre.chars().count() > MAX_NOMBRE_JUGADOR {
         return Err(format!("El nombre del jugador no puede pasar de {MAX_NOMBRE_JUGADOR} caracteres"));
+    }
+    let clave = clave_nombre(&nombre);
+    if NOMBRES_RESERVADOS.contains(&clave.as_str()) {
+        return Err("Ese nombre está reservado: elige otro".into());
+    }
+    if est.jugadores.iter().any(|j| clave_nombre(&j.nombre) == clave) {
+        return Err("Ya hay un jugador con ese nombre: elige otro".into());
+    }
+    if est.jugadores.len() >= MAX_JUGADORES {
+        return Err("La partida ya tiene el máximo de jugadores".into());
     }
     let id = est
         .jugadores
@@ -115,6 +145,24 @@ mod tests {
             es_unico: false,
             propietarios,
         }
+    }
+
+    #[test]
+    fn un_nombre_no_puede_suplantar_a_nadie() {
+        let e = estado();
+        let nombre = |n: &str| match registrar(&e, n) {
+            Ok(DeltaPartida::JugadorRegistrado(j)) => Ok(j.nombre),
+            Ok(_) => unreachable!(),
+            Err(m) => Err(m),
+        };
+        assert_eq!(nombre("  Marta   López "), Ok("Marta López".into()));
+        assert_eq!(nombre("Mar\u{202E}ta\u{200B}"), Ok("Marta".into()), "sin invisibles ni cambios de dirección");
+        for malo in ["ana", " ANA ", "Rollmaster", "máster", "\u{202E}", "   "] {
+            assert!(nombre(malo).is_err(), "{malo:?}");
+        }
+        let mut lleno = estado();
+        lleno.jugadores = (1..=MAX_JUGADORES as u16).map(|id| Jugador { id, nombre: format!("J{id}") }).collect();
+        assert!(registrar(&lleno, "Otro").is_err(), "tope de jugadores");
     }
 
     fn estado() -> EstadoPartida {

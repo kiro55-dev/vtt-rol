@@ -17,6 +17,7 @@ use tauri::{AppHandle, Manager, Runtime};
 
 
 use crate::red::Red;
+use crate::tablero_general::archivos;
 use crate::tablero_general::cambios_entidad::{self, CambioEntidad};
 use crate::tablero_general::dados::tirar_dado_de;
 use crate::tablero_general::estado::EstadoPartida;
@@ -26,6 +27,7 @@ use crate::tablero_general::jugadores::{
 };
 use crate::tablero_general::modelos::{normalizar_parametros, ArchivoAdjunto, Entidad, IdJugador, ID_HOST};
 use crate::tablero_general::partida::{self, AppState};
+use crate::tablero_general::recursos;
 use crate::tablero_general::tablero::AvisoTablero;
 
 /// Máximo de fichas o instancias en una sola petición (arrastrar un grupo).
@@ -35,6 +37,32 @@ const MAX_MINIATURA: usize = 256 * 1024;
 const MAX_NOMBRE_ARCHIVO: usize = 80;
 /// Fichas que puede tener un jugador (las que crea él; el host puede darle más).
 const MAX_FICHAS_PROPIAS: usize = 20;
+/// Instancias de sus fichas que puede tener un jugador a la vez (si no, podría llenar el tablero y agotar los ids).
+pub const MAX_INSTANCIAS_PROPIAS: usize = 30;
+/// Archivos y espacio que puede ocupar la carpeta de adjuntos de una ficha con lo que crea un jugador (si no,
+/// podría llenar el disco del host creando .txt sin fin).
+pub const MAX_ADJUNTOS_JUGADOR: usize = 10;
+pub const MAX_BYTES_ADJUNTOS_JUGADOR: u64 = 2 * 1024 * 1024;
+
+/// Si en la carpeta de la ficha `id` cabe un archivo más (`nuevo`) o, con `reemplaza`, ese archivo con
+/// `bytes` bytes en vez de lo que tenía.
+fn cabe_en_carpeta(state: &AppState, id: u16, reemplaza: Option<&str>, bytes: usize) -> Result<(), String> {
+    let (n, ocupado) = archivos::uso_carpeta_entidad(&state.almacen.dir(), id, reemplaza);
+    if reemplaza.is_none() && n >= MAX_ADJUNTOS_JUGADOR {
+        return Err(format!("Una ficha no puede tener más de {MAX_ADJUNTOS_JUGADOR} archivos"));
+    }
+    if ocupado + bytes as u64 > MAX_BYTES_ADJUNTOS_JUGADOR {
+        return Err("Los archivos de esta ficha ocupan demasiado".into());
+    }
+    Ok(())
+}
+
+/// `archivos/entidad_<id>/<nombre>` → (id, nombre). Lo que de verdad se toca en disco (no el id de la ficha que
+/// acompaña al adjunto). `permitida` ya comprobó que la ruta tiene esa forma.
+fn carpeta_y_nombre(ruta: &str) -> Result<(u16, &str), String> {
+    let (id, nombre) = ruta.strip_prefix("archivos/entidad_").and_then(|r| r.split_once('/')).ok_or("Ruta de archivo no válida")?;
+    Ok((id.parse().map_err(|_| "Ruta de archivo no válida")?, nombre))
+}
 
 /// La lista blanca. Las variantes se llaman igual que los comandos de Tauri y los campos igual que sus
 /// argumentos en JS, así el `invoke(cmd, args)` del navegador se envía tal cual: `{ cmd, ...args }`.
@@ -99,6 +127,29 @@ fn grupo_ok(n: usize) -> Result<(), String> {
     if n <= MAX_GRUPO { Ok(()) } else { Err("Demasiadas fichas a la vez".into()) }
 }
 
+/// Sin ids repetidos (la misma ficha 100 veces en una petición).
+fn sin_repetidos(ids: &[u16]) -> Result<(), String> {
+    let distintos: HashSet<&u16> = ids.iter().collect();
+    if distintos.len() == ids.len() { Ok(()) } else { Err("Esa ficha va repetida".into()) }
+}
+
+/// Que con `nuevas` instancias más no pase de `MAX_INSTANCIAS_PROPIAS`. Una única que ya tiene instancia no suma.
+fn caben_instancias(est: &EstadoPartida, j: IdJugador, ids_entidades: &[u16]) -> Result<(), String> {
+    let actuales = est.instancias_activas.iter().filter(|i| i.base.propietarios.contains(&j)).count();
+    let nuevas = ids_entidades
+        .iter()
+        .filter(|id| {
+            let unica = est.banco_entidades.iter().any(|e| e.id == **id && e.es_unico);
+            !(unica && est.instancias_activas.iter().any(|i| i.base.id == **id))
+        })
+        .count();
+    if actuales + nuevas <= MAX_INSTANCIAS_PROPIAS {
+        Ok(())
+    } else {
+        Err(format!("No puedes tener más de {MAX_INSTANCIAS_PROPIAS} fichas en juego"))
+    }
+}
+
 /// De qué ficha es un archivo (`archivos/entidad_<id>/<nombre>.txt`): solo un `.txt` en la carpeta de una ficha
 /// del jugador. Devuelve el id de la ficha.
 fn archivo_de_ficha_suya(est: &EstadoPartida, j: IdJugador, ruta: &str, borradores: &HashSet<u16>) -> Result<u16, String> {
@@ -153,6 +204,7 @@ pub fn permitida_con(est: &EstadoPartida, jugador: IdJugador, p: &Peticion, subi
         }
         Peticion::MoverInstancias { ids, id_mapa, .. } => {
             grupo_ok(ids.len())?;
+            sin_repetidos(ids)?;
             mapa_compartido(est, *id_mapa)?;
             ids.iter().try_for_each(|id| instancia_suya(est, jugador, *id))
         }
@@ -162,12 +214,15 @@ pub fn permitida_con(est: &EstadoPartida, jugador: IdJugador, p: &Peticion, subi
         | Peticion::ModificarValorActual { id_instancia, .. } => instancia_suya(est, jugador, *id_instancia),
         Peticion::InstanciarEntidad { id_entidad, destino } => {
             ficha_suya(est, jugador, *id_entidad)?;
-            destino_ok(est, destino)
+            destino_ok(est, destino)?;
+            caben_instancias(est, jugador, &[*id_entidad])
         }
         Peticion::InstanciarEntidades { ids, destino } => {
             grupo_ok(ids.len())?;
+            sin_repetidos(ids)?;
             destino_ok(est, destino)?;
-            ids.iter().try_for_each(|id| ficha_suya(est, jugador, *id))
+            ids.iter().try_for_each(|id| ficha_suya(est, jugador, *id))?;
+            caben_instancias(est, jugador, ids)
         }
         Peticion::ModificarEntidad { entidad } => entidad_modificable(est, jugador, entidad, subidas),
         Peticion::IniciarBorradorEntidad { zona_id, foto_url } => {
@@ -344,14 +399,25 @@ pub fn ejecutar_en(state: &AppState, red: &Red, jugador: IdJugador, p: Peticion)
         Peticion::LeerArchivoTexto { ruta_relativa } => json(partida::leer_archivo_texto_en(ruta_relativa, state)?),
         Peticion::GuardarArchivoTexto { adjunto, contenido } => {
             let adjunto = con_ficha_guardada(state, adjunto)?;
+            let (id, nombre) = carpeta_y_nombre(&adjunto.ruta)?;
+            cabe_en_carpeta(state, id, Some(nombre), contenido.len())?;
             json(partida::guardar_archivo_texto_en(adjunto, contenido, state)?)
         }
         Peticion::CrearDocumentoTexto { entidad } => {
             let entidad = ficha_guardada(state, entidad);
+            cabe_en_carpeta(state, entidad.id, None, 0)?;
             json(partida::crear_documento_texto_en(entidad, state)?)
         }
         Peticion::RenombrarArchivoAdjunto { adjunto, nuevo_nombre } => {
             let adjunto = con_ficha_guardada(state, adjunto)?;
+            // Si la partida ya usa el archivo, renombrar hace una COPIA: cuenta como uno más
+            let copia = recursos::esta_referenciada(&state.lock(), &adjunto.ruta);
+            if copia {
+                let (id, _) = carpeta_y_nombre(&adjunto.ruta)?;
+                let camino = archivos::ruta_segura(&state.almacen.dir(), &adjunto.ruta, &["archivos"])?;
+                let tamano = std::fs::metadata(camino).map(|m| m.len() as usize).unwrap_or(0);
+                cabe_en_carpeta(state, id, None, tamano)?;
+            }
             json(partida::renombrar_archivo_adjunto_en(adjunto, nuevo_nombre, state)?)
         }
         Peticion::DescartarArchivosBorrador { rutas } => json(partida::descartar_archivos_borrador_en(rutas, state)),
@@ -491,6 +557,25 @@ mod tests {
     }
 
     #[test]
+    fn un_jugador_no_puede_repetir_fichas_ni_pasar_del_tope_de_instancias() {
+        let mut e = estado();
+        e.banco_entidades.push(ficha(13, vec![1]));
+        assert!(ok(&e, 1, json!({ "cmd": "instanciar_entidades", "ids": [10, 13], "destino": en(1) })).is_ok());
+        assert!(ok(&e, 1, json!({ "cmd": "instanciar_entidades", "ids": [10, 10], "destino": en(1) })).is_err(), "repetida");
+        assert!(ok(&e, 1, json!({ "cmd": "mover_instancias", "ids": [1, 1], "idMapa": 1, "dx": 1, "dy": 0 })).is_err(), "repetida");
+
+        // Ya tiene 1 (la instancia 1): con MAX - 1 más llega justo; una más, no
+        for id in 0..(MAX_INSTANCIAS_PROPIAS as u16 - 1) {
+            e.instancias_activas.push(instancia(100 + id, ficha(10, vec![1]), 1));
+        }
+        assert!(ok(&e, 1, json!({ "cmd": "instanciar_entidad", "idEntidad": 10, "destino": en(1) })).is_err());
+        assert!(ok(&e, 1, json!({ "cmd": "instanciar_entidades", "ids": [13], "destino": null })).is_err());
+        assert!(ok(&e, ID_HOST, json!({ "cmd": "instanciar_entidad", "idEntidad": 10, "destino": en(1) })).is_ok(), "el host no tiene tope");
+        // Las de otro jugador no cuentan
+        assert!(ok(&e, 2, json!({ "cmd": "instanciar_entidad", "idEntidad": 12, "destino": en(1) })).is_ok());
+    }
+
+    #[test]
     fn un_jugador_solo_toca_sus_instancias_y_solo_en_mapas_compartidos() {
         let e = estado();
         assert!(ok(&e, 1, json!({ "cmd": "mover_instancia", "idInstancia": 1, "destino": en(1) })).is_ok());
@@ -601,6 +686,26 @@ mod tests {
         assert!(ok(&e, 1, json!({ "cmd": "crear_documento_texto", "entidad": serde_json::to_value(ficha(11, vec![])).unwrap() })).is_err());
         assert!(ok(&e, 1, json!({ "cmd": "renombrar_archivo_adjunto", "adjunto": adjunto(ruta, 10), "nuevoNombre": "Diario" })).is_ok());
         assert!(ok(&e, 1, json!({ "cmd": "renombrar_archivo_adjunto", "adjunto": adjunto(ruta, 10), "nuevoNombre": "../Diario" })).is_err());
+    }
+
+    #[test]
+    fn la_carpeta_de_una_ficha_tiene_tope_de_archivos_y_de_espacio() {
+        use crate::tablero_general::almacen::{pruebas::dir_temporal, Almacen};
+        let raiz = dir_temporal("pet_tope_adjuntos");
+        let state = AppState::nuevo(EstadoPartida::default(), Almacen::abrir(&raiz).unwrap(), raiz.clone());
+        let carpeta = raiz.join("archivos/entidad_10");
+        std::fs::create_dir_all(&carpeta).unwrap();
+        for i in 0..MAX_ADJUNTOS_JUGADOR - 1 {
+            std::fs::write(carpeta.join(format!("{i}.txt")), b"x").unwrap();
+        }
+        assert!(cabe_en_carpeta(&state, 10, None, 0).is_ok(), "aún cabe uno");
+        std::fs::write(carpeta.join("ultimo.txt"), b"x").unwrap();
+        assert!(cabe_en_carpeta(&state, 10, None, 0).is_err(), "lleno");
+        assert!(cabe_en_carpeta(&state, 10, Some("ultimo.txt"), 1000).is_ok(), "sobrescribir uno que ya está sí");
+        assert!(cabe_en_carpeta(&state, 10, Some("ultimo.txt"), MAX_BYTES_ADJUNTOS_JUGADOR as usize).is_err(), "pero no pasar del espacio");
+        assert!(cabe_en_carpeta(&state, 11, None, 0).is_ok(), "otra ficha, otra carpeta");
+        assert_eq!(carpeta_y_nombre("archivos/entidad_10/a.txt"), Ok((10, "a.txt")));
+        assert!(carpeta_y_nombre("imagenes/x.png").is_err());
     }
 
     #[test]

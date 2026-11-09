@@ -87,6 +87,21 @@ pub fn reservados(est: &EstadoPartida) -> Reservados {
     r
 }
 
+/// Todos los ids de instancia que guarda la papelera (para no dárselos a una instancia nueva).
+pub fn ids_instancias(est: &EstadoPartida) -> Vec<u16> {
+    est.papelera
+        .iter()
+        .flat_map(|g| &g.borrados)
+        .flat_map(|b| match b {
+            Borrado::Entidad { instancias, .. } => instancias.iter().chain([].iter()),
+            Borrado::Mapa { instancias, retiradas, .. } | Borrado::Zona { instancias, retiradas, .. } => {
+                instancias.iter().chain(retiradas.iter())
+            }
+        })
+        .map(|i| i.id_instancia)
+        .collect()
+}
+
 /// Ids de las fichas que hay en la papelera (para borrar su carpeta de adjuntos al vaciarla).
 pub fn ids_entidades(est: &EstadoPartida) -> Vec<u16> {
     est.papelera
