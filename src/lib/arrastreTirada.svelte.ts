@@ -6,7 +6,7 @@
 // activas» y la fila de ese parámetro en la caja de parámetros.
 //
 // El cambio pasa por `partida.cambiarValorActual`, así que se ve al momento, se queda entre 0 y el
-// máximo y se manda a Rust agrupado (un solo delta, igual que la rueda del ratón).
+// máximo y se manda a Rust al soltar, sin esperar (a diferencia de la rueda, que agrupa).
 import { partida } from "$lib/partida.svelte";
 
 /** Píxeles que hay que mover el ratón para que una pulsación sea un arrastre. */
@@ -96,7 +96,11 @@ class ArrastreTirada {
       setTimeout(() => (this.#ignorarClic = false), 0);
       if (ev.button === 2) silenciarMenuContextual();
       const destino = destinoPermitido(document.elementFromPoint(ev.clientX, ev.clientY));
-      if (destino) partida.cambiarValorActual(destino.idInstancia, destino.idDefinicion, delta);
+      if (destino) {
+        partida.cambiarValorActual(destino.idInstancia, destino.idDefinicion, delta);
+        // Una tirada es un cambio suelto (no una ráfaga como la rueda): se manda ya, sin esperar
+        void partida.guardarValoresPendientes();
+      }
     };
     const cancelar = (ev: Event) => {
       if (ev instanceof KeyboardEvent && ev.key !== "Escape") return;

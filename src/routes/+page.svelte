@@ -145,10 +145,9 @@
     {#if partida.avisos}
       <div class="aviso-linea" role="status">{partida.avisos}</div>
     {/if}
-    {#if esJugador && conexion}
+    {#if esJugador && conexion?.estado.tipo === "reconectando"}
       <div class="yo-jugador">
-        Conectado como <b>{conexion.yo?.nombre}</b>
-        {#if conexion.estado.tipo === "reconectando"}<span class="reconectando"> · reconectando…</span>{/if}
+        {#if conexion.estado.tipo === "reconectando"}<span class="reconectando">Reconectando…</span>{/if}
       </div>
     {/if}
   </main>
@@ -192,7 +191,6 @@
     background: rgba(24, 24, 27, 0.85); border: 1px solid #3f3f46; border-radius: 4px; padding: 3px 10px;
     font-size: 11px; color: #a1a1aa;
   }
-  .yo-jugador b { color: #fafafa; }
   .reconectando { color: #facc15; }
   .aviso-jugador {
     height: 100vh; display: flex; flex-direction: column; align-items: center; justify-content: center;
