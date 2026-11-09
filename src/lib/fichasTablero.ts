@@ -123,7 +123,15 @@ export function dibujarFicha(
   rejilla: RejillaTablero,
   ficha: FichaEnMapa,
   img: HTMLImageElement | null,
-  opciones: { seleccionada?: boolean; focoAjeno?: boolean; apagada?: boolean; en?: { x: number; y: number }; sombra?: boolean } = {}
+  opciones: {
+    seleccionada?: boolean;
+    focoAjeno?: boolean;
+    apagada?: boolean;
+    /** Otro la está arrastrando: se ve semitransparente por donde pasa */
+    fantasma?: boolean;
+    en?: { x: number; y: number };
+    sombra?: boolean;
+  } = {}
 ) {
   const rect = rectanguloFicha(cam, rejilla, ficha);
   const { x, y } = opciones.en ?? rect;
@@ -137,6 +145,7 @@ export function dibujarFicha(
     ctx.globalAlpha = 0.45;
     ctx.filter = "grayscale(100%)";
   }
+  if (opciones.fantasma) ctx.globalAlpha *= 0.65;
   if (opciones.sombra) {
     ctx.shadowColor = "rgba(0, 0, 0, 0.55)";
     ctx.shadowBlur = 14;

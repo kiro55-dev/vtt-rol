@@ -243,10 +243,24 @@ pub fn permitida_con(est: &EstadoPartida, jugador: IdJugador, p: &Peticion, subi
             }
             Ok(())
         }
-        Peticion::AvisarTablero { aviso } => match aviso.id_mapa() {
-            Some(id) => mapa_compartido(est, id),
-            None => Ok(()), // el foco de un jugador no se comparte, pero no es un error
-        },
+        Peticion::AvisarTablero { aviso } => {
+            // El foco de un jugador no se comparte, pero no es un error
+            if let Some(id) = aviso.id_mapa() {
+                mapa_compartido(est, id)?;
+            }
+            // El arrastre solo puede nombrar fichas suyas (los demás verían moverse la de otro)
+            match aviso {
+                AvisoTablero::Arrastre { piezas, .. } => {
+                    grupo_ok(piezas.len())?;
+                    piezas.iter().try_for_each(|p| instancia_suya(est, jugador, p.id_instancia))
+                }
+                AvisoTablero::ArrastreFin { ids_instancias, .. } => {
+                    grupo_ok(ids_instancias.len())?;
+                    ids_instancias.iter().try_for_each(|id| instancia_suya(est, jugador, *id))
+                }
+                _ => Ok(()),
+            }
+        }
     }
 }
 
@@ -420,7 +434,7 @@ mod tests {
         Instancia {
             id_instancia: id, id_mapa: Some(id_mapa), base, valores_actuales: vec![],
             coordenadas: Coordenada::Casilla(Casilla { x: 1, y: 1 }),
-            activo: true, rotacion: 0, espejo: false, orden: id, capa: 0,
+            activo: true, rotacion: 0, espejo: false, orden: id, capa: 0, atenuada: false,
         }
     }
 
@@ -605,6 +619,23 @@ mod tests {
         assert!(ok(&e, 1, ping(2)).is_err());
         assert!(ok(&e, 1, json!({ "cmd": "avisar_tablero", "aviso": { "RecorridoBorrado": { "id_mapa": 1 } } })).is_ok());
         assert!(ok(&e, 1, json!({ "cmd": "avisar_tablero", "aviso": { "Foco": { "ids_instancias": [3] } } })).is_ok());
+    }
+
+    #[test]
+    fn el_arrastre_en_vivo_solo_nombra_fichas_suyas_en_un_mapa_compartido() {
+        let e = estado();
+        let arrastre = |mapa: u16, ids: &[u16]| {
+            let piezas: Vec<Value> = ids.iter().map(|id| json!({ "id_instancia": id, "casilla": { "x": 1, "y": 1 } })).collect();
+            json!({ "cmd": "avisar_tablero", "aviso": { "Arrastre": { "id_mapa": mapa, "piezas": piezas } } })
+        };
+        let fin = |mapa: u16, ids: &[u16]| json!({ "cmd": "avisar_tablero", "aviso": { "ArrastreFin": { "id_mapa": mapa, "ids_instancias": ids } } });
+        assert!(ok(&e, 1, arrastre(1, &[1])).is_ok());
+        assert!(ok(&e, 1, arrastre(1, &[1, 2])).is_err(), "la 2 es del host");
+        assert!(ok(&e, 1, arrastre(1, &[3])).is_err(), "la 3 es de otro jugador");
+        assert!(ok(&e, 1, arrastre(2, &[1])).is_err(), "mapa sin compartir");
+        assert!(ok(&e, 1, fin(1, &[1])).is_ok());
+        assert!(ok(&e, 1, fin(1, &[2])).is_err());
+        assert!(ok(&e, ID_HOST, arrastre(2, &[1, 2, 3])).is_ok(), "el host no tiene esos límites");
     }
 
     #[test]

@@ -399,7 +399,8 @@ pub fn obtener_banco_entidades(state: State<'_, AppState>) -> Vec<Entidad> {
 /// `visibilidad::OCULTAR_PRIVADOS_AL_MASTER`): la partida lo conserva todo, solo cambia lo que se envía.
 #[tauri::command]
 pub fn obtener_instancias_activas(state: State<'_, AppState>) -> Vec<Instancia> {
-    visibilidad::instancias_para_el_master(&state.lock().instancias_activas, visibilidad::OCULTAR_PRIVADOS_AL_MASTER)
+    let est = state.lock();
+    visibilidad::instancias_para_el_master(&est.instancias_activas, visibilidad::OCULTAR_PRIVADOS_AL_MASTER, &est.definiciones_parametros)
 }
 
 // Instancias: las reglas (ficha única, casilla encajada, id nuevo...) están en `instancias.rs`;
@@ -424,7 +425,7 @@ pub fn instanciar_entidad_en(id_entidad: u16,
     let instancia = i.clone();
     registrar(&mut est, &state.almacen, delta);
     // Lo que vuelve a la pantalla del máster, igual que `obtener_instancias_activas`
-    Ok(visibilidad::instancias_para_el_master(&[instancia], visibilidad::OCULTAR_PRIVADOS_AL_MASTER).remove(0))
+    Ok(visibilidad::instancias_para_el_master(&[instancia], visibilidad::OCULTAR_PRIVADOS_AL_MASTER, &est.definiciones_parametros).remove(0))
 }
 
 /// Instancia varias fichas del banco de golpe (selección múltiple). Con `destino`, la primera cae en esa
@@ -464,7 +465,7 @@ pub fn instanciar_entidades_en(ids: Vec<u16>,
         }
         registrar(&mut est, &state.almacen, delta);
     }
-    Ok(visibilidad::instancias_para_el_master(&creadas, visibilidad::OCULTAR_PRIVADOS_AL_MASTER))
+    Ok(visibilidad::instancias_para_el_master(&creadas, visibilidad::OCULTAR_PRIVADOS_AL_MASTER, &est.definiciones_parametros))
 }
 
 /// Mueve una instancia a otra casilla o, con `None`, la quita del tablero (sigue activa).

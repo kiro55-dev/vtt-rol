@@ -56,6 +56,7 @@ pub fn instanciar(est: &EstadoPartida, id_entidad: u16, destino: Option<Destino>
         orden: est.instancias_activas.iter().map(|i| i.orden.saturating_add(1)).max().unwrap_or(0),
         // En el tablero, encima de todas; sin colocar no importa
         capa: if destino.is_some() { capa_superior(est) } else { 0 },
+        atenuada: false,
     }))
 }
 
@@ -99,6 +100,7 @@ pub fn mover_grupo(est: &EstadoPartida, ids: &[u16], id_mapa: u16, dx: i32, dy: 
             DeltaPartida::InstanciaModificada(Instancia {
                 coordenadas: Coordenada::Casilla(casilla),
                 capa: base.saturating_add(k as u32),
+                atenuada: false,
                 ..inst.clone()
             })
         })

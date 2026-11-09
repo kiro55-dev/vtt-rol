@@ -552,6 +552,13 @@ describe("fichas: selección y vida", () => {
     expect(partida.estaCaida(lobo)).toBe(false);
   });
 
+  it("una ficha marcada como atenuada por Rust se ve caída aunque su vida sea privada y no llegue su valor", async () => {
+    const partida = await nuevoStore();
+    const lobo = partida.instancias[1]; // sin valor actual de vida: no la deduce el front
+    expect(partida.estaCaida(lobo)).toBe(false);
+    expect(partida.estaCaida({ ...lobo, atenuada: true })).toBe(true);
+  });
+
   it("instanciar, mover, quitar del tablero y borrar llaman a Rust y vuelven a leer las instancias", async () => {
     const partida = await nuevoStore();
     const destino = { id_mapa: 1, casilla: { x: 3, y: 4 } };

@@ -549,6 +549,7 @@ mod tests {
             espejo: false,
             orden: id,
             capa: 0,
+            atenuada: false,
         }
     }
 

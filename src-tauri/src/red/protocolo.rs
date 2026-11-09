@@ -1,7 +1,7 @@
 // src-tauri/src/red/protocolo.rs
 //
 // Mensajes entre el navegador del jugador y el host, en JSON por el WebSocket. Se reflejan a mano en
-// cliente-web/src/protocolo.ts: si cambias algo aquí, cámbialo allí y sube `VERSION_PROTOCOLO` (el cliente
+// src/lib/red/protocolo.ts: si cambias algo aquí, cámbialo allí y sube `VERSION_PROTOCOLO` (el cliente
 // que no coincide pide recargar la página en vez de malinterpretar los mensajes).
 //
 // Saludo:
@@ -21,7 +21,7 @@ use crate::tablero_general::modelos::Jugador;
 use crate::tablero_general::tablero::AvisoTablero;
 
 /// Súbelo cuando cambie cualquier mensaje.
-pub const VERSION_PROTOCOLO: u32 = 3;
+pub const VERSION_PROTOCOLO: u32 = 4;
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 #[serde(tag = "tipo")]

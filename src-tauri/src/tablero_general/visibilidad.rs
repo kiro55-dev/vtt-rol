@@ -14,7 +14,7 @@
 use crate::tablero_general::cambios_entidad::CambioEntidad;
 use crate::tablero_general::estado::EstadoPartida;
 use crate::tablero_general::jugadores::es_propietario;
-use crate::tablero_general::modelos::{Entidad, IdJugador, Instancia, Mapa, Zona, ID_HOST};
+use crate::tablero_general::modelos::{DefinicionParametro, Entidad, IdJugador, Instancia, Mapa, Zona, ID_HOST};
 
 /// Primera etapa: el máster transmite su pantalla por Discord, así que a él también se le oculta
 /// lo privado (en «Fichas activas», en la caja de parámetros y en el tablero). Para que el máster
@@ -22,10 +22,22 @@ use crate::tablero_general::modelos::{Entidad, IdJugador, Instancia, Mapa, Zona,
 /// ventana de la ficha, donde se decide qué es público, siempre lo muestra todo.
 pub const OCULTAR_PRIVADOS_AL_MASTER: bool = true;
 
+/// ¿Está gris la instancia? Algún parámetro con `atenuar_si_negativo` (y máximo) tiene su valor actual a 0 o menos.
+/// Es la misma regla que `partida.estaCaida` en el front.
+pub fn esta_caida(inst: &Instancia, definiciones: &[DefinicionParametro]) -> bool {
+    definiciones.iter().any(|d| {
+        d.atenuar_si_negativo
+            && d.tiene_maximo
+            && inst.valores_actuales.iter().any(|v| v.id_definicion == d.id && v.valor <= 0)
+    })
+}
+
 /// La instancia tal como la ve un jugador: solo parámetros públicos (y solo el valor actual de
-/// esos), y sin los archivos adjuntos de la ficha, que son notas del máster.
-pub fn vista_jugador(inst: &Instancia) -> Instancia {
+/// esos), y sin los archivos adjuntos de la ficha, que son notas del máster. Si el parámetro que la pone gris es
+/// privado, no llega su valor pero sí la señal (`atenuada`): se ve caída sin saber cuánta vida tiene.
+pub fn vista_jugador(inst: &Instancia, definiciones: &[DefinicionParametro]) -> Instancia {
     let mut vista = inst.clone();
+    vista.atenuada = esta_caida(inst, definiciones);
     vista.base.parametros.retain(|p| p.publico);
     let publicos: Vec<u16> = vista.base.parametros.iter().map(|p| p.id_definicion).collect();
     vista.valores_actuales.retain(|v| publicos.contains(&v.id_definicion));
@@ -35,9 +47,9 @@ pub fn vista_jugador(inst: &Instancia) -> Instancia {
 
 /// Las instancias que muestra la pantalla del máster: todo, o solo lo público si
 /// `ocultar_privados` (ver `OCULTAR_PRIVADOS_AL_MASTER`).
-pub fn instancias_para_el_master(instancias: &[Instancia], ocultar_privados: bool) -> Vec<Instancia> {
+pub fn instancias_para_el_master(instancias: &[Instancia], ocultar_privados: bool, definiciones: &[DefinicionParametro]) -> Vec<Instancia> {
     if ocultar_privados {
-        instancias.iter().map(vista_jugador).collect()
+        instancias.iter().map(|i| vista_jugador(i, definiciones)).collect()
     } else {
         instancias.to_vec()
     }
@@ -50,14 +62,14 @@ pub fn instancias_para_el_master(instancias: &[Instancia], ocultar_privados: boo
 /// Las instancias tal como las ve `jugador`. El host, todas. Un jugador:
 ///  * las de sus fichas, enteras y estén donde estén (las tiene activas aunque no estén en el tablero);
 ///  * las demás, filtradas con `vista_jugador`, solo si están puestas en un mapa compartido.
-pub fn instancias_para(jugador: IdJugador, instancias: &[Instancia], compartidos: &[u16]) -> Vec<Instancia> {
+pub fn instancias_para(jugador: IdJugador, instancias: &[Instancia], compartidos: &[u16], definiciones: &[DefinicionParametro]) -> Vec<Instancia> {
     instancias
         .iter()
         .filter_map(|i| {
             if es_propietario(jugador, &i.base) {
                 Some(i.clone())
             } else if i.id_mapa.is_some_and(|m| compartidos.contains(&m)) {
-                Some(vista_jugador(i))
+                Some(vista_jugador(i, definiciones))
             } else {
                 None
             }
@@ -97,7 +109,7 @@ pub fn recurso_visible_para(jugador: IdJugador, est: &EstadoPartida, ruta: &str)
     let compartidos: Vec<u16> = est.mapas.iter().filter(|m| m.compartido).map(|m| m.id).collect();
     est.mapas.iter().any(|m| m.compartido && m.url_imagen_fondo.as_deref() == Some(ruta))
         || est.banco_entidades.iter().any(|e| es_propietario(jugador, e) && usa(e, true))
-        || instancias_para(jugador, &est.instancias_activas, &compartidos)
+        || instancias_para(jugador, &est.instancias_activas, &compartidos, &est.definiciones_parametros)
             .iter()
             .any(|i| usa(&i.base, true))
 }
@@ -177,12 +189,13 @@ mod tests {
             espejo: true,
             orden: 5,
             capa: 0,
+            atenuada: false,
         }
     }
 
     #[test]
     fn el_jugador_no_ve_lo_privado_ni_su_valor_actual_ni_las_notas() {
-        let v = vista_jugador(&instancia());
+        let v = vista_jugador(&instancia(), &parametros_por_defecto());
         let ids: Vec<u16> = v.base.parametros.iter().map(|p| p.id_definicion).collect();
         assert_eq!(ids, vec![ID_ARMADURA, ID_VELOCIDAD]);
         assert!(v.valores_actuales.is_empty(), "la vida actual también es privada");
@@ -197,7 +210,7 @@ mod tests {
     fn un_parametro_publico_comparte_tambien_su_valor_actual() {
         let mut i = instancia();
         i.base.parametros[0].publico = true; // la vida pasa a ser pública
-        let v = vista_jugador(&i);
+        let v = vista_jugador(&i, &parametros_por_defecto());
         assert_eq!(v.base.parametros.len(), 3);
         assert_eq!(v.valores_actuales, vec![ValorActual { id_definicion: ID_VIDA, valor: 7 }]);
     }
@@ -205,9 +218,9 @@ mod tests {
     #[test]
     fn la_vista_del_master_depende_del_interruptor_y_no_toca_los_datos() {
         let originales = vec![instancia()];
-        let oculta = instancias_para_el_master(&originales, true);
+        let oculta = instancias_para_el_master(&originales, true, &parametros_por_defecto());
         assert_eq!(oculta[0].base.parametros.len(), 2);
-        let completa = instancias_para_el_master(&originales, false);
+        let completa = instancias_para_el_master(&originales, false, &parametros_por_defecto());
         assert_eq!(completa[0].base.parametros.len(), 3);
         assert_eq!(originales[0].base.parametros.len(), 3, "la partida conserva todo");
     }
@@ -220,12 +233,12 @@ mod tests {
     fn el_propietario_y_el_host_ven_la_instancia_entera_y_los_demas_filtrada() {
         let originales = vec![instancia()];
         for quien in [ID_HOST, 3] {
-            let v = &instancias_para(quien, &originales, &[2])[0];
+            let v = &instancias_para(quien, &originales, &[2], &parametros_por_defecto())[0];
             assert_eq!(v.base.parametros.len(), 3, "jugador {quien}");
             assert_eq!(v.valores_actuales.len(), 1, "con su vida actual");
             assert_eq!(v.base.archivos_adjuntos.len(), 1, "y sus adjuntos");
         }
-        let ajena = &instancias_para(4, &originales, &[2])[0];
+        let ajena = &instancias_para(4, &originales, &[2], &parametros_por_defecto())[0];
         assert_eq!(ajena.base.parametros.len(), 2);
         assert!(ajena.valores_actuales.is_empty() && ajena.base.archivos_adjuntos.is_empty());
     }
@@ -233,16 +246,16 @@ mod tests {
     #[test]
     fn lo_que_no_esta_en_un_mapa_compartido_no_se_envia_salvo_a_su_dueno() {
         let originales = vec![instancia()];
-        assert!(instancias_para(4, &originales, &[9]).is_empty(), "en otro mapa");
-        assert!(instancias_para(4, &originales, &[]).is_empty(), "sin mapas compartidos");
-        assert_eq!(instancias_para(4, &originales, &[1, 2]).len(), 1, "uno de varios compartidos");
-        assert_eq!(instancias_para(3, &originales, &[]).len(), 1, "el dueño siempre la tiene");
-        assert_eq!(instancias_para(ID_HOST, &originales, &[]).len(), 1);
+        assert!(instancias_para(4, &originales, &[9], &parametros_por_defecto()).is_empty(), "en otro mapa");
+        assert!(instancias_para(4, &originales, &[], &parametros_por_defecto()).is_empty(), "sin mapas compartidos");
+        assert_eq!(instancias_para(4, &originales, &[1, 2], &parametros_por_defecto()).len(), 1, "uno de varios compartidos");
+        assert_eq!(instancias_para(3, &originales, &[], &parametros_por_defecto()).len(), 1, "el dueño siempre la tiene");
+        assert_eq!(instancias_para(ID_HOST, &originales, &[], &parametros_por_defecto()).len(), 1);
 
         // Sin colocar (activa fuera del tablero) no sale a los demás
         let mut sin_colocar = instancia();
         sin_colocar.id_mapa = None;
-        assert!(instancias_para(4, &[sin_colocar], &[2]).is_empty());
+        assert!(instancias_para(4, &[sin_colocar], &[2], &parametros_por_defecto()).is_empty());
     }
 
     fn mapa(id: u16, zona: u16, fondo: &str, compartido: bool) -> Mapa {
@@ -326,5 +339,35 @@ mod tests {
             Some(vec![CambioEntidad::Nombre("Orco jefe".into()), CambioEntidad::Parametro(publico)])
         );
         assert_eq!(cambios_para(4, &ficha, true, &[CambioEntidad::Adjuntos(vec![])]), None, "nada que enviarle");
+    }
+
+    #[test]
+    fn quien_no_ve_la_vida_privada_recibe_solo_la_senal_de_ficha_caida() {
+        let defs = parametros_por_defecto();
+        let mut i = instancia(); // la vida es privada, y su valor actual es 7
+        let ajeno = |i: &Instancia| instancias_para(4, std::slice::from_ref(i), &[2], &defs).remove(0);
+
+        assert!(!ajeno(&i).atenuada, "con 7 de vida no está caída");
+        i.valores_actuales[0].valor = 0;
+        let v = ajeno(&i);
+        assert!(v.atenuada, "a 0 se ve caída aunque la vida sea privada");
+        assert!(v.valores_actuales.is_empty() && v.base.parametros.iter().all(|p| p.id_definicion != ID_VIDA), "pero sin su valor");
+        i.valores_actuales[0].valor = -5;
+        assert!(ajeno(&i).atenuada, "y con vida negativa");
+
+        // El dueño y el host reciben la instancia entera: lo calculan ellos con su valor, la señal no hace falta
+        for quien in [ID_HOST, 3] {
+            let v = instancias_para(quien, std::slice::from_ref(&i), &[2], &defs).remove(0);
+            assert!(!v.atenuada && v.valores_actuales[0].valor == -5, "jugador {quien}");
+            assert_eq!(v.base.parametros.len(), 3, "el dueño ve también lo privado");
+        }
+
+        // Solo cuenta un parámetro que se atenúa: sin esa marca, a 0 no se pone gris
+        let mut sin_marca = defs.clone();
+        sin_marca.iter_mut().for_each(|d| d.atenuar_si_negativo = false);
+        assert!(!instancias_para(4, std::slice::from_ref(&i), &[2], &sin_marca)[0].atenuada);
+        // La pantalla del host que oculta lo privado también la ve gris
+        assert!(instancias_para_el_master(std::slice::from_ref(&i), true, &defs)[0].atenuada);
+        assert!(!instancias_para_el_master(std::slice::from_ref(&i), false, &defs)[0].atenuada);
     }
 }

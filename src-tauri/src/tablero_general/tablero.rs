@@ -193,6 +193,16 @@ pub fn validar_mapa(mapa: &Mapa) -> Result<(), String> {
 /// llegue de la red no debe poder ocupar memoria sin límite.
 pub const MAX_CASILLAS_RECORRIDO: usize = 4096;
 
+/// Máximo de fichas que se arrastran a la vez y se avisan.
+pub const MAX_PIEZAS_ARRASTRE: usize = 100;
+
+/// Una ficha que alguien está arrastrando: por qué casilla (su centro) pasa ahora.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub struct PiezaArrastrada {
+    pub id_instancia: u16,
+    pub casilla: Casilla,
+}
+
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 pub enum AvisoTablero {
     /// Clic central: onda sobre una casilla.
@@ -205,13 +215,22 @@ pub enum AvisoTablero {
     /// Las instancias que el emisor tiene con el foco ahora (vacío = ninguna). Sustituye al anterior.
     /// No va ligado a un mapa.
     Foco { ids_instancias: Vec<u16> },
+    /// Alguien arrastra estas fichas y ahora pasan por esas casillas. La posición real se guarda solo al soltar
+    /// (`mover_instancia(s)`); esto solo deja a los demás ver el camino. Se repite al cambiar de casilla.
+    Arrastre { id_mapa: u16, piezas: Vec<PiezaArrastrada> },
+    /// Esas fichas ya no se arrastran (se soltaron o se cancelaron).
+    ArrastreFin { id_mapa: u16, ids_instancias: Vec<u16> },
 }
 
 impl AvisoTablero {
     /// El mapa al que se refiere (`Foco` no tiene).
     pub fn id_mapa(&self) -> Option<u16> {
         match self {
-            Self::Ping { id_mapa, .. } | Self::Recorrido { id_mapa, .. } | Self::RecorridoBorrado { id_mapa } => Some(*id_mapa),
+            Self::Ping { id_mapa, .. }
+            | Self::Recorrido { id_mapa, .. }
+            | Self::RecorridoBorrado { id_mapa }
+            | Self::Arrastre { id_mapa, .. }
+            | Self::ArrastreFin { id_mapa, .. } => Some(*id_mapa),
             Self::Foco { .. } => None,
         }
     }
@@ -237,6 +256,21 @@ impl AvisoTablero {
                 Err("El recorrido no tiene un tamaño válido".into())
             }
             Self::Recorrido { casillas, .. } if !casillas.iter().all(dentro) => Err("El recorrido se sale del mapa".into()),
+            Self::Arrastre { piezas, .. } => {
+                let mut vistos = std::collections::HashSet::new();
+                if piezas.is_empty() || piezas.len() > MAX_PIEZAS_ARRASTRE {
+                    Err("El arrastre no tiene un tamaño válido".into())
+                } else if !piezas.iter().all(|p| dentro(&p.casilla)) {
+                    Err("El arrastre se sale del mapa".into())
+                } else if !piezas.iter().all(|p| vistos.insert(p.id_instancia)) {
+                    Err("El arrastre repite una ficha".into())
+                } else {
+                    Ok(())
+                }
+            }
+            Self::ArrastreFin { ids_instancias, .. } if ids_instancias.len() > MAX_PIEZAS_ARRASTRE => {
+                Err("El arrastre no tiene un tamaño válido".into())
+            }
             _ => Ok(()), // `Foco` no depende del mapa
         }
     }
@@ -449,6 +483,17 @@ mod tests {
         assert!(recorrido(vec![c(0, 0); MAX_CASILLAS_RECORRIDO + 1]).validar(&m).is_err());
 
         assert!(AvisoTablero::RecorridoBorrado { id_mapa: 3 }.validar(&m).is_ok());
+
+        let pieza = |id, x, y| PiezaArrastrada { id_instancia: id, casilla: c(x, y) };
+        let arrastre = |v: Vec<PiezaArrastrada>| AvisoTablero::Arrastre { id_mapa: 3, piezas: v };
+        assert!(arrastre(vec![pieza(1, 0, 0), pieza(2, 19, 9)]).validar(&m).is_ok());
+        assert!(arrastre(vec![]).validar(&m).is_err());
+        assert!(arrastre(vec![pieza(1, 20, 0)]).validar(&m).is_err(), "fuera del mapa");
+        assert!(arrastre(vec![pieza(1, 0, 0), pieza(1, 1, 0)]).validar(&m).is_err(), "repetida");
+        assert!(arrastre((0..=MAX_PIEZAS_ARRASTRE as u16).map(|i| pieza(i, 0, 0)).collect()).validar(&m).is_err(), "demasiadas");
+        assert!(AvisoTablero::ArrastreFin { id_mapa: 3, ids_instancias: vec![1, 2] }.validar(&m).is_ok());
+        assert!(AvisoTablero::ArrastreFin { id_mapa: 3, ids_instancias: vec![0; MAX_PIEZAS_ARRASTRE + 1] }.validar(&m).is_err());
+        assert_eq!(arrastre(vec![pieza(1, 0, 0)]).id_mapa(), Some(3));
         assert_eq!(ping(1, 1).id_mapa(), Some(3));
     }
 
@@ -476,5 +521,12 @@ mod tests {
 
         let borrado: AvisoTablero = serde_json::from_str(r#"{"RecorridoBorrado":{"id_mapa":3}}"#).unwrap();
         assert_eq!(borrado, AvisoTablero::RecorridoBorrado { id_mapa: 3 });
+
+        let arrastre = AvisoTablero::Arrastre { id_mapa: 3, piezas: vec![PiezaArrastrada { id_instancia: 7, casilla: c(4, 5) }] };
+        let json = serde_json::to_string(&arrastre).unwrap();
+        assert_eq!(json, r#"{"Arrastre":{"id_mapa":3,"piezas":[{"id_instancia":7,"casilla":{"x":4,"y":5}}]}}"#);
+        assert_eq!(serde_json::from_str::<AvisoTablero>(&json).unwrap(), arrastre);
+        let fin = AvisoTablero::ArrastreFin { id_mapa: 3, ids_instancias: vec![7] };
+        assert_eq!(serde_json::to_string(&fin).unwrap(), r#"{"ArrastreFin":{"id_mapa":3,"ids_instancias":[7]}}"#);
     }
 }

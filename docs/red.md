@@ -109,7 +109,7 @@ imágenes) y `bunx vitest run` (enlace, réplica, respuesta al reto con el mismo
 | `red/servidor.rs` | axum en 127.0.0.1: `/ws` (saludo y envíos) y `/imagen` |
 | `red/tunel.rs` | descarga verificada de cloudflared y arranque del túnel |
 | `red/vista.rs` | qué ve cada jugador y la diferencia con lo último enviado |
-| `red/protocolo.rs` | los mensajes (espejo: `src/lib/red/protocolo.ts`); versión 3 |
+| `red/protocolo.rs` | los mensajes (espejo: `src/lib/red/protocolo.ts`); versión 4 |
 | `red/peticiones.rs` | lo que un jugador puede pedir: lista blanca, permisos y ejecución |
 | `red/comandos.rs` | comandos de la ventana «Configuración de sala» |
 | `src/lib/modo.ts`, `src/lib/backend.ts` | host o jugador; la puerta única de datos |
@@ -142,6 +142,12 @@ su pantalla relee. Las peticiones de un jugador se ejecutan **en orden**, una a 
 - **Pantalla del host.** Tras una acción de un jugador el host emite `partida-cambiada` (`tiradas` o `entidades`)
   y su store relee (`partida.alCambiarPartida`); el ping y el recorrido de un jugador llegan al host como el
   evento `aviso-tablero` y a los demás jugadores como `Aviso`.
+- **Arrastre en vivo.** Mientras alguien arrastra una ficha por el tablero, los demás la ven pasar de casilla en casilla
+  (semitransparente): `Arrastre` y `ArrastreFin` son avisos efímeros, como el recorrido (protocolo 4). La posición
+  guardada solo cambia al soltar. Un jugador solo puede avisar del arrastre de sus fichas. Solo se ve el arrastre de
+  fichas que ya estaban puestas en el tablero.
+- **Ficha caída.** Si el parámetro que pone una ficha en gris (la vida) es privado, los demás reciben solo la señal
+  `atenuada`, no su valor.
 - **Foco.** El foco es de cada uno: un jugador puede dar el foco a cualquier ficha que ve (para ver sus formas
   públicas), pero no se envía a nadie: el host no ve el foco de los jugadores ni ellos el suyo.
 - **Fotos.** Un jugador sube la foto de una ficha suya con `POST /subir?sesion=…&ext=…`: hasta 8 MiB, solo si tiene

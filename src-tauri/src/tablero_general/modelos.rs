@@ -421,6 +421,11 @@ pub struct Instancia {
     /// una ficha en el tablero recibe la mayor (ver `instancias::capa_superior`).
     #[serde(default)]
     pub capa: u32,
+
+    /// DERIVADO, nunca se guarda: solo lo pone `visibilidad::vista_jugador` cuando la instancia estaría gris (un
+    /// parámetro con `atenuar_si_negativo` a 0 o menos) aunque ese parámetro sea privado y no llegue su valor.
+    #[serde(default)]
+    pub atenuada: bool,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]

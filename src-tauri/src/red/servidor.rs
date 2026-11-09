@@ -723,7 +723,7 @@ mod tests {
         };
         let instancia = |id, base: Entidad| Instancia {
             id_instancia: id, id_mapa: Some(1), valores_actuales: vec![], base,
-            coordenadas: Coordenada::Casilla(Casilla { x: 1, y: 1 }), activo: true, rotacion: 0, espejo: false, orden: id, capa: 0,
+            coordenadas: Coordenada::Casilla(Casilla { x: 1, y: 1 }), activo: true, rotacion: 0, espejo: false, orden: id, capa: 0, atenuada: false,
         };
         for (id, p) in [(10, vec![j]), (11, vec![])] {
             procesar_delta(e, DeltaPartida::EntidadCreada(ficha(id, p.clone())));
@@ -845,6 +845,33 @@ mod tests {
         assert!(pedir(&mut ana, 3, json!({ "cmd": "avisar_tablero", "aviso": { "Foco": { "ids_instancias": [1] } } })).await.1.is_ok());
         assert_eq!(sala.eventos.lock().unwrap().len(), antes, "el host no ve el foco");
         assert!(tokio::time::timeout(Duration::from_millis(200), luis.next()).await.is_err(), "ni los demás");
+    }
+
+    #[tokio::test]
+    async fn el_arrastre_de_una_ficha_suya_lo_ven_el_host_y_los_demas_y_el_de_una_ajena_no() {
+        let sala = sala_con_app("srv_arrastre").await;
+        let (mut ana, id, _) = entrar(&sala, "Ana").await;
+        let (mut luis, _, _) = entrar(&sala, "Luis").await;
+        poner_fichas(&sala, id); // la instancia 1 es de Ana; la 2, del host
+        vaciar(&mut ana).await;
+        vaciar(&mut luis).await;
+
+        let arrastre = |ficha: u16| json!({ "Arrastre": { "id_mapa": 1, "piezas": [{ "id_instancia": ficha, "casilla": { "x": 3, "y": 2 } }] } });
+        assert!(pedir(&mut ana, 1, json!({ "cmd": "avisar_tablero", "aviso": arrastre(1) })).await.1.is_ok());
+        let MensajeHost::Aviso { aviso } = leer(&mut luis).await else { panic!("Luis no vio el arrastre") };
+        assert!(matches!(aviso, crate::tablero_general::tablero::AvisoTablero::Arrastre { .. }));
+        assert!(sala.eventos.lock().unwrap().iter().any(|(e, p)| e == "aviso-tablero" && p["Arrastre"]["piezas"][0]["id_instancia"] == 1), "el host lo ve");
+
+        // Soltar: el fin también llega; y la posición real no se tocó
+        let fin = json!({ "ArrastreFin": { "id_mapa": 1, "ids_instancias": [1] } });
+        assert!(pedir(&mut ana, 2, json!({ "cmd": "avisar_tablero", "aviso": fin })).await.1.is_ok());
+        assert!(matches!(leer(&mut luis).await, MensajeHost::Aviso { aviso: crate::tablero_general::tablero::AvisoTablero::ArrastreFin { .. } }));
+        let est = sala.estado().lock();
+        assert_eq!(est.instancias_activas[0].coordenadas, Coordenada::Casilla(Casilla { x: 1, y: 1 }));
+        drop(est);
+
+        // Una ficha del host no se puede «arrastrar» en pantalla ajena
+        assert!(pedir(&mut ana, 3, json!({ "cmd": "avisar_tablero", "aviso": arrastre(2) })).await.1.is_err());
     }
 
     #[tokio::test]

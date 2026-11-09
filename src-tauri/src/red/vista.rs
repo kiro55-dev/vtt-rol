@@ -71,7 +71,7 @@ pub fn vista_para(jugador: IdJugador, est: &EstadoPartida) -> VistaJugador {
     let mapas = visibilidad::mapas_para(jugador, &est.mapas);
     let zonas = visibilidad::zonas_para(jugador, &est.zonas, &est.mapas);
     let compartidos: Vec<u16> = mapas.iter().map(|m| m.id).collect();
-    let instancias = visibilidad::instancias_para(jugador, &est.instancias_activas, &compartidos);
+    let instancias = visibilidad::instancias_para(jugador, &est.instancias_activas, &compartidos, &est.definiciones_parametros);
     let entidades = visibilidad::entidades_para(jugador, &est.banco_entidades);
     let usadas: Vec<u16> = instancias
         .iter()
@@ -164,7 +164,7 @@ mod tests {
             id_instancia: id, id_mapa, base,
             valores_actuales: vec![ValorActual { id_definicion: ID_VIDA, valor: 15 }],
             coordenadas: if id_mapa.is_some() { Coordenada::Casilla(Casilla { x: 1, y: 1 }) } else { Coordenada::NoPuesto },
-            activo: true, rotacion: 0, espejo: false, orden: id, capa: 0,
+            activo: true, rotacion: 0, espejo: false, orden: id, capa: 0, atenuada: false,
         }
     }
 

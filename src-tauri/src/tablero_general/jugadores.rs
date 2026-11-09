@@ -132,6 +132,7 @@ mod tests {
             espejo: false,
             orden: 0,
             capa: 0,
+            atenuada: false,
         }];
         e
     }

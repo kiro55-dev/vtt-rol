@@ -10,12 +10,13 @@
   import { arrastre, baseDe, ladosDeEntidad, instanciasArrastradas } from '$lib/arrastreFicha.svelte';
   import { miniaturas } from '$lib/miniaturas.svelte';
   import { arrastreJugador } from '$lib/arrastreJugador.svelte';
+  import { arrastreAjeno } from '$lib/arrastreAjeno.svelte';
   import {
     fichasDelMapa, fichaEnPunto, fichasEnRectangulo, imagenDe, dibujarFicha, dibujarDestino, dibujarFormas, rectanguloFicha
   } from '$lib/fichasTablero';
   import { dibujarPing, dibujarRecorrido, pingVivo } from '$lib/marcasTablero';
   import {
-    alRecibirAviso, enviarAviso, avisoPing, avisoRecorrido, avisoRecorridoBorrado
+    alRecibirAviso, enviarAviso, avisoPing, avisoRecorrido, avisoRecorridoBorrado, avisoArrastre, avisoArrastreFin
   } from '$lib/avisosTablero';
 
   /** @type {{ mapa?: any, rejilla?: any }} */
@@ -116,6 +117,8 @@
   // La memoria solo se destruye al cerrar el tablero, no en cada cambio de mapa
   onDestroy(() => {
     liberarMemoriaImagen();
+    finArrastreEnVivo();
+    arrastreAjeno.limpiar();
   });
 
   function liberarMemoriaImagen() {
@@ -394,6 +397,8 @@
       if (aviso.Recorrido.id_mapa === idMapa()) recorridoAjeno = aviso.Recorrido.casillas;
     } else if ('RecorridoBorrado' in aviso) {
       if (aviso.RecorridoBorrado.id_mapa === idMapa()) recorridoAjeno = [];
+    } else if ('Arrastre' in aviso || 'ArrastreFin' in aviso) {
+      arrastreAjeno.recibir(aviso); // solo se dibuja la de este mapa (`arrastreAjeno.de`)
     }
     // `Foco` lo atiende +page.svelte (lo ven también «Fichas activas» y la lista de parámetros)
   }
@@ -412,6 +417,96 @@
   }
 
   // ---------------------------------------------------------------------------
+  // Arrastre en vivo: los demás ven por dónde pasa lo que arrastras. Es un aviso efímero (como el recorrido): la
+  // posición real se guarda solo al soltar. Se envía cuando cambia alguna casilla (con un mínimo entre envíos y un
+  // latido mientras dura, para que los demás no den la ficha por abandonada).
+  const MIN_ENTRE_ENVIOS_MS = 50;
+  const LATIDO_MS = 3000;
+  /** @type {{ clave: string, piezas: { id_instancia: number, casilla: any }[], mapa: number } | null} */
+  let arrastreEnviado = null;
+  /** @type {{ clave: string, piezas: { id_instancia: number, casilla: any }[] } | null} */
+  let arrastrePendiente = null;
+  /** @type {ReturnType<typeof setTimeout> | null} */
+  let temporizadorArrastre = null;
+  /** @type {ReturnType<typeof setInterval> | null} */
+  let latidoArrastre = null;
+  let ultimoEnvioArrastre = 0;
+
+  // Las casillas por las que pasan ahora las fichas que se arrastran (null si no se arrastra nada sobre este mapa)
+  function piezasArrastradas() {
+    const a = arrastre.actual;
+    if (!a || a.zona !== 'tablero' || !('instancia' in a.origen)) return null;
+    const destino = arrastre.casillaActual();
+    if (!destino || destino.id_mapa !== idMapa()) return null;
+    const grupo = instanciasArrastradas(a.origen);
+    if (grupo.length <= 1) return [{ id_instancia: a.origen.instancia.id_instancia, casilla: destino.casilla }];
+    // Un grupo: todas se desplazan lo mismo que la cogida (lo mismo que dibuja el amarillo y hará Rust)
+    const casillaCogida = casillaDe(a.origen.instancia);
+    if (!casillaCogida) return null;
+    const items = grupo.flatMap((i) => (casillaDe(i) ? [{ instancia: i, casilla: /** @type {any} */ (casillaDe(i)) }] : []));
+    const destinos = desplazarGrupo(
+      casillas,
+      items.map((f) => ({ casilla: f.casilla, lados: ladosInstancia(f.instancia) })),
+      destino.casilla.x - casillaCogida.x,
+      destino.casilla.y - casillaCogida.y
+    );
+    return items.map((f, k) => ({ id_instancia: f.instancia.id_instancia, casilla: destinos[k] }));
+  }
+
+  function actualizarArrastreEnVivo() {
+    const piezas = piezasArrastradas();
+    if (!piezas) return finArrastreEnVivo();
+    const clave = JSON.stringify(piezas.map((p) => [p.id_instancia, p.casilla.x, p.casilla.y]));
+    if (arrastreEnviado?.clave === clave) {
+      arrastrePendiente = null;
+      return;
+    }
+    arrastrePendiente = { clave, piezas };
+    if (temporizadorArrastre) return;
+    const espera = Math.max(0, MIN_ENTRE_ENVIOS_MS - (performance.now() - ultimoEnvioArrastre));
+    temporizadorArrastre = setTimeout(() => {
+      temporizadorArrastre = null;
+      const p = arrastrePendiente;
+      arrastrePendiente = null;
+      if (p) enviarArrastre(p);
+    }, espera);
+  }
+
+  /** @param {{ clave: string, piezas: { id_instancia: number, casilla: any }[] }} p */
+  function enviarArrastre(p) {
+    const mapaId = idMapa();
+    if (mapaId === null) return;
+    arrastreEnviado = { clave: p.clave, piezas: p.piezas, mapa: mapaId };
+    ultimoEnvioArrastre = performance.now();
+    enviarAviso(avisoArrastre(mapaId, p.piezas));
+    latidoArrastre ??= setInterval(() => {
+      if (arrastreEnviado) enviarAviso(avisoArrastre(arrastreEnviado.mapa, arrastreEnviado.piezas));
+    }, LATIDO_MS);
+  }
+
+  // Se soltó, se canceló o se salió del tablero: los demás dejan de ver el arrastre
+  function finArrastreEnVivo() {
+    if (temporizadorArrastre) clearTimeout(temporizadorArrastre);
+    if (latidoArrastre) clearInterval(latidoArrastre);
+    temporizadorArrastre = latidoArrastre = null;
+    arrastrePendiente = null;
+    if (arrastreEnviado) {
+      enviarAviso(avisoArrastreFin(arrastreEnviado.mapa, arrastreEnviado.piezas.map((p) => p.id_instancia)));
+      arrastreEnviado = null;
+    }
+  }
+
+  $effect(() => {
+    void [arrastre.actual, cam, casillas, ancho, alto];
+    untrack(actualizarArrastreEnVivo);
+  });
+
+  // Cuando la posición de verdad de lo que otro soltó ya está aquí, su «fantasma» sobra
+  $effect(() => {
+    const posiciones = new Map(fichas.map((f) => [f.instancia.id_instancia, f.casilla]));
+    untrack(() => arrastreAjeno.alLlegarPosiciones(posiciones));
+  });
+
   // Pintado: cada capa se redibuja solo cuando cambia lo suyo, y como mucho 1 vez por frame.
   // Los efectos solo anotan "qué hay que pintar"; el pintado real ocurre en requestAnimationFrame.
   // ---------------------------------------------------------------------------
@@ -426,6 +521,7 @@
       if (id === mapaDeLasMarcas) return;
       if (recorrido.length && mapaDeLasMarcas !== null) enviarAviso(avisoRecorridoBorrado(mapaDeLasMarcas));
       mapaDeLasMarcas = id;
+      arrastreAjeno.limpiar();
       recorrido = [];
       recorridoAjeno = [];
       pings.length = 0;
@@ -472,7 +568,7 @@
   // Capa de fichas: depende de las instancias del mapa, la selección, la cámara y el arrastre en curso.
   let fichasPendientes = true;
   $effect(() => {
-    void [fichas, partida.idsSeleccionados, partida.idsFocoAjeno, partida.definiciones, cam, ancho, alto, dpr, casillas, arrastre.actual];
+    void [fichas, partida.idsSeleccionados, partida.idsFocoAjeno, partida.definiciones, cam, ancho, alto, dpr, casillas, arrastre.actual, arrastreAjeno.piezas];
     void Object.values(partida.valoresPendientes); // la barra de vida y los radios siguen a la rueda
     // Las miniaturas se piden aquí y se leen para que, al llegar, se repinten las fichas
     const a = arrastre.actual;
@@ -515,10 +611,14 @@
     // 2. Las fichas (la que se arrastra no se dibuja en su sitio: va bajo el cursor)
     for (const f of fichas) {
       if (arrastre.arrastrando(f.instancia.id_instancia)) continue;
-      dibujarFicha(ctx, cam, casillas, f, imagen(f.instancia.base), {
+      // Si otro la está arrastrando, se ve por donde pasa (su posición real no cambia hasta que la suelte)
+      const porDondePasa = arrastreAjeno.de(f.instancia.id_instancia, idMapa());
+      const enTransito = !!porDondePasa && (porDondePasa.x !== f.casilla.x || porDondePasa.y !== f.casilla.y);
+      dibujarFicha(ctx, cam, casillas, enTransito ? { instancia: f.instancia, casilla: /** @type {any} */ (porDondePasa) } : f, imagen(f.instancia.base), {
         seleccionada: partida.estaSeleccionada(f.instancia.id_instancia),
         focoAjeno: partida.idsFocoAjeno.includes(f.instancia.id_instancia),
-        apagada: partida.estaCaida(f.instancia)
+        apagada: partida.estaCaida(f.instancia),
+        fantasma: enTransito
       });
     }
 

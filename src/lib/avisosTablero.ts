@@ -14,7 +14,16 @@ export type AvisoTablero =
   | { Recorrido: { id_mapa: number; casillas: Casilla[] } }
   | { RecorridoBorrado: { id_mapa: number } }
   /** Las instancias que el emisor tiene con el foco (no va ligado a un mapa) */
-  | { Foco: { ids_instancias: number[] } };
+  | { Foco: { ids_instancias: number[] } }
+  /** Alguien arrastra estas fichas y ahora pasan por esas casillas (centro de cada una); la posición real se guarda al soltar */
+  | { Arrastre: { id_mapa: number; piezas: PiezaArrastrada[] } }
+  /** Esas fichas ya no se arrastran */
+  | { ArrastreFin: { id_mapa: number; ids_instancias: number[] } };
+
+export interface PiezaArrastrada {
+  id_instancia: number;
+  casilla: Casilla;
+}
 
 export const EVENTO_AVISO = "aviso-tablero";
 
@@ -23,6 +32,12 @@ export const avisoRecorrido = (id_mapa: number, casillas: readonly Casilla[]): A
   Recorrido: { id_mapa, casillas: [...casillas] }
 });
 export const avisoRecorridoBorrado = (id_mapa: number): AvisoTablero => ({ RecorridoBorrado: { id_mapa } });
+export const avisoArrastre = (id_mapa: number, piezas: readonly PiezaArrastrada[]): AvisoTablero => ({
+  Arrastre: { id_mapa, piezas: piezas.map((p) => ({ ...p })) }
+});
+export const avisoArrastreFin = (id_mapa: number, ids_instancias: readonly number[]): AvisoTablero => ({
+  ArrastreFin: { id_mapa, ids_instancias: [...ids_instancias] }
+});
 export const avisoFoco = (ids_instancias: readonly number[]): AvisoTablero => ({ Foco: { ids_instancias: [...ids_instancias] } });
 
 /** Avisa a Rust. Un aviso perdido no importa: nunca debe romper el tablero. */

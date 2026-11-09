@@ -152,6 +152,8 @@ export interface Instancia {
   orden: number;
   /** Altura en el tablero (la mayor, encima). La pone Rust al poner o mover la ficha. */
   capa?: number;
+  /** Rust la marca cuando está gris pero su parámetro no es público (no llega su valor, solo esta señal) */
+  atenuada?: boolean;
 }
 
 export interface Rejilla {
@@ -578,6 +580,7 @@ class Partida {
    * serie lo está) tiene su valor actual en 0 o menos. Lo decide la definición, no ningún id fijo.
    */
   estaCaida(instancia: Instancia): boolean {
+    if (instancia.atenuada) return true;
     return this.definiciones.some(
       (d) =>
         d.atenuar_si_negativo &&
