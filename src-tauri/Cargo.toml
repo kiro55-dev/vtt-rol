@@ -1,6 +1,6 @@
 [package]
 name = "OpenRoll"
-version = "0.5.5"
+version = "1.0.0"
 description = "A Tauri App"
 authors = ["you"]
 edition = "2024"
