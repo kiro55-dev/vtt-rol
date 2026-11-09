@@ -3,8 +3,8 @@
 // La sala de la partida abierta, para la ventana «Configuración de sala» (VentanaSala.svelte). Todo vive en
 // Rust (src-tauri/src/red/): aquí solo se llama a sus comandos y se vuelve a leer cuando Rust avisa con el
 // evento `sala-cambiada` (al abrirse, durante la descarga de cloudflared, cuando alguien entra o sale...).
-import { invoke } from "@tauri-apps/api/core";
-import { listen } from "@tauri-apps/api/event";
+import { invoke } from "$lib/backend";
+import { listen } from "$lib/backend";
 import { partida } from "$lib/partida.svelte";
 
 export type Fase =
@@ -18,6 +18,8 @@ export interface EstadoSala {
   enlace: string | null;
   pide_contrasena: boolean;
   conectados: number[];
+  /** Los mapas que ven los jugadores (los de la casilla marcada, de todas las zonas). */
+  mapas_compartidos: { id: number; nombre: string }[];
   error: string | null;
 }
 
@@ -30,12 +32,11 @@ export interface JugadorSala {
   fichas: number[];
 }
 
-const CERRADA: EstadoSala = { fase: { tipo: "Cerrada" }, enlace: null, pide_contrasena: false, conectados: [], error: null };
+const CERRADA: EstadoSala = { fase: { tipo: "Cerrada" }, enlace: null, pide_contrasena: false, conectados: [], mapas_compartidos: [], error: null };
 
 class Sala {
   estado = $state<EstadoSala>({ ...CERRADA });
   jugadores = $state<JugadorSala[]>([]);
-  mapaPublico = $state<number | null>(null);
   /** Si la ventana está abierta. */
   ventanaAbierta = $state(false);
 
@@ -55,14 +56,12 @@ class Sala {
   }
 
   async recargar() {
-    const [estado, jugadores, mapa] = await Promise.all([
+    const [estado, jugadores] = await Promise.all([
       invoke<EstadoSala>("estado_sala"),
-      invoke<JugadorSala[]>("obtener_jugadores"),
-      invoke<number | null>("obtener_mapa_publico")
+      invoke<JugadorSala[]>("obtener_jugadores")
     ]);
     this.estado = estado;
     this.jugadores = jugadores;
-    this.mapaPublico = mapa;
   }
 
   // Los errores se quedan en `estado.error` (los pone Rust) o se propagan para que los enseñe la ventana
@@ -105,12 +104,6 @@ class Sala {
   async quitar(idJugador: number, idEntidad: number) {
     await invoke("quitar_propietario", { idEntidad, idJugador });
     await Promise.all([this.recargar(), partida.recargarEntidades()]);
-  }
-
-  /** El mapa que ven los jugadores (`null` = ninguno). */
-  async elegirMapaPublico(id: number | null) {
-    await invoke("elegir_mapa_publico", { id });
-    await this.recargar();
   }
 
   async copiarEnlace(): Promise<boolean> {

@@ -4,6 +4,7 @@
 <script lang="ts">
   import { partida, numeroDe, veParametro, type Cuerpo } from "$lib/partida.svelte";
   import { arrastreTirada } from "$lib/arrastreTirada.svelte";
+  import { esJugador } from "$lib/modo";
 
   const textoCuerpo = (c: Cuerpo) => (typeof c === "object" ? `${c.Grande[0] ?? 1}×${c.Grande[1] ?? 1}` : "1×1");
 
@@ -36,7 +37,7 @@
             class:destino-tirada={arrastreTirada.esDestino(ficha.id_instancia, p.id)}
             data-valor="{ficha.id_instancia}:{p.id}"
             role="group"
-            title="Rueda o − / + para cambiarlo"
+            title={esJugador ? undefined : "Rueda o − / + para cambiarlo"}
             onwheel={(e) => {
               e.preventDefault();
               partida.cambiarValorActual(ficha.id_instancia, p.id, e.deltaY < 0 ? 1 : -1);
@@ -44,9 +45,13 @@
           >
             <span class="label">{p.clave}</span>
             <div class="control">
-              <button type="button" aria-label="Restar 1 a {p.clave}" onclick={() => partida.cambiarValorActual(ficha.id_instancia, p.id, -1)}>−</button>
+              {#if !esJugador}
+                <button type="button" aria-label="Restar 1 a {p.clave}" onclick={() => partida.cambiarValorActual(ficha.id_instancia, p.id, -1)}>−</button>
+              {/if}
               <span class="valor">{partida.valorMostrado(ficha, p.id)} / {numeroDe(ficha.base, p.id)}{p.unidad}</span>
-              <button type="button" aria-label="Sumar 1 a {p.clave}" onclick={() => partida.cambiarValorActual(ficha.id_instancia, p.id, 1)}>+</button>
+              {#if !esJugador}
+                <button type="button" aria-label="Sumar 1 a {p.clave}" onclick={() => partida.cambiarValorActual(ficha.id_instancia, p.id, 1)}>+</button>
+              {/if}
             </div>
           </div>
         {:else}

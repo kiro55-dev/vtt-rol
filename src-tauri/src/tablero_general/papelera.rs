@@ -318,7 +318,7 @@ mod tests {
     fn mapa(id: u16, zona: u16) -> Mapa {
         Mapa {
             id, id_zona: zona, nombre: id.to_string(), url_imagen_fondo: None, ancho: 1000, alto: 1000,
-            rejilla: 50, color_opacidad: vec![255, 255, 255, 76], grosor: 1, orden: 0,
+            rejilla: 50, color_opacidad: vec![255, 255, 255, 76], grosor: 1, orden: 0, compartido: false,
         }
     }
     fn ficha(id: u16, zona: u16, unica: bool) -> Entidad {

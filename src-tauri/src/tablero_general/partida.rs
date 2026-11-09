@@ -611,6 +611,7 @@ pub fn crear_mapa(
         color_opacidad: vec![255, 255, 255, 76],
         grosor: 1,
         orden,
+        compartido: false,
     };
 
     registrar(&mut est, &state.almacen, DeltaPartida::MapaCreado(zona, nuevo_mapa.clone()));
@@ -618,13 +619,15 @@ pub fn crear_mapa(
 }
 
 /// El tamaño del mapa (`ancho`/`alto`) no lo decide el front: es el de su imagen de fondo y lo
-/// calcula Rust. Si cambia el fondo se vuelve a leer; si no, se conserva el guardado.
+/// calcula Rust. Si cambia el fondo se vuelve a leer; si no, se conserva el guardado. Tampoco decide si
+/// está compartido (eso es `compartir_mapa`): una copia vieja del front no puede dejar de compartirlo.
 #[tauri::command]
 pub fn modificar_mapa(mut mapa: Mapa, state: State<'_, AppState>) -> Result<(), String> {
     let dir = state.almacen.dir();
     let mut est = state.lock();
     let guardado = est.mapas.iter().find(|m| m.id == mapa.id).ok_or("Ese mapa no existe")?;
 
+    mapa.compartido = guardado.compartido;
     (mapa.ancho, mapa.alto) = if guardado.url_imagen_fondo == mapa.url_imagen_fondo {
         (guardado.ancho, guardado.alto)
     } else {
@@ -663,23 +666,25 @@ pub fn corregir_tamanos_mapas(est: &mut EstadoPartida, almacen: &Almacen) {
     }
 }
 
-/// El mapa que ven los jugadores (`None` = ninguno). Lo elige el host aparte del que tiene abierto, así
-/// puede preparar otros mapas sin que se filtre nada. Hoy solo se guarda; lo usará la red (visibilidad.rs).
+/// La casilla de un mapa: lo ven (o dejan de ver) los jugadores de la sala, al instante. Es independiente
+/// del mapa que tenga abierto el host, así puede preparar otros sin que se vean.
 #[tauri::command]
-pub fn elegir_mapa_publico(id: Option<u16>, state: State<'_, AppState>) -> Result<(), String> {
-    let mut est = state.lock();
-    if id.is_some_and(|id| !est.mapas.iter().any(|m| m.id == id)) {
-        return Err("Ese mapa no existe".into());
+pub fn compartir_mapa(id: u16, compartido: bool, state: State<'_, AppState>) -> Result<(), String> {
+    {
+        let mut est = state.lock();
+        let mapa = est.mapas.iter().find(|m| m.id == id).ok_or("Ese mapa no existe")?;
+        if mapa.compartido == compartido {
+            return Ok(());
+        }
+        registrar(&mut est, &state.almacen, DeltaPartida::MapaCompartido { id, compartido });
     }
-    if est.mapa_publico != id {
-        registrar(&mut est, &state.almacen, DeltaPartida::MapaPublicoCambiado(id));
-    }
+    state.red.avisar(); // la ventana de la sala lista los mapas compartidos
     Ok(())
 }
 
-#[tauri::command]
-pub fn obtener_mapa_publico(state: State<'_, AppState>) -> Option<u16> {
-    state.lock().mapa_publico
+/// Ids de los mapas que ven los jugadores.
+pub fn mapas_compartidos(est: &EstadoPartida) -> Vec<u16> {
+    est.mapas.iter().filter(|m| m.compartido).map(|m| m.id).collect()
 }
 
 /// Manda el mapa a la papelera con las instancias que tenía (se puede restaurar con Ctrl+Z).
@@ -695,15 +700,13 @@ pub fn borrar_mapa(mapa: Mapa, state: State<'_, AppState>) -> Result<(), String>
 // AVISOS DEL TABLERO (efímeros)
 // ========================================================
 
-/// Envía un aviso a los demás jugadores. Aún no hay red: este es el único sitio que habrá que
-/// completar. Un aviso no es un delta (no se aplica al estado ni se guarda): solo se reenvía.
-/// El host ha hecho un ping o ha movido su recorrido en el tablero (ver `AvisoTablero`).
-/// Su propio tablero ya lo ha dibujado; esto lo envía a los jugadores si es del mapa que ven
-/// (`Red::difundir`). FUTURA RED: al RECIBIR uno de un jugador, se emitirá al front el evento de Tauri
-/// "aviso-tablero" con el mismo contenido (src/lib/avisosTablero.ts).
+/// El host ha hecho un ping o ha movido su recorrido en el tablero (ver `AvisoTablero`). Un aviso no es un
+/// delta (no se aplica al estado ni se guarda): su propio tablero ya lo ha dibujado, y esto lo envía a los
+/// jugadores si es de un mapa que ven (`Red::difundir`). FUTURA RED: al RECIBIR uno de un jugador, se
+/// emitirá al front el evento de Tauri "aviso-tablero" con el mismo contenido (src/lib/avisosTablero.ts).
 #[tauri::command]
 pub fn avisar_tablero(aviso: AvisoTablero, state: State<'_, AppState>) -> Result<(), String> {
-    let mapa_publico = {
+    let compartidos = {
         let est = state.lock();
         match aviso.id_mapa() {
             Some(id) => aviso.validar(est.mapas.iter().find(|m| m.id == id).ok_or("Ese mapa no existe")?)?,
@@ -712,9 +715,9 @@ pub fn avisar_tablero(aviso: AvisoTablero, state: State<'_, AppState>) -> Result
                 aviso.validar_foco(&ids)?;
             }
         }
-        est.mapa_publico
+        mapas_compartidos(&est)
     };
-    state.red.difundir(&aviso, mapa_publico);
+    state.red.difundir(&aviso, &compartidos);
     Ok(())
 }
 

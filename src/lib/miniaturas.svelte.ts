@@ -14,7 +14,7 @@
 // Memoria: lo que se guarda aquí es solo una ruta (unos bytes). Los píxeles los gestiona el
 // webview, que descarta las imágenes de las filas que se desmontan al salir de pantalla
 // (BancoEntidades solo pinta el <img> de las filas visibles). Por eso no hay límite ni LRU.
-import { invoke } from "@tauri-apps/api/core";
+import { invoke } from "$lib/backend";
 import { alImportarImagen, urlDeImagen } from "$lib/imagenes";
 
 type Tipo = "ficha" | "mapa";

@@ -21,7 +21,7 @@ use crate::tablero_general::modelos::Jugador;
 use crate::tablero_general::tablero::AvisoTablero;
 
 /// Súbelo cuando cambie cualquier mensaje.
-pub const VERSION_PROTOCOLO: u32 = 1;
+pub const VERSION_PROTOCOLO: u32 = 2;
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 #[serde(tag = "tipo")]

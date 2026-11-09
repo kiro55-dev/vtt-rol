@@ -7,7 +7,7 @@
 // con la que nace un borrador, los .txt nuevos, los adjuntos arrastrados, las copias que deja un
 // renombrado...). Al cancelar se descartan; al guardar se descarta lo que al final no se usó.
 // Rust nunca borra lo que la partida guardada referencia, así que pasarle de más no es peligroso.
-import { invoke } from "@tauri-apps/api/core";
+import { invoke } from "$lib/backend";
 import { partida, type DefinicionParametro, type Entidad, type Parametro } from "$lib/partida.svelte";
 import { importarImagen, urlDeImagen } from "$lib/imagenes";
 import { cargarImagen, encuadreCentrado, miniaturaWebp, type Encuadre } from "$lib/recorteFoto";

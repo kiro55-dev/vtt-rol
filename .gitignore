@@ -11,5 +11,5 @@ vite.config.ts.timestamp-*
 deltas.jsonl
 partida.json
 historial_personal.txt
-# Cliente web del jugador (se publica en GitHub Pages desde la acción, no se sube)
-/cliente-web/dist
+# La app para los jugadores (bun run web:build): se publica en GitHub Pages desde la acción, no se sube
+/build-web

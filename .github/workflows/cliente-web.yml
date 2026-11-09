@@ -1,18 +1,17 @@
-# Publica el cliente web del jugador (cliente-web/) en GitHub Pages: https://kiro55-dev.github.io/vtt-rol/
-# Es la página fija a la que apuntan los enlaces de las salas (ver docs/red.md). Se publica sola al subir
-# cambios del cliente o del dibujo del tablero que comparte con la app; también se puede lanzar a mano.
-name: Cliente web (GitHub Pages)
+# Publica la app para los JUGADORES en GitHub Pages: https://kiro55-dev.github.io/vtt-rol/
+# Es la misma app que la del host (src/), compilada para el navegador (`bun run web:build`, OPENROLL_WEB=1):
+# sin Tauri, sus datos llegan del host por la sala (ver docs/red.md). Los enlaces de las salas apuntan aquí.
+# Se publica sola al subir cambios del front; también se puede lanzar a mano.
+name: App de los jugadores (GitHub Pages)
 
 on:
   push:
     branches: [main]
     paths:
-      - "cliente-web/**"
-      - "src/lib/tablero.ts"
-      - "src/lib/fichasTablero.ts"
-      - "src/lib/marcasTablero.ts"
-      - "src/lib/partida.svelte.ts"
-      - "src/lib/avisosTablero.ts"
+      - "src/**"
+      - "static/**"
+      - "svelte.config.js"
+      - "vite.config.js"
       - "package.json"
       - "bun.lock"
       - ".github/workflows/cliente-web.yml"
@@ -34,12 +33,11 @@ jobs:
       - uses: actions/checkout@v4
       - uses: oven-sh/setup-bun@v2
       - run: bun install --frozen-lockfile
-      - run: bunx vitest run tests/clienteWeb.test.ts
-      - run: bun run web:check
+      - run: bunx vitest run
       - run: bun run web:build
       - uses: actions/upload-pages-artifact@v3
         with:
-          path: cliente-web/dist
+          path: build-web
 
   publicar:
     needs: construir

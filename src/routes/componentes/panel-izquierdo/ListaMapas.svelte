@@ -5,7 +5,7 @@
   import { open } from "@tauri-apps/plugin-dialog";
   import { partida, type Mapa } from "$lib/partida.svelte";
   import { miniaturas } from "$lib/miniaturas.svelte";
-  import { sala } from "$lib/sala.svelte";
+  import { esJugador } from "$lib/modo";
   import { ListaOrdenable } from "$lib/ordenable.svelte";
   import { esImagen, EXTENSIONES_IMAGEN } from "$lib/imagenes";
   import { alSoltarArchivos } from "$lib/soltarArchivos";
@@ -23,7 +23,8 @@
     selector: ".tarjeta-mapa",
     alReordenar: (ids) => partida.reordenarMapas(ids),
     alPulsar: (m) => partida.seleccionarMapa(m),
-    bloqueado: () => editandoId !== null
+    bloqueado: () => editandoId !== null,
+    soloClic: esJugador // el jugador solo abre los mapas que le comparten
   });
 
   $effect(() => lista.sincronizar(partida.mapas));
@@ -96,7 +97,7 @@
   <span class="titulo-mini">MAPAS</span>
   <div class="scroll">
     {#each lista.visuales as m, i (m.id)}
-      <div animate:flip={{ duration: 150 }}>
+      <div class="item-mapa" animate:flip={{ duration: 150 }}>
         <button
           type="button"
           class="tarjeta-mapa"
@@ -107,9 +108,9 @@
           onpointerdown={(e) => lista.iniciar(m, i, e)}
           ondblclick={(e) => {
             e.stopPropagation();
-            iniciarEdicion(m);
+            if (!esJugador) iniciarEdicion(m);
           }}
-          oncontextmenu={(e) => abrirMenu(e, m)}
+          oncontextmenu={(e) => (esJugador ? e.preventDefault() : abrirMenu(e, m))}
         >
           <!-- Contenedor de imagen blindado para no interceptar clics/arrastres -->
           {#if miniaturas.de(m.url_imagen_fondo)}
@@ -136,18 +137,29 @@
           {:else}
             <span class="nombre-mapa texto-recortado">{m.nombre}</span>
           {/if}
-          {#if sala.mapaPublico === m.id}
-            <span class="publico" title="Es el mapa que ven los jugadores">👁</span>
-          {/if}
         </button>
+        {#if !esJugador}
+          <!-- La casilla de compartir: marcada, los jugadores de la sala ven este mapa (al momento) -->
+          <input
+            type="checkbox"
+            class="compartir"
+            checked={m.compartido}
+            title={m.compartido ? "Lo ven los jugadores. Desmárcalo para dejar de compartirlo" : "Márcalo para que lo vean los jugadores"}
+            aria-label="Compartir con los jugadores"
+            onpointerdown={(e) => e.stopPropagation()}
+            onchange={(e) => void partida.compartirMapa(m, e.currentTarget.checked)}
+          />
+        {/if}
       </div>
     {/each}
-    <button
-      class="tarjeta-mapa nueva"
-      disabled={partida.zonaId === null}
-      onclick={() => partida.crearMapa(null)}
-      title={partida.zonaId === null ? "Crea primero una zona" : "Añadir mapa"}
-    >+</button>
+    {#if !esJugador}
+      <button
+        class="tarjeta-mapa nueva"
+        disabled={partida.zonaId === null}
+        onclick={() => partida.crearMapa(null)}
+        title={partida.zonaId === null ? "Crea primero una zona" : "Añadir mapa"}
+      >+</button>
+    {/if}
   </div>
 </div>
 
@@ -199,8 +211,8 @@
   .tarjeta-mapa.nueva { border-style: dashed; font-size: 14px; padding: 6px; cursor: pointer; }
   .tarjeta-mapa.nueva:disabled { opacity: 0.4; cursor: not-allowed; }
   .previa-mapa { font-size: 16px; display: block; pointer-events: none; }
-  .tarjeta-mapa { position: relative; }
-  .publico { position: absolute; top: 2px; right: 3px; font-size: 10px; pointer-events: none; }
+  .item-mapa { position: relative; }
+  .compartir { position: absolute; top: 4px; right: 4px; margin: 0; width: 13px; height: 13px; cursor: pointer; accent-color: #22c55e; }
   .nombre-mapa { font-size: 9px; color: #d4d4d8; display: block; margin-top: 2px; pointer-events: none; }
 
   /* Efecto hueco punteado mientras se arrastra */

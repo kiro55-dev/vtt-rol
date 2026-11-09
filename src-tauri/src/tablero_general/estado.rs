@@ -70,8 +70,10 @@ pub enum DeltaPartida {
     PapeleraVaciada,
     /// Alta de un jugador en la partida (o reemplazo del de ese id). Ver jugadores.rs.
     JugadorRegistrado(Jugador),
-    /// El mapa que ven los jugadores (`None` = ninguno). Lo elige el host aparte del que tiene abierto.
+    /// Solo para reproducir logs antiguos (había un único mapa público): deja compartido ese y ningún otro.
     MapaPublicoCambiado(Option<u16>),
+    /// La casilla de un mapa: lo ven (o dejan de ver) los jugadores de la sala.
+    MapaCompartido { id: u16, compartido: bool },
 }
 
 /// Línea de deltas.jsonl al LEER.
@@ -115,9 +117,6 @@ pub struct EstadoPartida {
     /// Jugadores registrados (sin el host). Sus ids son los de `Entidad.propietarios`.
     #[serde(default)]
     pub jugadores: Vec<Jugador>,
-    /// El único mapa que reciben los jugadores. Se vuelve `None` si ese mapa desaparece (ver `aplicar_delta`).
-    #[serde(default)]
-    pub mapa_publico: Option<u16>,
 }
 
 // A mano y no con derive: una partida nueva también nace con los parámetros de serie.
@@ -133,7 +132,6 @@ impl Default for EstadoPartida {
             historial_tiradas: Vec::new(),
             papelera: Vec::new(),
             jugadores: Vec::new(),
-            mapa_publico: None,
         }
     }
 }
@@ -362,12 +360,16 @@ impl EstadoPartida {
                 Some(pos) => self.jugadores[pos] = jugador.clone(),
                 None => self.jugadores.push(jugador.clone()),
             },
-            DeltaPartida::MapaPublicoCambiado(id) => self.mapa_publico = *id,
-        }
-        // Si el mapa público desaparece (borrado, zona eliminada...) los jugadores dejan de verlo. Hay que
-        // quitarlo ya: cuando se vacíe la papelera, un mapa nuevo podría reutilizar su id y salir a los jugadores.
-        if self.mapa_publico.is_some_and(|id| !self.mapas.iter().any(|m| m.id == id)) {
-            self.mapa_publico = None;
+            DeltaPartida::MapaPublicoCambiado(id) => {
+                for m in self.mapas.iter_mut() {
+                    m.compartido = Some(m.id) == *id;
+                }
+            }
+            DeltaPartida::MapaCompartido { id, compartido } => {
+                if let Some(m) = self.mapas.iter_mut().find(|m| m.id == *id) {
+                    m.compartido = *compartido;
+                }
+            }
         }
     }
 
@@ -518,6 +520,7 @@ mod tests {
             color_opacidad: vec![255, 255, 255, 76],
             grosor: 1,
             orden: 0,
+            compartido: false,
         }
     }
 
@@ -827,30 +830,57 @@ mod tests {
         assert_eq!(e.banco_entidades[0].nombre, "Renombrado");
     }
 
+    fn compartidos(e: &EstadoPartida) -> Vec<u16> {
+        e.mapas.iter().filter(|m| m.compartido).map(|m| m.id).collect()
+    }
+
     #[test]
-    fn el_mapa_publico_se_guarda_y_se_quita_cuando_el_mapa_desaparece() {
-        let dir = dir_temporal("mapa_publico");
+    fn cada_mapa_se_comparte_por_su_cuenta_y_se_reproduce_desde_el_log() {
+        let dir = dir_temporal("mapas_compartidos");
         {
             let a = Almacen::abrir(&dir).unwrap();
             let mut e = EstadoPartida::default();
             e.registrar(&a, DeltaPartida::ZonaCreada(zona(1))).unwrap();
-            e.registrar(&a, DeltaPartida::MapaCreado(zona(1), mapa(1, 1))).unwrap();
-            e.registrar(&a, DeltaPartida::MapaPublicoCambiado(Some(1))).unwrap();
+            for id in 1..=3 {
+                e.registrar(&a, DeltaPartida::MapaCreado(zona(1), mapa(id, 1))).unwrap();
+            }
+            e.registrar(&a, DeltaPartida::MapaCompartido { id: 1, compartido: true }).unwrap();
+            e.registrar(&a, DeltaPartida::MapaCompartido { id: 3, compartido: true }).unwrap();
+            e.registrar(&a, DeltaPartida::MapaCompartido { id: 1, compartido: false }).unwrap();
+            assert_eq!(compartidos(&e), [3]);
         }
         let (mut e, _) = cargar(&Almacen::abrir(&dir).unwrap()).unwrap();
-        assert_eq!(e.mapa_publico, Some(1), "se reproduce desde el log");
+        assert_eq!(compartidos(&e), [3]);
 
-        // A la papelera: los jugadores dejan de verlo y, al reutilizarse el id, no vuelve solo
-        let d = crate::tablero_general::papelera::borrar_mapa(&e, 1).unwrap();
-        e.aplicar_delta(&d);
-        assert_eq!(e.mapa_publico, None);
-        e.aplicar_delta(&DeltaPartida::PapeleraVaciada);
-        e.aplicar_delta(&DeltaPartida::MapaCreado(zona(1), mapa(1, 1)));
-        assert_eq!(e.mapa_publico, None, "otro mapa con el mismo id no hereda el permiso");
+        // Un MapaModificado (renombrar, rejilla...) no lo cambia: lleva lo que tenía el mapa
+        let mut renombrado = e.mapas[2].clone();
+        renombrado.nombre = "Otro".into();
+        e.aplicar_delta(&DeltaPartida::MapaModificado(renombrado));
+        assert_eq!(compartidos(&e), [3]);
 
-        // Una partida antigua no tiene mapa público
-        let antigua: EstadoPartida = serde_json::from_str(r#"{"ultimo_seq":3}"#).unwrap();
-        assert_eq!(antigua.mapa_publico, None);
+        // Un mapa de un partida.json antiguo no está compartido
+        let viejo: Mapa = serde_json::from_str(
+            r#"{"id":1,"id_zona":1,"ancho":10,"alto":10,"rejilla":5,"color_opacidad":[0,0,0,0],"grosor":1}"#,
+        )
+        .unwrap();
+        assert!(!viejo.compartido);
+    }
+
+    #[test]
+    fn el_delta_antiguo_de_mapa_publico_deja_compartido_solo_ese() {
+        let mut e = EstadoPartida::default();
+        for id in 1..=3 {
+            e.aplicar_delta(&DeltaPartida::MapaCreado(zona(1), mapa(id, 1)));
+        }
+        e.aplicar_delta(&DeltaPartida::MapaCompartido { id: 1, compartido: true });
+        e.aplicar_delta(&DeltaPartida::MapaPublicoCambiado(Some(2)));
+        assert_eq!(compartidos(&e), [2]);
+        e.aplicar_delta(&DeltaPartida::MapaPublicoCambiado(None));
+        assert!(compartidos(&e).is_empty());
+
+        // Un partida.json guardado con el campo viejo sigue cargando
+        let antigua: EstadoPartida = serde_json::from_str(r#"{"ultimo_seq":3,"mapa_publico":2}"#).unwrap();
+        assert_eq!(antigua.ultimo_seq, 3);
     }
 
     #[test]

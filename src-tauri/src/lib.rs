@@ -25,7 +25,7 @@ use tablero_general::partida::{
     obtener_dir_datos,
     obtener_historial_personal, obtener_historial_tiradas, obtener_instancias_activas,
     instanciar_entidad, instanciar_entidades, borrar_entidades, restaurar_papelera, cerrar_partida, mover_instancia, mover_instancias, borrar_instancia, modificar_valor_actual, rotar_instancia, espejar_instancia,
-    reordenar_instancias, elegir_mapa_publico, obtener_mapa_publico,
+    reordenar_instancias, compartir_mapa,
     obtener_mapas_zona, obtener_miniatura, guardar_miniatura_ficha, obtener_zonas, renombrar_archivo_adjunto,
 };
 
@@ -116,8 +116,7 @@ pub fn run() {
             rotar_instancia,
             espejar_instancia,
             reordenar_instancias,
-            elegir_mapa_publico,
-            obtener_mapa_publico,
+            compartir_mapa,
             estado_sala,
             abrir_sala,
             cerrar_sala,

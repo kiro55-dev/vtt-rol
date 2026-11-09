@@ -5,8 +5,8 @@
 //
 //  * Salida: lo que haces tú. Ya lo dibujas en tu tablero; aquí solo se avisa a Rust.
 //  * Entrada: lo que hacen otros. Rust lo emitirá como evento de Tauri "aviso-tablero" cuando haya red.
-import { invoke } from "@tauri-apps/api/core";
-import { listen } from "@tauri-apps/api/event";
+import { invoke } from "$lib/backend";
+import { listen } from "$lib/backend";
 import type { Casilla } from "$lib/partida.svelte";
 
 export type AvisoTablero =

@@ -11,6 +11,7 @@
   import VentanaPartidas from "./VentanaPartidas.svelte";
   import VentanaSala from "./VentanaSala.svelte";
   import { sala } from "$lib/sala.svelte";
+  import { esJugador } from "$lib/modo";
 
   let parametrosAbierto = $state(false);
   let partidasAbierto = $state(false);
@@ -59,9 +60,11 @@
     <BancoEntidades />
   </div>
 
-  <div class="pie">
-    <BotonAjustes {opciones} />
-  </div>
+  {#if !esJugador}
+    <div class="pie">
+      <BotonAjustes {opciones} />
+    </div>
+  {/if}
 </aside>
 
 {#if parametrosAbierto}

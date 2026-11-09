@@ -4,7 +4,7 @@
 // todo lo que se hace con él (añadir/quitar dados desde la barra de dados, tirar, navegar por los
 // comandos anteriores). La barra de dados, la lista de tiradas y la caja de texto lo comparten
 // sin pasarse nada entre ellas.
-import { invoke } from "@tauri-apps/api/core";
+import { invoke } from "$lib/backend";
 
 export interface Tirada {
   hora: string;

@@ -143,7 +143,9 @@ async fn atender(red: Arc<Red>, socket: WebSocket) {
     };
 
     // 3. Bienvenida y vista inicial. A partir de aquí, todo lo que se le envía pasa por su canal.
-    let sesion = crate::red::sala::SalaGuardada::nueva().secreto; // un aleatorio de 128 bits
+    let Some(sesion) = red.sesion_de(yo.id) else {
+        return rechazar(&mut tx, "La sala se ha cerrado").await;
+    };
     let bienvenida = MensajeHost::Bienvenido { yo: yo.clone(), token: token_nuevo, sesion: sesion.clone() };
     if enviar(&mut tx, &bienvenida).await.is_err() {
         return;
@@ -151,7 +153,7 @@ async fn atender(red: Arc<Red>, socket: WebSocket) {
     let (canal, mut salida) = mpsc::unbounded_channel();
     let id_conexion = {
         let est = red.estado_partida(); // estado → dentro
-        red.conectar(&est, yo.id, canal, sesion)
+        red.conectar(&est, yo.id, canal)
     };
     let Some(id_conexion) = id_conexion else {
         return rechazar(&mut tx, "La sala se ha cerrado").await;
@@ -467,20 +469,58 @@ mod tests {
         leer(&mut c).await; // Bienvenido
         leer(&mut c).await; // Vista
 
-        // El host enseña un mapa: le llega el cambio
+        // El host comparte un mapa: le llegan el mapa y su zona
         {
             let mut est = red.estado_partida();
+            est.zonas.push(crate::tablero_general::modelos::Zona { id: 1, nombre: "Z".into(), orden: 0 });
             est.mapas.push(crate::tablero_general::modelos::Mapa {
                 id: 1, id_zona: 1, nombre: "M".into(), url_imagen_fondo: None, ancho: 1000, alto: 1000, rejilla: 50,
-                color_opacidad: vec![255, 255, 255, 76], grosor: 1, orden: 0,
+                color_opacidad: vec![255, 255, 255, 76], grosor: 1, orden: 0, compartido: false,
             });
-            est.aplicar_delta(&DeltaPartida::MapaPublicoCambiado(Some(1)));
+            est.aplicar_delta(&DeltaPartida::MapaCompartido { id: 1, compartido: true });
             red.tras_cambio(&est);
         }
         let MensajeHost::Cambios { cambios } = leer(&mut c).await else { panic!() };
-        assert_eq!(cambios.mapa.and_then(|m| m.actual).map(|m| m.id), Some(1));
+        assert_eq!(cambios.mapas.iter().map(|m| m.id).collect::<Vec<_>>(), vec![1]);
+        assert_eq!(cambios.zonas.iter().map(|z| z.id).collect::<Vec<_>>(), vec![1]);
 
         red.cerrar();
         assert_eq!(leer(&mut c).await, MensajeHost::SalaCerrada);
+    }
+
+    #[tokio::test]
+    async fn el_fondo_de_un_mapa_compartido_se_sirve_y_el_de_uno_oculto_no() {
+        let (red, puerto) = red_de_prueba("srv_imagen", None).await;
+        let dir = red.dir_sala().unwrap();
+        std::fs::create_dir_all(dir.join("imagenes")).unwrap();
+        std::fs::write(dir.join("imagenes/fondo.png"), b"PNG del fondo").unwrap();
+        std::fs::write(dir.join("imagenes/oculto.png"), b"PNG oculto").unwrap();
+        {
+            let mut est = red.estado_partida();
+            let mapa = |id, ruta: &str, compartido| crate::tablero_general::modelos::Mapa {
+                id, id_zona: 1, nombre: "M".into(), url_imagen_fondo: Some(ruta.into()), ancho: 1000, alto: 1000, rejilla: 50,
+                color_opacidad: vec![255, 255, 255, 76], grosor: 1, orden: 0, compartido,
+            };
+            est.mapas = vec![mapa(1, "imagenes/fondo.png", true), mapa(2, "imagenes/oculto.png", false)];
+        }
+        let (mut c, reto) = conectar_con_reto(puerto, &origen(&red)).await;
+        mandar(&mut c, &hola(&red, &reto, None)).await;
+        leer(&mut c).await;
+        mandar(&mut c, &MensajeCliente::Unirse { nombre: "Ana".into(), contrasena: None }).await;
+        let MensajeHost::Bienvenido { sesion, .. } = leer(&mut c).await else { panic!() };
+
+        let pedir = |ruta: &str, sesion: &str| format!("http://127.0.0.1:{puerto}/imagen?ruta={ruta}&sesion={sesion}");
+        let r = reqwest::get(pedir("imagenes%2Ffondo.png", &sesion)).await.unwrap();
+        assert_eq!(r.status(), 200);
+        assert_eq!(r.headers()["content-type"], "image/png");
+        assert_eq!(r.bytes().await.unwrap().as_ref(), b"PNG del fondo");
+
+        assert_eq!(reqwest::get(pedir("imagenes%2Foculto.png", &sesion)).await.unwrap().status(), 404, "mapa no compartido");
+        assert_eq!(reqwest::get(pedir("imagenes%2Ffondo.png", "otra")).await.unwrap().status(), 403, "sin sesión válida");
+
+        // La sesión sigue valiendo al reconectar (el navegador ya tiene las URLs)
+        drop(c);
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        assert_eq!(reqwest::get(pedir("imagenes%2Ffondo.png", &sesion)).await.unwrap().status(), 200);
     }
 }

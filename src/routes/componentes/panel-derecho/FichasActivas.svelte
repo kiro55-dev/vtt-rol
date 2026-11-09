@@ -11,6 +11,7 @@
   import { partida, numeroDe, veParametro, type Instancia } from "$lib/partida.svelte";
   import { ajustesVista } from "$lib/ajustesVista.svelte";
   import { arrastreJugador } from "$lib/arrastreJugador.svelte";
+  import { esJugador } from "$lib/modo";
   import { arrastre, moverEnLista } from "$lib/arrastreFicha.svelte";
   import { arrastreTirada } from "$lib/arrastreTirada.svelte";
   import { miniaturas } from "$lib/miniaturas.svelte";
@@ -107,7 +108,7 @@
       ondblclick={(e) => visorImagen.abrir(ficha.base.foto_url, e.clientX, e.clientY)}
       oncontextmenu={(e) => {
         e.preventDefault();
-        menu = { x: e.clientX, y: e.clientY, instancia: ficha };
+        if (!esJugador) menu = { x: e.clientX, y: e.clientY, instancia: ficha };
       }}
       title="Clic: foco (Ctrl: varias) · Doble clic: ver la foto · Arrastrar: reordenar o llevar al tablero · Clic derecho: eliminar"
     >

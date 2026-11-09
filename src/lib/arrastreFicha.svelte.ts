@@ -10,6 +10,7 @@
 // única, casilla encajada...) las aplica Rust.
 import { partida, reordenarConOcultas, type Destino, type Entidad, type Instancia } from "$lib/partida.svelte";
 import { ladosInstancia, tamanoCuerpo, type Lados } from "$lib/tablero";
+import { esJugador } from "$lib/modo";
 
 /**
  * Lo que se arrastra: una ficha del banco, varias (selección con Ctrl) o una instancia (y de dónde se
@@ -187,6 +188,15 @@ class ArrastreFicha {
    */
   preparar(e: PointerEvent, origen: OrigenArrastre, alClic?: () => void, agarre: ArrastreEnCurso["agarre"] = null) {
     if (e.button !== 0 || this.actual) return;
+    if (esJugador) {
+      // Fase 1: el jugador aún no mueve fichas (docs/red.md). Un clic sigue siendo un clic (foco).
+      const alSoltar = () => {
+        window.removeEventListener("pointerup", alSoltar);
+        alClic?.();
+      };
+      window.addEventListener("pointerup", alSoltar);
+      return;
+    }
     this.#terminar();
     const inicio = { x: e.clientX, y: e.clientY };
     const base = baseDe(origen);

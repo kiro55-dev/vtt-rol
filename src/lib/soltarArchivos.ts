@@ -4,6 +4,7 @@
 // Tauri avisa a nivel de ventana (no de elemento), así que cada componente mira qué elemento hay
 // debajo del cursor para decidir si el drop es suyo.
 import { getCurrentWebview } from "@tauri-apps/api/webview";
+import { esJugador } from "$lib/modo";
 
 type AlSoltar = (rutas: string[], elemento: Element | null) => void | Promise<unknown>;
 
@@ -12,6 +13,7 @@ type AlSoltar = (rutas: string[], elemento: Element | null) => void | Promise<un
  * que deja de escuchar, pensada para devolverla tal cual desde `onMount`.
  */
 export function alSoltarArchivos(alSoltar: AlSoltar): () => void {
+  if (esJugador) return () => {}; // el navegador de un jugador no puede dar archivos de su disco al host
   let quitar: (() => void) | null = null;
   let terminado = false;
 

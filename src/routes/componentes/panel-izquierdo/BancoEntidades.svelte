@@ -1,13 +1,14 @@
 <!-- src/routes/componentes/panel-izquierdo/BancoEntidades.svelte -->
 <script lang="ts">
   import { onMount } from "svelte";
-  import { invoke } from "@tauri-apps/api/core";
+  import { invoke } from "$lib/backend";
   import { partida, type Entidad } from "$lib/partida.svelte";
   import { miniaturas } from "$lib/miniaturas.svelte";
   import { esImagen, importarImagen } from "$lib/imagenes";
   import { alSoltarArchivos } from "$lib/soltarArchivos";
   import { arrastre } from "$lib/arrastreFicha.svelte";
   import { arrastreJugador } from "$lib/arrastreJugador.svelte";
+  import { esJugador } from "$lib/modo";
 
   // Soltar aquí una instancia la elimina: se marca el banco mientras pasa por encima
   const recibeInstancia = $derived(arrastre.actual?.zona === "banco" && "instancia" in arrastre.actual.origen);
@@ -105,9 +106,11 @@
   <div class="sub-busqueda">
     <div class="fila-cabecera">
       <span class="titulo-mini">BANCO DE FICHAS</span>
-      <button type="button" class="btn-anadir" onclick={() => void partida.abrirEditorEntidad(null)}>
-        + Añadir Ficha
-      </button>
+      {#if !esJugador}
+        <button type="button" class="btn-anadir" onclick={() => void partida.abrirEditorEntidad(null)}>
+          + Añadir Ficha
+        </button>
+      {/if}
     </div>
 
     <input type="text" placeholder="Buscar ficha..." bind:value={busqueda} class="input-buscar" />

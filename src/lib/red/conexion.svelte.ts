@@ -1,17 +1,20 @@
-// cliente-web/src/conexion.svelte.ts
+// src/lib/red/conexion.svelte.ts
 //
-// La conexión con el host (ver src-tauri/src/red/protocolo.rs):
+// La conexión del JUGADOR con la sala del host (ver src-tauri/src/red/protocolo.rs y docs/red.md):
 //  1. El host manda un reto. Si este navegador ya entró en la sala, responde con
 //     HMAC-SHA256(SHA-256(token), "<reto>|<túnel>"): demuestra que tiene el token sin enviarlo, así un enlace
 //     falso que lleve a otro servidor no puede robarlo.
 //  2. Si el host no lo reconoce, pide nombre (y contraseña, si la hay). Al entrar, da un token que se guarda
-//     en este navegador (localStorage de esta página fija) para la próxima vez.
-//  3. Después llega la vista entera y luego solo lo que cambia.
+//     en este navegador (localStorage de la página fija) para la próxima vez.
+//  3. Después llega la vista entera y luego solo lo que cambia. Con ella se contestan los comandos de la app
+//     ($lib/backend), y cada cambio se avisa con el evento `partida-cambiada` para que los stores relean.
 // Si se corta, se reintenta durante un minuto (p. ej. el móvil cambia de red).
-import { claveAlmacen, urlWebSocket, type Enlace } from "./enlace";
+import { emitirLocal, EVENTO_PARTIDA_CAMBIADA, instalarJugador } from "$lib/backend";
+import { EVENTO_AVISO } from "$lib/avisosTablero";
+import { esJugador } from "$lib/modo";
+import { claveAlmacen, leerEnlace, urlImagen, urlWebSocket, type Enlace } from "./enlace";
 import { VERSION_PROTOCOLO, type Jugador, type MensajeCliente, type MensajeHost, type VistaJugador } from "./protocolo";
-import { aplicarCambios, vistaVacia } from "./vista";
-import type { AvisoTablero } from "$lib/avisosTablero";
+import { aplicarCambios, partesCambiadas, responder, separarMiniatura, vistaVacia } from "./replica";
 
 export type EstadoConexion =
   | { tipo: "conectando" }
@@ -51,24 +54,38 @@ function guardarToken(sala: string, token: string) {
 export class Conexion {
   estado = $state<EstadoConexion>({ tipo: "conectando" });
   yo = $state<Jugador | null>(null);
-  vista = $state.raw<VistaJugador>(vistaVacia());
-  /** Para pedir imágenes al host durante esta conexión. */
+  /** Lo que ve este jugador. La app lo lee a través de `invoke` ($lib/backend). */
+  vista: VistaJugador = vistaVacia();
+  /** Para pedir imágenes al host (la misma mientras dure la sala, también al reconectar). */
   sesion = $state<string | null>(null);
 
   readonly enlace: Enlace;
   #ws: WebSocket | null = null;
-  #alAviso: ((a: AvisoTablero) => void) | null = null;
-  /** Desde cuándo se está intentando reconectar (null = conectado o sin empezar). */
   #cortadoDesde: number | null = null;
   #final = false;
+  #alPrimeraVista: (() => void) | null = null;
+  /** Se cumple cuando llega la primera vista (la app puede empezar a leer). */
+  readonly lista: Promise<void>;
 
   constructor(enlace: Enlace) {
     this.enlace = enlace;
+    this.lista = new Promise((r) => (this.#alPrimeraVista = r));
   }
 
-  /** Avisos del host (ping, recorrido): los pinta el tablero. */
-  alRecibirAviso(cb: (a: AvisoTablero) => void) {
-    this.#alAviso = cb;
+  /** Lo que la app pide con `invoke` se contesta con la réplica. */
+  responder(cmd: string, args: Record<string, unknown>): Promise<unknown> {
+    try {
+      return Promise.resolve(responder(cmd, args, this.vista));
+    } catch (err) {
+      return Promise.reject(err);
+    }
+  }
+
+  /** URL de una imagen de la partida (la ruta puede llevar la marca de miniatura de `obtener_miniatura`). */
+  urlImagen(ref: string): string {
+    if (!this.sesion) return "";
+    const { ruta, mini } = separarMiniatura(ref);
+    return urlImagen(this.enlace, this.sesion, ruta, mini);
   }
 
   conectar() {
@@ -132,7 +149,7 @@ export class Conexion {
       }
       case "Identificate":
         // `recordado`: este navegador ya había entrado y aun así se le pregunta. Puede ser que el host
-        // generó un enlace nuevo... o que este enlace no lleva al host de verdad (ver Entrada.svelte).
+        // generó un enlace nuevo... o que este enlace no lleva al host de verdad (ver EntradaSala.svelte).
         this.estado = { tipo: "identificate", pideContrasena: m.pide_contrasena, error: m.error ?? null, recordado: !!leerToken(this.enlace.sala) };
         return;
       case "Bienvenido":
@@ -142,14 +159,25 @@ export class Conexion {
         this.#cortadoDesde = null;
         this.estado = { tipo: "dentro" };
         return;
-      case "Vista":
+      case "Vista": {
+        const primera = this.#alPrimeraVista;
         this.vista = m.vista;
+        if (primera) {
+          this.#alPrimeraVista = null;
+          primera();
+        } else {
+          // Al reconectar: todo puede haber cambiado
+          emitirLocal(EVENTO_PARTIDA_CAMBIADA, { zonas: true, mapas: true, entidades: true, definiciones: true });
+        }
         return;
+      }
       case "Cambios":
         this.vista = aplicarCambios(this.vista, m.cambios);
+        emitirLocal(EVENTO_PARTIDA_CAMBIADA, partesCambiadas(m.cambios));
         return;
       case "Aviso":
-        this.#alAviso?.(m.aviso);
+        // El tablero ya escucha este evento (los avisos del host: ping y recorrido)
+        emitirLocal(EVENTO_AVISO, m.aviso);
         return;
       case "Rechazado":
         return this.#terminar(m.motivo);
@@ -158,3 +186,16 @@ export class Conexion {
     }
   }
 }
+
+/**
+ * La conexión de esta pestaña, si es la de un jugador con un enlace válido (`null` en el host o sin enlace).
+ * Se crea al cargar el módulo e instala su respuesta en `invoke`.
+ */
+export const conexion: Conexion | null = (() => {
+  if (!esJugador) return null;
+  const enlace = leerEnlace(location.hash);
+  if (!enlace) return null;
+  const c = new Conexion(enlace);
+  instalarJugador((cmd, args) => c.responder(cmd, args));
+  return c;
+})();

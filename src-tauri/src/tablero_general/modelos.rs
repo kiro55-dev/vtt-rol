@@ -453,6 +453,11 @@ pub struct Mapa {
     // Si no viene en el JSON, se asume 0
     #[serde(default)]
     pub orden: u16,
+
+    /// Lo ven los jugadores de la sala (la casilla de arriba a la derecha del mapa). Lo cambia solo el delta
+    /// `MapaCompartido`: `modificar_mapa` conserva el guardado.
+    #[serde(default)]
+    pub compartido: bool,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]

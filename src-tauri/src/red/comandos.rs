@@ -15,7 +15,8 @@ use crate::tablero_general::partida::{self, AppState};
 
 #[tauri::command]
 pub fn estado_sala(state: State<'_, AppState>) -> EstadoSala {
-    state.red.estado()
+    let est = state.lock(); // estado → red
+    state.red.estado(&est)
 }
 
 /// Abre la sala (puede tardar: la primera vez descarga cloudflared). El progreso llega por `sala-cambiada`.
@@ -23,7 +24,8 @@ pub fn estado_sala(state: State<'_, AppState>) -> EstadoSala {
 pub async fn abrir_sala(state: State<'_, AppState>) -> Result<EstadoSala, String> {
     let red = state.red.clone();
     red.abrir().await?;
-    Ok(red.estado())
+    let est = state.lock();
+    Ok(red.estado(&est))
 }
 
 #[tauri::command]

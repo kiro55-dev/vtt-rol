@@ -49,15 +49,14 @@ pub fn instancias_para_el_master(instancias: &[Instancia], ocultar_privados: boo
 
 /// Las instancias tal como las ve `jugador`. El host, todas. Un jugador:
 ///  * las de sus fichas, enteras y estén donde estén (las tiene activas aunque no estén en el tablero);
-///  * las demás, filtradas con `vista_jugador`, solo si están en el mapa público.
-#[allow(dead_code)]
-pub fn instancias_para(jugador: IdJugador, instancias: &[Instancia], mapa_publico: Option<u16>) -> Vec<Instancia> {
+///  * las demás, filtradas con `vista_jugador`, solo si están puestas en un mapa compartido.
+pub fn instancias_para(jugador: IdJugador, instancias: &[Instancia], compartidos: &[u16]) -> Vec<Instancia> {
     instancias
         .iter()
         .filter_map(|i| {
             if es_propietario(jugador, &i.base) {
                 Some(i.clone())
-            } else if i.id_mapa.is_some() && i.id_mapa == mapa_publico {
+            } else if i.id_mapa.is_some_and(|m| compartidos.contains(&m)) {
                 Some(vista_jugador(i))
             } else {
                 None
@@ -66,25 +65,26 @@ pub fn instancias_para(jugador: IdJugador, instancias: &[Instancia], mapa_public
         .collect()
 }
 
-/// Los mapas que recibe `jugador`: el host todos; un jugador solo el público.
-#[allow(dead_code)]
-pub fn mapas_para(jugador: IdJugador, mapas: &[Mapa], mapa_publico: Option<u16>) -> Vec<Mapa> {
+/// Los mapas que recibe `jugador`: el host todos; un jugador los compartidos (la casilla de cada mapa).
+pub fn mapas_para(jugador: IdJugador, mapas: &[Mapa]) -> Vec<Mapa> {
     if jugador == ID_HOST {
         return mapas.to_vec();
     }
-    mapas.iter().filter(|m| Some(m.id) == mapa_publico).cloned().collect()
+    mapas.iter().filter(|m| m.compartido).cloned().collect()
 }
 
-/// Las zonas son organización del host: un jugador no recibe ninguna.
-#[allow(dead_code)]
-pub fn zonas_para(jugador: IdJugador, zonas: &[Zona]) -> Vec<Zona> {
-    if jugador == ID_HOST { zonas.to_vec() } else { Vec::new() }
+/// Las zonas que recibe `jugador`: el host todas; un jugador solo las que tienen algún mapa compartido (para
+/// que su lista de zonas y mapas sea como la del host, pero solo con lo que ve).
+pub fn zonas_para(jugador: IdJugador, zonas: &[Zona], mapas: &[Mapa]) -> Vec<Zona> {
+    if jugador == ID_HOST {
+        return zonas.to_vec();
+    }
+    zonas.iter().filter(|z| mapas.iter().any(|m| m.compartido && m.id_zona == z.id)).cloned().collect()
 }
 
 /// ¿Puede `jugador` pedir este archivo (ruta relativa de la partida)? El host sí. Un jugador solo si lo usa
-/// algo que ve: el fondo del mapa público, la foto o miniatura de una instancia visible, o cualquier cosa de
-/// sus propias fichas (adjuntos incluidos). Nunca la papelera ni los mapas y fichas ocultos.
-#[allow(dead_code)]
+/// algo que ve: el fondo de un mapa compartido, la foto o miniatura de una instancia visible, o cualquier cosa
+/// de sus propias fichas (adjuntos incluidos). Nunca la papelera ni los mapas y fichas ocultos.
 pub fn recurso_visible_para(jugador: IdJugador, est: &EstadoPartida, ruta: &str) -> bool {
     if jugador == ID_HOST {
         return true;
@@ -94,9 +94,10 @@ pub fn recurso_visible_para(jugador: IdJugador, est: &EstadoPartida, ruta: &str)
             || e.miniatura_url.as_deref() == Some(ruta)
             || (con_adjuntos && e.archivos_adjuntos.iter().flatten().any(|a| a == ruta))
     };
-    est.mapas.iter().any(|m| Some(m.id) == est.mapa_publico && m.url_imagen_fondo.as_deref() == Some(ruta))
+    let compartidos: Vec<u16> = est.mapas.iter().filter(|m| m.compartido).map(|m| m.id).collect();
+    est.mapas.iter().any(|m| m.compartido && m.url_imagen_fondo.as_deref() == Some(ruta))
         || est.banco_entidades.iter().any(|e| es_propietario(jugador, e) && usa(e, true))
-        || instancias_para(jugador, &est.instancias_activas, est.mapa_publico)
+        || instancias_para(jugador, &est.instancias_activas, &compartidos)
             .iter()
             .any(|i| usa(&i.base, true))
 }
@@ -219,55 +220,56 @@ mod tests {
     fn el_propietario_y_el_host_ven_la_instancia_entera_y_los_demas_filtrada() {
         let originales = vec![instancia()];
         for quien in [ID_HOST, 3] {
-            let v = &instancias_para(quien, &originales, Some(2))[0];
+            let v = &instancias_para(quien, &originales, &[2])[0];
             assert_eq!(v.base.parametros.len(), 3, "jugador {quien}");
             assert_eq!(v.valores_actuales.len(), 1, "con su vida actual");
             assert_eq!(v.base.archivos_adjuntos.len(), 1, "y sus adjuntos");
         }
-        let ajena = &instancias_para(4, &originales, Some(2))[0];
+        let ajena = &instancias_para(4, &originales, &[2])[0];
         assert_eq!(ajena.base.parametros.len(), 2);
         assert!(ajena.valores_actuales.is_empty() && ajena.base.archivos_adjuntos.is_empty());
     }
 
     #[test]
-    fn lo_que_no_esta_en_el_mapa_publico_no_se_envia_salvo_a_su_dueno() {
+    fn lo_que_no_esta_en_un_mapa_compartido_no_se_envia_salvo_a_su_dueno() {
         let originales = vec![instancia()];
-        assert!(instancias_para(4, &originales, Some(9)).is_empty(), "en otro mapa");
-        assert!(instancias_para(4, &originales, None).is_empty(), "sin mapa público");
-        assert_eq!(instancias_para(3, &originales, None).len(), 1, "el dueño siempre la tiene");
-        assert_eq!(instancias_para(ID_HOST, &originales, None).len(), 1);
+        assert!(instancias_para(4, &originales, &[9]).is_empty(), "en otro mapa");
+        assert!(instancias_para(4, &originales, &[]).is_empty(), "sin mapas compartidos");
+        assert_eq!(instancias_para(4, &originales, &[1, 2]).len(), 1, "uno de varios compartidos");
+        assert_eq!(instancias_para(3, &originales, &[]).len(), 1, "el dueño siempre la tiene");
+        assert_eq!(instancias_para(ID_HOST, &originales, &[]).len(), 1);
 
-        // Sin colocar (activa fuera del tablero) tampoco sale a los demás aunque coincida el `None`
+        // Sin colocar (activa fuera del tablero) no sale a los demás
         let mut sin_colocar = instancia();
         sin_colocar.id_mapa = None;
-        assert!(instancias_para(4, &[sin_colocar], None).is_empty());
+        assert!(instancias_para(4, &[sin_colocar], &[2]).is_empty());
     }
 
-    fn mapa(id: u16, fondo: &str) -> Mapa {
+    fn mapa(id: u16, zona: u16, fondo: &str, compartido: bool) -> Mapa {
         Mapa {
-            id, id_zona: 1, nombre: id.to_string(), url_imagen_fondo: Some(fondo.into()), ancho: 1000, alto: 1000,
-            rejilla: 50, color_opacidad: vec![255, 255, 255, 76], grosor: 1, orden: 0,
+            id, id_zona: zona, nombre: id.to_string(), url_imagen_fondo: Some(fondo.into()), ancho: 1000, alto: 1000,
+            rejilla: 50, color_opacidad: vec![255, 255, 255, 76], grosor: 1, orden: 0, compartido,
         }
     }
 
     #[test]
-    fn un_jugador_solo_recibe_el_mapa_publico_y_ninguna_zona() {
-        let mapas = vec![mapa(1, "imagenes/a.png"), mapa(2, "imagenes/b.png")];
-        let ids = |j, p| mapas_para(j, &mapas, p).iter().map(|m| m.id).collect::<Vec<_>>();
-        assert_eq!(ids(ID_HOST, Some(2)), vec![1, 2]);
-        assert_eq!(ids(4, Some(2)), vec![2]);
-        assert!(ids(4, None).is_empty());
+    fn un_jugador_recibe_los_mapas_compartidos_y_solo_sus_zonas() {
+        let mapas = vec![mapa(1, 1, "imagenes/a.png", false), mapa(2, 1, "imagenes/b.png", true), mapa(3, 2, "imagenes/c.png", true)];
+        let ids = |j| mapas_para(j, &mapas).iter().map(|m| m.id).collect::<Vec<_>>();
+        assert_eq!(ids(ID_HOST), vec![1, 2, 3]);
+        assert_eq!(ids(4), vec![2, 3]);
 
-        let zonas = vec![Zona { id: 1, nombre: "Z".into(), orden: 0 }];
-        assert_eq!(zonas_para(ID_HOST, &zonas).len(), 1);
-        assert!(zonas_para(4, &zonas).is_empty());
+        let zonas: Vec<Zona> = (1..=3).map(|id| Zona { id, nombre: format!("Z{id}"), orden: 0 }).collect();
+        assert_eq!(zonas_para(ID_HOST, &zonas, &mapas).len(), 3);
+        let z: Vec<u16> = zonas_para(4, &zonas, &mapas).iter().map(|z| z.id).collect();
+        assert_eq!(z, vec![1, 2], "la 3 no tiene ningún mapa compartido");
+        assert!(zonas_para(4, &zonas, &[mapa(1, 1, "x", false)]).is_empty());
     }
 
     #[test]
     fn un_jugador_solo_puede_pedir_los_archivos_de_lo_que_ve() {
         let mut est = EstadoPartida::default();
-        est.mapas = vec![mapa(1, "imagenes/oculto.png"), mapa(2, "imagenes/publico.png")];
-        est.mapa_publico = Some(2);
+        est.mapas = vec![mapa(1, 1, "imagenes/oculto.png", false), mapa(2, 1, "imagenes/publico.png", true)];
         let mut i = instancia(); // mapa 2, ficha del jugador 3, con un adjunto
         i.base.foto_url = Some("imagenes/orco.png".into());
         est.instancias_activas = vec![i.clone()];
@@ -280,8 +282,8 @@ mod tests {
         est.banco_entidades.push(secreta);
 
         assert!(recurso_visible_para(ID_HOST, &est, "imagenes/oculto.png"));
-        assert!(recurso_visible_para(4, &est, "imagenes/publico.png"));
-        assert!(!recurso_visible_para(4, &est, "imagenes/oculto.png"), "mapa no público");
+        assert!(recurso_visible_para(4, &est, "imagenes/publico.png"), "fondo de un mapa compartido");
+        assert!(!recurso_visible_para(4, &est, "imagenes/oculto.png"), "mapa no compartido");
         assert!(!recurso_visible_para(4, &est, "imagenes/secreta.png"), "ficha solo del host");
         assert!(recurso_visible_para(4, &est, "imagenes/orco.png"), "foto de una instancia visible");
         assert!(!recurso_visible_para(4, &est, "archivos/entidad_1/notas.txt"), "los adjuntos son del dueño");

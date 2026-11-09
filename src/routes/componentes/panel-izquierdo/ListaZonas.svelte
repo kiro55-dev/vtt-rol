@@ -3,6 +3,7 @@
   import { flip } from "svelte/animate";
   import { partida, type Zona } from "$lib/partida.svelte";
   import { ListaOrdenable } from "$lib/ordenable.svelte";
+  import { esJugador } from "$lib/modo";
   import MenuContextual from "../comunes/MenuContextual.svelte";
   import ArrastreFlotante from "../comunes/ArrastreFlotante.svelte";
 
@@ -14,7 +15,8 @@
     selector: ".item-zona",
     alReordenar: (ids) => partida.reordenarZonas(ids),
     alPulsar: (z) => partida.seleccionarZona(z.id),
-    bloqueado: () => editandoId !== null
+    bloqueado: () => editandoId !== null,
+    soloClic: esJugador // el jugador solo abre zonas: ni las reordena ni las renombra
   });
 
   $effect(() => lista.sincronizar(partida.zonas));
@@ -51,9 +53,9 @@
           onpointerdown={(e) => lista.iniciar(z, i, e)}
           ondblclick={(e) => {
             e.stopPropagation();
-            iniciarEdicion(z);
+            if (!esJugador) iniciarEdicion(z);
           }}
-          oncontextmenu={(e) => abrirMenu(e, z)}
+          oncontextmenu={(e) => (esJugador ? e.preventDefault() : abrirMenu(e, z))}
           title={z.nombre}
         >
           {#if editandoId === z.id}
@@ -75,7 +77,9 @@
         </button>
       </div>
     {/each}
-    <button class="item-zona nueva" onclick={() => partida.crearZona()} title="Añadir zona">+</button>
+    {#if !esJugador}
+      <button class="item-zona nueva" onclick={() => partida.crearZona()} title="Añadir zona">+</button>
+    {/if}
   </div>
 </div>
 

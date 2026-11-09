@@ -13,6 +13,8 @@ interface Opciones<T> {
   alPulsar: (item: T) => void;
   /** Para impedir arrastrar mientras se edita un nombre. */
   bloqueado?: () => boolean;
+  /** Sin reordenar: pulsar solo elige (los jugadores no cambian el orden de la partida). */
+  soloClic?: boolean;
 }
 
 export class ListaOrdenable<T extends ConId> {
@@ -43,6 +45,14 @@ export class ListaOrdenable<T extends ConId> {
   iniciar(item: T, indice: number, e: PointerEvent) {
     if (e.button !== 0) return; // solo botón principal
     if (this.#opciones.bloqueado?.()) return;
+    if (this.#opciones.soloClic) {
+      const alSoltarClic = () => {
+        window.removeEventListener("pointerup", alSoltarClic);
+        this.#opciones.alPulsar(item);
+      };
+      window.addEventListener("pointerup", alSoltarClic);
+      return;
+    }
 
     const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
     const inicioX = e.clientX;

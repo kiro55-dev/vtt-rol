@@ -88,6 +88,7 @@ function crearBackend() {
           return clon(m);
         }
         case "modificar_mapa": b.mapas = b.mapas.map((m) => (m.id === args.mapa.id ? clon(args.mapa) : m)); return;
+        case "compartir_mapa": b.mapas = b.mapas.map((m) => (m.id === args.id ? { ...m, compartido: args.compartido } : m)); return;
         case "borrar_mapa": b.mapas = b.mapas.filter((m) => m.id !== args.mapa.id); return;
         // Instancias: imita lo justo de Rust (las reglas de verdad se prueban en instancias.rs)
         case "instanciar_entidad": {
@@ -753,6 +754,37 @@ describe("selección múltiple y grupos en el tablero", () => {
     await partida.borrarInstancias([1, 2]);
     expect(partida.instancias).toEqual([]);
     expect(partida.idsSeleccionados).toEqual([]);
+  });
+});
+
+describe("mapas compartidos y cambios que llegan de fuera", () => {
+  it("la casilla de un mapa lo comparte y lo deja de compartir", async () => {
+    const partida = await nuevoStore();
+    await partida.compartirMapa(partida.mapas[0], true);
+    expect(llamadas("compartir_mapa").at(-1)?.args).toEqual({ id: 1, compartido: true });
+    expect(partida.mapas.find((m) => m.id === 1)?.compartido).toBe(true);
+    expect(partida.mapaActual?.compartido).toBe(true);
+    await partida.compartirMapa(partida.mapas[0], false);
+    expect(partida.mapas.find((m) => m.id === 1)?.compartido).toBe(false);
+  });
+
+  it("al cambiar la partida desde fuera se relee; si la zona abierta ya no está, pasa a la primera", async () => {
+    const partida = await nuevoStore();
+    expect(partida.zonaId).toBe(1);
+    // El host deja de compartir lo de la zona 1 y quita una instancia
+    backend.zonas = backend.zonas.filter((z) => z.id !== 1);
+    backend.mapas = backend.mapas.filter((m) => m.id_zona !== 1);
+    backend.instancias = backend.instancias.filter((i) => i.id_instancia !== 1);
+    await partida.alCambiarPartida({ zonas: true, mapas: true, entidades: true });
+    expect(partida.zonaId).toBe(2);
+    expect(partida.mapaActual?.id).toBe(3);
+    expect(partida.instancias.map((i) => i.id_instancia)).toEqual([2]);
+
+    // Solo cambia un mapa de la zona abierta: se queda en ella y relee sus mapas
+    backend.mapas = backend.mapas.map((m) => (m.id === 3 ? { ...m, nombre: "Cueva" } : m));
+    await partida.alCambiarPartida({ mapas: true });
+    expect(partida.zonaId).toBe(2);
+    expect(partida.mapaActual?.nombre).toBe("Cueva");
   });
 });
 

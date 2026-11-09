@@ -6,6 +6,9 @@
   import { ajustesVista } from "$lib/ajustesVista.svelte";
   import { alRecibirAviso } from "$lib/avisosTablero";
   import { sala } from "$lib/sala.svelte";
+  import { esJugador } from "$lib/modo";
+  import { conexion } from "$lib/red/conexion.svelte";
+  import EntradaSala from "./componentes/EntradaSala.svelte";
 
   import PanelIzquierdo from "./componentes/PanelIzquierdo.svelte";
   import PanelDerecho from "./componentes/PanelDerecho.svelte";
@@ -37,6 +40,8 @@
     // Dentro de un campo de texto las teclas son del campo (Supr borra letras, Ctrl+Z deshace lo escrito)
     if (t?.closest?.("input, textarea, select, [contenteditable='true']")) return;
     if (e.key === "Escape") partida.limpiarSeleccionBanco();
+    // Supr y Ctrl+Z cambian la partida: solo el host
+    if (esJugador && (e.key === "Delete" || ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "z"))) return;
     if ((e.ctrlKey || e.metaKey) && !e.shiftKey && e.key.toLowerCase() === "z") {
       e.preventDefault();
       void partida.restaurarPapelera();
@@ -74,22 +79,49 @@
 
   onMount(async () => {
     try {
+      if (esJugador) {
+        // Jugador: los datos llegan del host. La app empieza a leer cuando llega su primera vista.
+        if (!conexion) return;
+        conexion.conectar();
+        await conexion.lista;
+        await partida.iniciar();
+        return;
+      }
       await partida.iniciar();
       await tiradas.cargar();
       await sala.iniciar();
     } catch (err) {
-      console.error("Error al obtener datos de Rust:", err);
+      console.error("Error al obtener los datos de la partida:", err);
     }
   });
+
+  // Jugador: la app se enseña en cuanto está dentro (y se mantiene mientras reconecta)
+  const dentro = $derived(!esJugador || conexion?.estado.tipo === "dentro" || conexion?.estado.tipo === "reconectando");
 </script>
 
 <svelte:window onpointerdown={alPulsarEnLaVentana} onkeydown={alPulsarTecla} />
 
+{#if esJugador && !dentro}
+  <div class="aviso-jugador">
+    {#if !conexion}
+      <h1>OpenRoll</h1>
+      <p>Este enlace no es válido. Pide al host el enlace de la sala.</p>
+    {:else if conexion.estado.tipo === "identificate"}
+      <EntradaSala {conexion} estado={conexion.estado} />
+    {:else if conexion.estado.tipo === "fuera"}
+      <h1>Fuera de la sala</h1>
+      <p>{conexion.estado.motivo}</p>
+      <button type="button" onclick={() => location.reload()}>Volver a intentarlo</button>
+    {:else}
+      <p>Conectando con la sala…</p>
+    {/if}
+  </div>
+{:else}
 <div class="contenedor-principal">
   <PanelIzquierdo />
 
   <main class="area-central">
-    {#if ajustesVista.edicionRejilla}
+    {#if ajustesVista.edicionRejilla && !esJugador}
       <!-- Se oculta desde ⚙ (preferencia de esta pantalla, no de la partida) -->
       <div class="barra-superior">
         <BarraRejilla />
@@ -100,13 +132,22 @@
       <Tablero mapa={partida.mapaActual} rejilla={partida.rejilla} />
     </div>
 
-    <div class="barra-inferior">
-      <BarraDados
-        onSumarAlChat={(fragmento: string) => tiradas.sumarDado(fragmento)}
-        onRestarDelChat={(fragmento: string) => tiradas.restarDado(fragmento)}
-        onLanzarTirada={(bonificador: number | null) => tiradas.tirarConBonificador(bonificador)}
-      />
-    </div>
+    {#if !esJugador}
+      <!-- Los dados del jugador llegan en la fase 2 (las tiradas las hará el host: docs/red.md) -->
+      <div class="barra-inferior">
+        <BarraDados
+          onSumarAlChat={(fragmento: string) => tiradas.sumarDado(fragmento)}
+          onRestarDelChat={(fragmento: string) => tiradas.restarDado(fragmento)}
+          onLanzarTirada={(bonificador: number | null) => tiradas.tirarConBonificador(bonificador)}
+        />
+      </div>
+    {/if}
+    {#if esJugador && conexion}
+      <div class="yo-jugador">
+        Conectado como <b>{conexion.yo?.nombre}</b>
+        {#if conexion.estado.tipo === "reconectando"}<span class="reconectando"> · reconectando…</span>{/if}
+      </div>
+    {/if}
   </main>
 
   <PanelDerecho />
@@ -125,6 +166,7 @@
   <!-- La foto de una ficha activa a resolución completa, en una ventanita junto al puntero (doble clic en su tarjeta) -->
   <VisorImagen />
 </div>
+{/if}
 
 <style>
   :global(body, html) {
@@ -137,6 +179,20 @@
   .contenedor-lienzo { flex: 1; width: 100%; height: 100%; }
   .barra-superior { position: absolute; top: 8px; left: 50%; transform: translateX(-50%); z-index: 10; }
   .barra-inferior { position: absolute; bottom: 8px; left: 50%; transform: translateX(-50%); z-index: 10; }
+  .yo-jugador {
+    position: absolute; bottom: 8px; left: 50%; transform: translateX(-50%); z-index: 10;
+    background: rgba(24, 24, 27, 0.85); border: 1px solid #3f3f46; border-radius: 4px; padding: 3px 10px;
+    font-size: 11px; color: #a1a1aa;
+  }
+  .yo-jugador b { color: #fafafa; }
+  .reconectando { color: #facc15; }
+  .aviso-jugador {
+    height: 100vh; display: flex; flex-direction: column; align-items: center; justify-content: center;
+    gap: 8px; padding: 16px; text-align: center; box-sizing: border-box;
+  }
+  .aviso-jugador h1 { margin: 0; font-size: 20px; }
+  .aviso-jugador p { margin: 0; color: #a1a1aa; font-size: 14px; }
+  .aviso-jugador button { background: #2563eb; color: white; border: none; border-radius: 4px; padding: 6px 12px; cursor: pointer; }
 
   /* Scrollbar ultrafina global */
   :global(*) {

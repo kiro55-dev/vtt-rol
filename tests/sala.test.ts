@@ -8,7 +8,6 @@ function crearBackend() {
   const b = {
     abierta: false,
     contrasena: false,
-    mapaPublico: null as number | null,
     jugadores: [{ id: 1, nombre: "Ana", conectado: false, fichas: [] as number[] }],
     llamadas: [] as { cmd: string; args: Args }[],
     invoke: async (cmd: string, args: Args = {}): Promise<any> => {
@@ -20,14 +19,13 @@ function crearBackend() {
             enlace: b.abierta ? "https://x/#t=a.trycloudflare.com&s=S&k=K" : null,
             pide_contrasena: b.contrasena,
             conectados: [],
+            mapas_compartidos: [{ id: 3, nombre: "Cueva" }],
             error: null
           };
         case "obtener_jugadores": return structuredClone(b.jugadores);
-        case "obtener_mapa_publico": return b.mapaPublico;
         case "abrir_sala": b.abierta = true; return;
         case "cerrar_sala": b.abierta = false; return;
         case "poner_contrasena": b.contrasena = !!args.contrasena; return;
-        case "elegir_mapa_publico": b.mapaPublico = args.id; return;
         case "asignar_propietario": b.jugadores.find((j) => j.id === args.idJugador)!.fichas.push(args.idEntidad); return;
         case "quitar_propietario": {
           const j = b.jugadores.find((x) => x.id === args.idJugador)!;
@@ -72,18 +70,17 @@ describe("sala", () => {
     await sala.ponerContrasena("secreta");
     expect(sala.estado.pide_contrasena).toBe(true);
     await sala.ponerContrasena("");
-    expect(backend.llamadas.at(-4)).toEqual({ cmd: "poner_contrasena", args: { contrasena: null } });
+    expect(backend.llamadas.filter((l) => l.cmd === "poner_contrasena").at(-1)).toEqual({ cmd: "poner_contrasena", args: { contrasena: null } });
     expect(sala.estado.pide_contrasena).toBe(false);
   });
 
-  it("dar y quitar una ficha a un jugador, y elegir el mapa público", async () => {
+  it("dar y quitar una ficha a un jugador; la ventana lista los mapas compartidos", async () => {
     const sala = await nuevaSala();
     await sala.asignar(1, 7);
     expect(sala.jugadores[0].fichas).toEqual([7]);
     await sala.quitar(1, 7);
     expect(sala.jugadores[0].fichas).toEqual([]);
-    await sala.elegirMapaPublico(3);
-    expect(sala.mapaPublico).toBe(3);
+    expect(sala.estado.mapas_compartidos).toEqual([{ id: 3, nombre: "Cueva" }]);
   });
 });
 

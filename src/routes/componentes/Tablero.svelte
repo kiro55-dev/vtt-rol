@@ -10,6 +10,7 @@
   import { arrastre, baseDe, ladosDeEntidad, instanciasArrastradas } from '$lib/arrastreFicha.svelte';
   import { miniaturas } from '$lib/miniaturas.svelte';
   import { arrastreJugador } from '$lib/arrastreJugador.svelte';
+  import { esJugador } from '$lib/modo';
   import {
     fichasDelMapa, fichaEnPunto, fichasEnRectangulo, imagenDe, dibujarFicha, dibujarDestino, dibujarFormas, rectanguloFicha
   } from '$lib/fichasTablero';
@@ -336,7 +337,7 @@
       // Clic derecho sin arrastrar sobre una ficha: gira 90° a la derecha; con Ctrl, la pone en espejo
       const d = derechoSobreFicha;
       if (d && recorrido.length === 0 && Math.hypot(e.clientX - d.x, e.clientY - d.y) <= MOVIMIENTO_MAX_CLIC_PX) {
-        void (d.espejo ? partida.espejarInstancia(d.idInstancia) : partida.rotarInstancia(d.idInstancia));
+        if (!esJugador) void (d.espejo ? partida.espejarInstancia(d.idInstancia) : partida.rotarInstancia(d.idInstancia));
       }
       derechoSobreFicha = null;
     }

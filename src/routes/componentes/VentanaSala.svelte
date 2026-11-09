@@ -27,8 +27,6 @@
   let ocupado = $state(false);
 
   const fase = $derived(sala.estado.fase);
-  const nombreMapa = (id: number | null) =>
-    id === null ? null : (partida.mapas.find((m) => m.id === id)?.nombre ?? `Mapa ${id}`);
   const nombreFicha = (id: number) => partida.banco.find((e) => e.id === id)?.nombre ?? `Ficha ${id}`;
 
   onMount(() => {
@@ -143,19 +141,19 @@
       </div>
     </div>
 
-    <!-- Mapa de los jugadores -->
+    <!-- Mapas que ven los jugadores: se eligen con la casilla de cada mapa en la lista de mapas -->
     <div class="seccion">
-      <span class="etiqueta">Mapa que ven los jugadores: <b>{nombreMapa(sala.mapaPublico) ?? "ninguno"}</b></span>
-      <div class="fila">
-        <button
-          type="button"
-          class="btn-secundario"
-          disabled={!partida.mapaActual || partida.mapaActual.id === sala.mapaPublico}
-          onclick={() => hacer(() => sala.elegirMapaPublico(partida.mapaActual?.id ?? null))}
-        >Enseñar el mapa abierto{partida.mapaActual ? ` (${partida.mapaActual.nombre})` : ""}</button>
-        <button type="button" class="btn-secundario" disabled={sala.mapaPublico === null} onclick={() => hacer(() => sala.elegirMapaPublico(null))}>Ninguno</button>
-      </div>
-      <span class="nota">Puedes abrir y preparar otros mapas: los jugadores solo ven este.</span>
+      <span class="etiqueta">Mapas que ven los jugadores</span>
+      {#if sala.estado.mapas_compartidos.length > 0}
+        <div class="compartidos">
+          {#each sala.estado.mapas_compartidos as m (m.id)}
+            <span class="compartido">{m.nombre}</span>
+          {/each}
+        </div>
+      {:else}
+        <span class="nota">Ninguno.</span>
+      {/if}
+      <span class="nota">Marca la casilla de arriba a la derecha de cada mapa para compartirlo (y desmárcala para dejar de hacerlo). Puedes abrir y preparar otros mapas: solo ven los marcados.</span>
     </div>
 
     <!-- Jugadores -->
@@ -254,6 +252,8 @@
   .btn-enlace:hover { text-decoration: underline; }
   .confirmar { display: flex; flex-direction: column; gap: 4px; padding: 6px; border: 1px solid #7f1d1d; border-radius: 4px; color: #fca5a5; font-size: 10px; }
 
+  .compartidos { display: flex; flex-wrap: wrap; gap: 3px; }
+  .compartido { background: #14532d; color: #bbf7d0; border-radius: 3px; padding: 1px 6px; font-size: 10px; }
   .jugadores { display: flex; flex-direction: column; gap: 4px; }
   .jugador { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; background: #1f1f23; border-radius: 4px; padding: 4px 6px; }
   .nombre-jugador {

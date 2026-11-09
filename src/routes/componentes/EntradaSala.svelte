@@ -1,7 +1,7 @@
-<!-- cliente-web/src/Entrada.svelte -->
+<!-- src/routes/componentes/EntradaSala.svelte -->
 <!-- Nombre (y contraseña, si el host puso una) para entrar en la sala por primera vez. -->
 <script lang="ts">
-  import type { Conexion, EstadoConexion } from "./conexion.svelte";
+  import type { Conexion, EstadoConexion } from "$lib/red/conexion.svelte";
 
   let { conexion, estado }: { conexion: Conexion; estado: Extract<EstadoConexion, { tipo: "identificate" }> } = $props();
 

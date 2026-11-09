@@ -1,20 +1,21 @@
-// cliente-web/src/protocolo.ts
+// src/lib/red/protocolo.ts
 //
 // Espejo a mano de src-tauri/src/red/protocolo.rs y red/vista.rs. Si cambia algo allí, cámbialo aquí y
-// sube VERSION_PROTOCOLO en los dos lados.
+// sube VERSION_PROTOCOLO en los dos lados (y publica la página a la vez que la app).
 import type { AvisoTablero } from "$lib/avisosTablero";
-import type { DefinicionParametro, Entidad, Instancia, Mapa } from "$lib/partida.svelte";
+import type { DefinicionParametro, Entidad, Instancia, Mapa, Zona } from "$lib/partida.svelte";
 
-export const VERSION_PROTOCOLO = 1;
+export const VERSION_PROTOCOLO = 2;
 
 export interface Jugador {
   id: number;
   nombre: string;
 }
 
-/** `red::vista::VistaJugador`: lo que ve este jugador de la partida. */
+/** `red::vista::VistaJugador`: lo que ve este jugador de la partida (lo mismo que lee la app, filtrado). */
 export interface VistaJugador {
-  mapa: Mapa | null;
+  zonas: Zona[];
+  mapas: Mapa[];
   instancias: Instancia[];
   entidades: Entidad[];
   definiciones: DefinicionParametro[];
@@ -22,7 +23,10 @@ export interface VistaJugador {
 
 /** `red::vista::Cambios`: lo que no aparece, sigue igual. */
 export interface Cambios {
-  mapa?: { actual: Mapa | null };
+  zonas?: Zona[];
+  zonas_quitadas?: number[];
+  mapas?: Mapa[];
+  mapas_quitados?: number[];
   instancias?: Instancia[];
   instancias_quitadas?: number[];
   entidades?: Entidad[];

@@ -64,15 +64,22 @@ pub struct EstadoSala {
     pub enlace: Option<String>,
     pub pide_contrasena: bool,
     pub conectados: Vec<IdJugador>,
+    /// Los mapas que ven los jugadores (de todas las zonas), para la ventana de la sala.
+    pub mapas_compartidos: Vec<MapaCompartido>,
     /// Por qué falló lo último (abrir la sala...), hasta que se vuelva a intentar.
     pub error: Option<String>,
+}
+
+#[derive(Serialize, Clone, Debug)]
+pub struct MapaCompartido {
+    pub id: u16,
+    pub nombre: String,
 }
 
 /// Un jugador conectado: por dónde se le envía y qué vio la última vez (para mandarle solo lo que cambia).
 struct Conexion {
     id_conexion: u64,
     enviar: mpsc::UnboundedSender<MensajeHost>,
-    sesion: String,
     ultima: VistaJugador,
 }
 
@@ -84,6 +91,9 @@ struct SalaAbierta {
     /// Dirección pública del túnel (`xxxx.trycloudflare.com`), cuando ya la hay.
     tunel: Option<String>,
     conexiones: HashMap<IdJugador, Conexion>,
+    /// Sesión de imágenes de cada jugador (`/imagen?sesion=…`). Se conserva al reconectar, para que las URLs
+    /// que ya tiene su navegador sigan valiendo; se olvida al expulsarlo, al cambiar el enlace y al cerrar.
+    sesiones: HashMap<IdJugador, String>,
     /// Fallos de contraseña del último minuto, de cualquier conexión.
     fallos: VecDeque<Instant>,
     apagar_servidor: Option<oneshot::Sender<()>>,
@@ -181,15 +191,19 @@ impl Red {
         self.dentro().is_some()
     }
 
-    /// Lo que enseña la ventana de la sala. Cerrada, lee `sala.json` para saber si hay contraseña.
-    pub fn estado(&self) -> EstadoSala {
+    /// Lo que enseña la ventana de la sala. Cerrada, lee `sala.json` para saber si hay contraseña. Se llama con
+    /// el estado de la partida (`est`) ya cogido: estado → red.
+    pub fn estado(&self, est: &EstadoPartida) -> EstadoSala {
         let error = bloquear(&self.ultimo_error).clone();
+        let mapas_compartidos =
+            est.mapas.iter().filter(|m| m.compartido).map(|m| MapaCompartido { id: m.id, nombre: m.nombre.clone() }).collect();
         match self.dentro().as_ref() {
             Some(s) => EstadoSala {
                 fase: s.fase.clone(),
                 enlace: s.enlace(),
                 pide_contrasena: s.sala.pide_contrasena(),
                 conectados: s.conexiones.keys().copied().collect(),
+                mapas_compartidos,
                 error,
             },
             None => EstadoSala {
@@ -197,6 +211,7 @@ impl Red {
                 enlace: None,
                 pide_contrasena: SalaGuardada::leer_o_crear(&self.almacen.dir()).is_ok_and(|s| s.pide_contrasena()),
                 conectados: Vec::new(),
+                mapas_compartidos,
                 error,
             },
         }
@@ -223,6 +238,7 @@ impl Red {
                 fase: Fase::Preparando { paso: "Arrancando el servidor…".into(), progreso: None },
                 tunel: None,
                 conexiones: HashMap::new(),
+                sesiones: HashMap::new(),
                 fallos: VecDeque::new(),
                 apagar_servidor: None,
                 proceso_tunel: None,
@@ -340,6 +356,7 @@ impl Red {
             Ok(())
         })?;
         if let Some(s) = self.dentro().as_mut() {
+            s.sesiones.clear();
             for (_, c) in s.conexiones.drain() {
                 let _ = c.enviar.send(MensajeHost::Rechazado { motivo: "El host ha cambiado el enlace de la sala".into() });
             }
@@ -358,7 +375,10 @@ impl Red {
             s.revocar(id);
             Ok(())
         })?;
-        if let Some(c) = self.dentro().as_mut().and_then(|s| s.conexiones.remove(&id)) {
+        if let Some(c) = self.dentro().as_mut().and_then(|s| {
+            s.sesiones.remove(&id);
+            s.conexiones.remove(&id)
+        }) {
             let _ = c.enviar.send(MensajeHost::Rechazado { motivo: "El host te ha sacado de la sala".into() });
         }
         self.avisar();
@@ -386,10 +406,10 @@ impl Red {
         }
     }
 
-    /// Ping y recorrido del host: a todos, si son del mapa que ven los jugadores.
-    pub fn difundir(&self, aviso: &AvisoTablero, mapa_publico: Option<u16>) {
-        if aviso.id_mapa().is_none() || aviso.id_mapa() != mapa_publico {
-            return; // el foco del host no se comparte, ni lo de otros mapas
+    /// Ping y recorrido del host: a todos, si son de un mapa compartido.
+    pub fn difundir(&self, aviso: &AvisoTablero, compartidos: &[u16]) {
+        if !aviso.id_mapa().is_some_and(|m| compartidos.contains(&m)) {
+            return; // el foco del host no se comparte, ni lo de mapas que no ven
         }
         if let Some(s) = self.dentro().as_ref() {
             for c in s.conexiones.values() {
@@ -427,13 +447,13 @@ impl Red {
 
     /// Da de alta la conexión de `id` con su vista inicial. Se llama con el estado cogido (`est`), así ningún
     /// delta se cuela entre la vista enviada y la guardada. Una conexión anterior del mismo jugador se cierra.
-    fn conectar(&self, est: &EstadoPartida, id: IdJugador, enviar: mpsc::UnboundedSender<MensajeHost>, sesion: String) -> Option<u64> {
+    fn conectar(&self, est: &EstadoPartida, id: IdJugador, enviar: mpsc::UnboundedSender<MensajeHost>) -> Option<u64> {
         let vista = vista_para(id, est);
         let mut dentro = self.dentro();
         let s = dentro.as_mut()?;
         let id_conexion = self.nuevo_id();
         let _ = enviar.send(MensajeHost::Vista { vista: vista.clone() });
-        let anterior = s.conexiones.insert(id, Conexion { id_conexion, enviar, sesion, ultima: vista });
+        let anterior = s.conexiones.insert(id, Conexion { id_conexion, enviar, ultima: vista });
         if let Some(a) = anterior {
             let _ = a.enviar.send(MensajeHost::Rechazado { motivo: "Has entrado desde otra pestaña o dispositivo".into() });
         }
@@ -454,11 +474,18 @@ impl Red {
         }
     }
 
-    /// El jugador de una sesión activa (para servir imágenes).
+    /// La sesión de imágenes de `id`: la que ya tenía (si se reconecta) o una nueva.
+    fn sesion_de(&self, id: IdJugador) -> Option<String> {
+        let mut dentro = self.dentro();
+        let s = dentro.as_mut()?;
+        Some(s.sesiones.entry(id).or_insert_with(|| SalaGuardada::nueva().secreto).clone())
+    }
+
+    /// El jugador de una sesión (para servir imágenes).
     fn jugador_de_sesion(&self, sesion: &str) -> Option<IdJugador> {
         let dentro = self.dentro();
         let s = dentro.as_ref()?;
-        s.conexiones.iter().find(|(_, c)| c.sesion == sesion).map(|(id, _)| *id)
+        s.sesiones.iter().find(|(_, x)| x.as_str() == sesion).map(|(id, _)| *id)
     }
 
     /// Carpeta de la partida de la sala abierta.
@@ -479,6 +506,7 @@ impl Red {
             fase: Fase::Abierta,
             tunel: Some("prueba.local".into()),
             conexiones: HashMap::new(),
+            sesiones: HashMap::new(),
             fallos: VecDeque::new(),
             apagar_servidor: None,
             proceso_tunel: None,
@@ -498,6 +526,7 @@ impl Red {
             fase: Fase::Abierta,
             tunel: None,
             conexiones: HashMap::new(),
+            sesiones: HashMap::new(),
             fallos: VecDeque::new(),
             apagar_servidor: None,
             proceso_tunel: None,

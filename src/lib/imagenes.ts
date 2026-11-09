@@ -4,7 +4,9 @@
 // datos de la app (p. ej. "imagenes/ab12...f3.png"), que es lo que devuelve el comando
 // `importar_imagen`. Para mostrarla hay que convertirla en una URL que entienda el webview:
 // eso es lo único que hace este módulo.
-import { invoke, convertFileSrc } from "@tauri-apps/api/core";
+import { invoke, convertFileSrc } from "$lib/backend";
+import { esJugador } from "$lib/modo";
+import { conexion } from "$lib/red/conexion.svelte";
 
 /** Para qué se importa una imagen: decide qué formatos valen (igual que `imagenes::Uso` en Rust). */
 export type UsoImagen = "mapa" | "ficha";
@@ -31,6 +33,7 @@ let dirDatos = "";
 
 /** Llamar UNA vez al arrancar, antes de pintar ningún mapa. */
 export async function iniciarImagenes(): Promise<void> {
+  if (esJugador) return; // las imágenes del jugador las sirve el host (ver `urlDeImagen`)
   dirDatos = await invoke<string>("obtener_dir_datos");
 }
 
@@ -56,9 +59,14 @@ export function alImportarImagen(cb: (ruta: string) => void) {
   alImportar.push(cb);
 }
 
-/** Ruta guardada en el mapa -> URL que el <img>/canvas puede cargar. "" si no hay imagen. */
+/**
+ * Ruta guardada en el mapa -> URL que el <img>/canvas puede cargar. "" si no hay imagen.
+ * En el host es el archivo de su disco; en el jugador, la misma ruta pedida al host por el túnel
+ * (`/imagen`, que solo la da si ese jugador la ve).
+ */
 export function urlDeImagen(ref: string | null | undefined): string {
   if (!ref) return "";
+  if (esJugador) return conexion?.urlImagen(ref) ?? "";
   if (YA_ES_URL.test(ref)) return ref;
 
   // Usamos el mismo separador que el sistema para que la ruta sea coherente (C:\...\imagenes\x.png).

@@ -7,12 +7,14 @@
 //
 // Rust sigue siendo la fuente de verdad: cada método escribe en Rust y vuelve a leer.
 import type { Encuadre } from "$lib/recorteFoto";
-import { invoke } from "@tauri-apps/api/core";
+import { EVENTO_PARTIDA_CAMBIADA, invoke, listen } from "$lib/backend";
+import type { PartesCambiadas } from "$lib/red/replica";
 import { iniciarImagenes, importarImagen } from "$lib/imagenes";
 import { miniaturas } from "$lib/miniaturas.svelte";
 import { enviarAviso, avisoFoco } from "$lib/avisosTablero";
 import { desplazarGrupo, encajar, ladosInstancia, rejillaDe } from "$lib/tablero";
 import { ajustesVista } from "$lib/ajustesVista.svelte";
+import { esJugador } from "$lib/modo";
 
 export interface Zona {
   id: number;
@@ -31,6 +33,8 @@ export interface Mapa {
   color_opacidad: number[]; // [r, g, b, a] con a en 0..255
   grosor: number;
   orden: number;
+  /** Lo ven los jugadores de la sala (la casilla del mapa). Lo cambia solo `compartirMapa`. */
+  compartido: boolean;
 }
 
 export type TipoEntidad = "Enemigo" | "NPC" | "Jugador";
@@ -257,11 +261,40 @@ class Partida {
   // ------------------------------------------------------------------
 
   async iniciar() {
+    this.#escucharCambios();
     await iniciarImagenes(); // hace falta antes de mostrar ningún mapa con imagen
     this.definiciones = await invoke<DefinicionParametro[]>("obtener_definiciones_parametros");
     await this.recargarZonas();
     await this.seleccionarZona(this.zonasOrdenadas[0]?.id ?? null);
     await this.recargarEntidades();
+  }
+
+  #escuchando = false;
+
+  /**
+   * La partida cambió por algo que no hizo esta pantalla: en el jugador, lo que le envía el host; en el host
+   * (fase 2), lo que hagan los jugadores. Se relee lo que cambió, como tras cualquier acción propia.
+   */
+  #escucharCambios() {
+    if (this.#escuchando) return;
+    this.#escuchando = true;
+    listen<Partial<PartesCambiadas>>(EVENTO_PARTIDA_CAMBIADA, (e) => void this.alCambiarPartida(e.payload)).catch((err) =>
+      console.warn("partida-cambiada no disponible:", err)
+    );
+  }
+
+  /** Relee lo que cambió. Si la zona o el mapa abiertos dejan de existir (o de verse), pasa al primero. */
+  async alCambiarPartida(partes: Partial<PartesCambiadas> = { zonas: true, mapas: true, entidades: true, definiciones: true }) {
+    if (partes.definiciones) await this.recargarDefiniciones();
+    if (partes.zonas || partes.mapas) {
+      await this.recargarZonas();
+      if (this.zonaId === null || !this.zonas.some((z) => z.id === this.zonaId)) {
+        await this.seleccionarZona(this.zonasOrdenadas[0]?.id ?? null);
+      } else {
+        await this.recargarMapas();
+      }
+    }
+    if (partes.entidades) await this.recargarEntidades();
   }
 
   // ------------------------------------------------------------------
@@ -555,6 +588,7 @@ class Partida {
    * 50 pasos de rueda son UN delta de 50, no 50 deltas.
    */
   cambiarValorActual(idInstancia: number, idDefinicion: number, delta: number) {
+    if (esJugador) return; // fase 2: lo pedirá al host
     const instancia = this.instancias.find((i) => i.id_instancia === idInstancia);
     if (!instancia || delta === 0) return;
     const clave = claveValor(idInstancia, idDefinicion);
@@ -798,6 +832,12 @@ class Partida {
     await this.recargarMapas(nuevo.id); // abre el mapa nuevo
   }
 
+  /** La casilla del mapa: lo ven (o dejan de ver) los jugadores de la sala, al momento. */
+  async compartirMapa(mapa: Mapa, compartido: boolean) {
+    await invoke("compartir_mapa", { id: mapa.id, compartido });
+    await this.recargarMapas();
+  }
+
   async renombrarMapa(mapa: Mapa, nombre: string) {
     await this.#editarMapa(mapa.id, { nombre });
   }
@@ -955,7 +995,7 @@ class Partida {
    * y no se abre nada. Pedir la que ya está abierta no hace nada. Devuelve true si se abrió la pedida.
    */
   async abrirEditorEntidad(entidad?: Entidad | null, fotoUrl: string | null = null): Promise<boolean> {
-    if (this.#abriendo) return false;
+    if (this.#abriendo || esJugador) return false; // fase 2: el jugador podrá editar sus fichas
     const abierta = this.entidadEnEdicion;
     if (abierta && entidad && !this.editorEsBorrador && abierta.id === entidad.id) return false;
     this.#abriendo = true;
