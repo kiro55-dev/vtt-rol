@@ -1,5 +1,6 @@
 <!-- src/routes/componentes/BarraDados.svelte -->
 <script>
+  import { ayuda } from "$lib/ajustesVista.svelte";
   let { onSumarAlChat, onRestarDelChat, onLanzarTirada } = $props();
 
   let bonificador = $state(0);
@@ -48,7 +49,7 @@
         onwheel={(e) => rueda(e, d)}
         onclick={() => onSumarAlChat(formatearDado(d))}
         oncontextmenu={(e) => { e.preventDefault(); onRestarDelChat(formatearDado(d)); }}
-        title="Rueda: cantidad | Clic: sumar | Clic derecho: restar"
+        title={ayuda("Rueda: cantidad | Clic: sumar | Clic derecho: restar")}
       >
         <span class="cant">{d.cantidad}x</span>
         <span class="label">{d.tipo}</span>
@@ -58,11 +59,11 @@
 
   <!-- CHECKLISTS DE MODIFICADORES -->
   <div class="zona-modificadores">
-    <label class="check-label" title="Tira 2 veces cada dado y se queda con el mayor">
+    <label class="check-label" title={ayuda("Tira 2 veces cada dado y se queda con el mayor")}>
       <input type="checkbox" checked={esVentaja} onchange={toggleVentaja} />
       <span>Vent</span>
     </label>
-    <label class="check-label" title="Tira 2 veces cada dado y se queda con el menor">
+    <label class="check-label" title={ayuda("Tira 2 veces cada dado y se queda con el menor")}>
       <input type="checkbox" checked={esDesventaja} onchange={toggleDesventaja} />
       <span>Desv</span>
     </label>

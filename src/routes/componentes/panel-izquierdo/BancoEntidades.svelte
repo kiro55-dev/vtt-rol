@@ -1,5 +1,6 @@
 <!-- src/routes/componentes/panel-izquierdo/BancoEntidades.svelte -->
 <script lang="ts">
+  import { ayuda } from "$lib/ajustesVista.svelte";
   import { onMount } from "svelte";
   import { invoke } from "$lib/backend";
   import { partida, type Entidad } from "$lib/partida.svelte";
@@ -208,7 +209,7 @@
         use:vigilarVisibilidad={item.id}
         onpointerdown={(e) => alPulsarFila(e, item)}
         onclick={(e) => alHacerClicFila(e, item)}
-        title="Clic: editar ficha · Ctrl+clic: seleccionar varias (Supr las borra) · Arrastrar: al tablero o a «Fichas activas»"
+        title={ayuda("Clic: editar ficha · Ctrl+clic: seleccionar varias (Supr las borra) · Arrastrar: al tablero o a «Fichas activas»")}
       >
         {#if item.tipo === "NPC"}
           <div class="contenedor-rombo">

@@ -1,5 +1,6 @@
 <!-- src/routes/componentes/BarraRejilla.svelte -->
 <script lang="ts">
+  import { ayuda } from "$lib/ajustesVista.svelte";
   import { onMount } from "svelte";
   import { partida, LIMITES_REJILLA } from "$lib/partida.svelte";
 
@@ -71,7 +72,7 @@
 </script>
 
 <div class="barra-herramientas" class:desactivada={!partida.mapaActual} bind:this={barraRef}>
-  <button class="btn-lapiz" title="Modo Dibujo" disabled={!partida.mapaActual}>✏️</button>
+  <button class="btn-lapiz" title={ayuda("Modo Dibujo")} disabled={!partida.mapaActual}>✏️</button>
 
   <div class="control" class:apagado={!partida.mapaActual}>
     <label for="rejilla-tamano">Rejilla:</label>
@@ -86,7 +87,7 @@
       min={TAMANO_MIN}
       max={TAMANO_MAX}
       step="5"
-      title="Rueda del ratón para subir/bajar de 5 en 5"
+      title={ayuda("Rueda del ratón para subir/bajar de 5 en 5")}
     />
     <span>px</span>
   </div>
@@ -115,7 +116,7 @@
       min={GROSOR_MIN}
       max={GROSOR_MAX}
       step={GROSOR_PASO}
-      title="Rueda del ratón para subir/bajar de 1 en 1"
+      title={ayuda("Rueda del ratón para subir/bajar de 1 en 1")}
     />
   </div>
 

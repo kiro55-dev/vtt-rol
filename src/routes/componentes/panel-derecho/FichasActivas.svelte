@@ -8,6 +8,7 @@
      - Clic derecho = menú con «Eliminar instancia».
      Soltar aquí una ficha del banco la activa sin colocar; una del tablero, la quita de él. -->
 <script lang="ts">
+  import { ayuda } from "$lib/ajustesVista.svelte";
   import { partida, numeroDe, veParametro, type Instancia } from "$lib/partida.svelte";
   import { ajustesVista } from "$lib/ajustesVista.svelte";
   import { esJugador } from "$lib/modo";
@@ -76,11 +77,11 @@
     aria-pressed={ajustesVista.soloMapaActual}
     disabled={esJugador}
     data-conserva-foco
-    title={esJugador
+    title={ayuda(esJugador
       ? "Solo ves las fichas puestas en el mapa abierto"
       : ajustesVista.soloMapaActual
       ? "Solo las fichas puestas en el mapa abierto. Pulsa para ver todas"
-      : "Pulsa para ver solo las fichas puestas en el mapa abierto"}
+      : "Pulsa para ver solo las fichas puestas en el mapa abierto")}
     onclick={() => ajustesVista.alternarSoloMapaActual()}
   >
     Este mapa
@@ -113,7 +114,7 @@
         e.preventDefault();
         if (partida.controla(ficha)) menu = { x: e.clientX, y: e.clientY, instancia: ficha };
       }}
-      title="Clic: foco (Ctrl: varias) · Doble clic: ver la foto · Arrastrar: reordenar o llevar al tablero · Clic derecho: eliminar"
+      title={ayuda("Clic: foco (Ctrl: varias) · Doble clic: ver la foto · Arrastrar: reordenar o llevar al tablero · Clic derecho: eliminar")}
     >
       <div class="foto {forma}">
         {#if ficha.base.foto_url}
@@ -137,7 +138,7 @@
             <!-- Una tirada soltada aquí cambia este valor (ver $lib/arrastreTirada) -->
             <span
               style:color={r.color}
-              title={r.clave}
+              title={ayuda(r.clave)}
               data-valor="{ficha.id_instancia}:{r.id}"
               class:destino-tirada={arrastreTirada.esDestino(ficha.id_instancia, r.id)}
             >{partida.valorMostrado(ficha, r.id)}/{numeroDe(ficha.base, r.id)}</span>

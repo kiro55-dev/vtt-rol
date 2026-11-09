@@ -5,6 +5,7 @@
      rueda la acerca o la aleja. Lo que se ve en la caja es el recorte que guarda Rust (la misma cuenta
      que `recortar` en miniaturas.rs), y esa única miniatura es la que usa todo lo demás. -->
 <script lang="ts">
+  import { ayuda } from "$lib/ajustesVista.svelte";
   import { open } from "@tauri-apps/plugin-dialog";
   import { EXTENSIONES_IMAGEN, urlDeImagen } from "$lib/imagenes";
   import { esJugador } from "$lib/modo";
@@ -135,9 +136,9 @@
   onpointermove={alMover}
   onpointerup={alSoltar}
   onpointercancel={alSoltar}
-  title={hayFoto
+  title={ayuda(hayFoto
     ? "Arrastra para mover la foto · Rueda para acercar o alejar · Clic derecho para cambiar la imagen"
-    : "Clic derecho para elegir imagen o arrastra una aquí"}
+    : "Clic derecho para elegir imagen o arrastra una aquí")}
 >
   {#if foto}
     <img

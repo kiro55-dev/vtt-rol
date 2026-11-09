@@ -1,6 +1,7 @@
 <!-- src/routes/componentes/ventana-ficha/CampoNumero.svelte -->
 <!-- Campo numérico que también se ajusta con la rueda del ratón al pasar por encima. -->
 <script lang="ts">
+  import { ayuda } from "$lib/ajustesVista.svelte";
   let {
     value = $bindable(),
     etiqueta = "",
@@ -27,7 +28,7 @@
   }
 </script>
 
-<label title={titulo}>
+<label title={ayuda(titulo)}>
   {etiqueta}
   <input type="number" class:estrecho {min} {max} bind:value onwheel={alRueda} />
   {#if sufijo}<span class="sufijo">{sufijo}</span>{/if}

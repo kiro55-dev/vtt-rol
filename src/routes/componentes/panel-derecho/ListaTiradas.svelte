@@ -1,5 +1,6 @@
 <!-- src/routes/componentes/panel-derecho/ListaTiradas.svelte -->
 <script lang="ts">
+  import { ayuda } from "$lib/ajustesVista.svelte";
   import { tiradas, desgloseSeguro } from "$lib/tiradas.svelte";
   import { arrastreTirada } from "$lib/arrastreTirada.svelte";
 </script>
@@ -13,7 +14,7 @@
       class:error={t.total === null}
       class:arrastrable={t.total !== null}
       role="listitem"
-      title={t.total === null ? undefined : "Arrastra sobre un valor de una ficha: botón izquierdo quita, derecho suma"}
+      title={ayuda(t.total === null ? undefined : "Arrastra sobre un valor de una ficha: botón izquierdo quita, derecho suma")}
       onpointerdown={(e) => t.total !== null && arrastreTirada.preparar(e, t.total)}
     >
       {#if t.total !== null}

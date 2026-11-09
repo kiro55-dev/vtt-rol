@@ -2,6 +2,7 @@
 <!-- Ventana flotante (no modal) para crear o editar una ficha. Aquí solo está la vista: la lógica
      (archivos de la sesión, textos, validación, guardar/cancelar/borrar) vive en $lib/editorFicha. -->
 <script lang="ts" module>
+  import { ayuda } from "$lib/ajustesVista.svelte";
   // Dónde estaba la última ventana: la que la sustituye (al abrir otra ficha) aparece en el mismo sitio
   let ultimaPosicion = { x: 260, y: 70 };
 </script>
@@ -151,7 +152,7 @@
           {#if !esJugador}
             <label class="check" style="margin-left: 8px;">
               <input type="checkbox" bind:checked={ficha.es_unico} />
-              <span title="Si es único solo existirá una instancia en el mundo">Único</span>
+              <span title={ayuda("Si es único solo existirá una instancia en el mundo")}>Único</span>
             </label>
           {/if}
         </div>

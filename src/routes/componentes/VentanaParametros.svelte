@@ -3,6 +3,7 @@
      fichas (vida, armadura...). Se pueden crear, borrar y reordenar arrastrando; el orden de la lista
      es el que siguen las fichas. -->
 <script lang="ts">
+  import { ayuda } from "$lib/ajustesVista.svelte";
   import { flip } from "svelte/animate";
   import { partida, type DefinicionParametro } from "$lib/partida.svelte";
   import { ListaOrdenable } from "$lib/ordenable.svelte";
@@ -129,7 +130,7 @@
             <button
               type="button"
               class="btn-editar"
-              title="Configurar parámetro"
+              title={ayuda("Configurar parámetro")}
               aria-label="Configurar {d.clave}"
               onpointerdown={(e) => e.stopPropagation()}
               onclick={() => editar(d)}>✎</button
@@ -137,7 +138,7 @@
             <button
               type="button"
               class="btn-borrar"
-              title="Borrar parámetro"
+              title={ayuda("Borrar parámetro")}
               aria-label="Borrar {d.clave}"
               onpointerdown={(e) => e.stopPropagation()}
               onclick={() => borrar(d)}>✕</button
@@ -175,13 +176,13 @@
 
         {#if formulario.esNumero}
           <div class="fila">
-            <label class="check" title="La ficha guarda el máximo y cada instancia en el tablero, su valor actual (como la vida)">
+            <label class="check" title={ayuda("La ficha guarda el máximo y cada instancia en el tablero, su valor actual (como la vida)")}>
               <input type="checkbox" bind:checked={formulario.tieneMaximo} />
               <span>Tiene máximo (valor actual aparte en cada instancia)</span>
             </label>
             <!-- Solo tiene sentido si el valor tiene máximo (valor actual en cada instancia) -->
             {#if formulario.tieneMaximo}
-              <label class="check" title="Si el valor actual de una ficha llega a 0 o menos, se ve en gris en el tablero y en «Fichas activas»">
+              <label class="check" title={ayuda("Si el valor actual de una ficha llega a 0 o menos, se ve en gris en el tablero y en «Fichas activas»")}>
                 <input type="checkbox" bind:checked={formulario.atenuar} />
                 <span>Atenuar la ficha si llega a 0 o menos</span>
               </label>

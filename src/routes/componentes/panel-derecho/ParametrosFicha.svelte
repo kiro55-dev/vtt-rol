@@ -2,6 +2,7 @@
 <!-- Los parámetros de la instancia seleccionada, tal y como estén definidos en la partida (en su
      orden). Los que tienen máximo muestran «actual / máx» con − y + para cambiar el actual. -->
 <script lang="ts">
+  import { ayuda } from "$lib/ajustesVista.svelte";
   import { partida, numeroDe, veParametro, type Cuerpo } from "$lib/partida.svelte";
   import { arrastreTirada } from "$lib/arrastreTirada.svelte";
 
@@ -36,7 +37,7 @@
             class:destino-tirada={arrastreTirada.esDestino(ficha.id_instancia, p.id)}
             data-valor="{ficha.id_instancia}:{p.id}"
             role="group"
-            title={partida.controla(ficha) ? "Rueda o − / + para cambiarlo" : undefined}
+            title={ayuda(partida.controla(ficha) ? "Rueda o − / + para cambiarlo" : undefined)}
             onwheel={(e) => {
               e.preventDefault();
               partida.cambiarValorActual(ficha.id_instancia, p.id, e.deltaY < 0 ? 1 : -1);

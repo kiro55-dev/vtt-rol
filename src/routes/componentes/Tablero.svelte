@@ -1,5 +1,6 @@
 <!-- src/routes/componentes/Tablero.svelte -->
 <script>
+  import { ayuda } from "$lib/ajustesVista.svelte";
   import { onMount, untrack, onDestroy } from 'svelte';
   import { urlDeImagen } from '$lib/imagenes';
   import {
@@ -883,7 +884,7 @@
   data-conserva-foco
   role="application"
   aria-label="Tablero de juego"
-  title="Rueda: zoom · Arrastrar: mover la vista o una ficha (las que tienen foco, juntas) · Ctrl+clic: añadir o quitar del foco · Ctrl+arrastrar en el fondo: seleccionar con un recuadro · Doble clic: centrar · Clic central: aviso · Botón derecho: medir (sobre una ficha sin arrastrar: girarla)"
+  title={ayuda("Rueda: zoom · Arrastrar: mover la vista o una ficha (las que tienen foco, juntas) · Ctrl+clic: añadir o quitar del foco · Ctrl+arrastrar en el fondo: seleccionar con un recuadro · Doble clic: centrar · Clic central: aviso · Arrastrar botón derecho medir · Click derecho rotar (ctrl + click derecho rotar espejo)")}
   onwheel={alRueda}
   onpointerdown={alPresionar}
   onpointermove={alMover}

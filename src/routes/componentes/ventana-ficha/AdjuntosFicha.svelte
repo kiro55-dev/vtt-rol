@@ -2,6 +2,7 @@
 <!-- Pestañas de los archivos adjuntos de una ficha y el visor del que está abierto. Soltar
      archivos sobre `.zona-archivos` los adjunta (lo gestiona VentanaFicha). -->
 <script lang="ts">
+  import { ayuda } from "$lib/ajustesVista.svelte";
   import { tick } from "svelte";
   import { esTexto, nombreArchivo, type EditorFicha } from "$lib/editorFicha.svelte";
   import { esJugador } from "$lib/modo";
@@ -73,7 +74,7 @@
 <div class="zona-archivos">
   <div class="barra-pestanas">
     {#if puedeIzq}
-      <button type="button" class="btn-flecha" onclick={() => desplazar(-100)} title="Desplazar a la izquierda">◀</button>
+      <button type="button" class="btn-flecha" onclick={() => desplazar(-100)} title={ayuda("Desplazar a la izquierda")}>◀</button>
     {/if}
 
     <div class="pestanas" role="tablist" bind:this={barra} onscroll={comprobarScroll}>
@@ -85,7 +86,7 @@
             role="tab"
             tabindex="0"
             aria-selected={editor.pestana === i}
-            title="Doble clic para renombrar archivo"
+            title={ayuda("Doble clic para renombrar archivo")}
             onclick={() => editor.abrirPestana(i)}
             onkeydown={(e) => {
               if (e.key === " ") {
@@ -112,7 +113,7 @@
             <button
               type="button"
               class="btn-quitar"
-              title="Quitar de la ficha"
+              title={ayuda("Quitar de la ficha")}
               aria-label="Quitar {nombreArchivo(archivo)}"
               onclick={(e) => {
                 e.stopPropagation();
@@ -125,10 +126,10 @@
     </div>
 
     {#if puedeDer}
-      <button type="button" class="btn-flecha" onclick={() => desplazar(100)} title="Desplazar a la derecha">▶</button>
+      <button type="button" class="btn-flecha" onclick={() => desplazar(100)} title={ayuda("Desplazar a la derecha")}>▶</button>
     {/if}
 
-    <button type="button" class="btn-anadir" onclick={() => editor.crearTexto()} title="Crear documento .txt">+</button>
+    <button type="button" class="btn-anadir" onclick={() => editor.crearTexto()} title={ayuda("Crear documento .txt")}>+</button>
   </div>
 
   <div class="visor">

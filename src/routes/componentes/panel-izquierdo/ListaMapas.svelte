@@ -1,5 +1,6 @@
 <!-- src/routes/componentes/panel-izquierdo/ListaMapas.svelte -->
 <script lang="ts">
+  import { ayuda } from "$lib/ajustesVista.svelte";
   import { onMount } from "svelte";
   import { flip } from "svelte/animate";
   import { open } from "@tauri-apps/plugin-dialog";
@@ -144,7 +145,7 @@
             type="checkbox"
             class="compartir"
             checked={m.compartido}
-            title={m.compartido ? "Lo ven los jugadores. Desmárcalo para dejar de compartirlo" : "Márcalo para que lo vean los jugadores"}
+            title={ayuda(m.compartido ? "Lo ven los jugadores. Desmárcalo para dejar de compartirlo" : "Márcalo para que lo vean los jugadores")}
             aria-label="Compartir con los jugadores"
             onpointerdown={(e) => e.stopPropagation()}
             onchange={(e) => void partida.compartirMapa(m, e.currentTarget.checked)}
@@ -157,7 +158,7 @@
         class="tarjeta-mapa nueva"
         disabled={partida.zonaId === null}
         onclick={() => partida.crearMapa(null)}
-        title={partida.zonaId === null ? "Crea primero una zona" : "Añadir mapa"}
+        title={ayuda(partida.zonaId === null ? "Crea primero una zona" : "Añadir mapa")}
       >+</button>
     {/if}
   </div>

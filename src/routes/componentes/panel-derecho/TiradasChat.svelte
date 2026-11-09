@@ -1,6 +1,7 @@
 <!-- src/routes/componentes/panel-derecho/TiradasChat.svelte -->
 <!-- Tiradas y chat integrados en el mismo recuadro: la lista arriba y la caja de comandos abajo. -->
 <script>
+  import { ayuda } from "$lib/ajustesVista.svelte";
   import ListaTiradas from "./ListaTiradas.svelte";
   import EntradaComando from "./EntradaComando.svelte";
   import { tiradas } from "$lib/tiradas.svelte";
@@ -17,9 +18,9 @@
       class:activo={!tiradas.publica}
       aria-pressed={!tiradas.publica}
       data-conserva-foco
-      title={tiradas.publica
+      title={ayuda(tiradas.publica
         ? "Los jugadores ven tus tiradas. Pulsa para tirar en privado"
-        : "Solo tú ves tus tiradas. Pulsa para que las vean los jugadores"}
+        : "Solo tú ves tus tiradas. Pulsa para que las vean los jugadores")}
       onclick={() => (tiradas.publica = !tiradas.publica)}
     >
       {tiradas.publica ? "Tirada pública" : "Tirada privada"}

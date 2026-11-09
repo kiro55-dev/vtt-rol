@@ -4,6 +4,7 @@
      persona sobre una ficha (banco, «Fichas activas» o tablero) le da el control de esa ficha.
      La lógica está en Rust (src-tauri/src/red/) y en $lib/sala. -->
 <script lang="ts" module>
+  import { ayuda } from "$lib/ajustesVista.svelte";
   let ultimaPosicion = { x: 300, y: 80 };
 </script>
 
@@ -168,7 +169,7 @@
               type="button"
               class="nombre-jugador"
               class:conectado={j.conectado}
-              title="Arrastra sobre una ficha (banco, «Fichas activas» o tablero) para que la controle"
+              title={ayuda("Arrastra sobre una ficha (banco, «Fichas activas» o tablero) para que la controle")}
               onpointerdown={(e) => arrastreJugador.preparar(e, j)}
             >
               <span class="punto">●</span> {j.nombre}
@@ -177,19 +178,19 @@
               {#each j.fichas as id (id)}
                 <span class="ficha">
                   {nombreFicha(id)}
-                  <button type="button" title="Quitarle esta ficha" onclick={() => hacer(() => sala.quitar(j.id, id))}>✕</button>
+                  <button type="button" title={ayuda("Quitarle esta ficha")} onclick={() => hacer(() => sala.quitar(j.id, id))}>✕</button>
                 </span>
               {/each}
             </div>
             {#if j.conectado}
-              <button type="button" class="btn-expulsar" title="Lo saca de la sala; para volver tendrá que poner la contraseña" onclick={() => hacer(() => sala.expulsar(j.id))}>Expulsar</button>
+              <button type="button" class="btn-expulsar" title={ayuda("Lo saca de la sala; para volver tendrá que poner la contraseña")} onclick={() => hacer(() => sala.expulsar(j.id))}>Expulsar</button>
             {/if}
             {#if quitando === j.id}
               <span class="nota">¿Quitarlo de la partida? Sus fichas se quedan sin dueño.</span>
               <button type="button" class="btn-expulsar" onclick={() => { quitando = null; void hacer(() => sala.eliminar(j.id)); }}>Sí, quitar</button>
               <button type="button" class="btn-no" onclick={() => (quitando = null)}>No</button>
             {:else}
-              <button type="button" class="btn-expulsar" title="Lo borra de esta partida (también lo saca de la sala). Sus fichas no se borran: se quedan sin dueño" onclick={() => (quitando = j.id)}>Quitar de la partida</button>
+              <button type="button" class="btn-expulsar" title={ayuda("Lo borra de esta partida (también lo saca de la sala). Sus fichas no se borran: se quedan sin dueño")} onclick={() => (quitando = j.id)}>Quitar de la partida</button>
             {/if}
           </div>
         {:else}

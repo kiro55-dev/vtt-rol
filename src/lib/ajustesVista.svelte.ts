@@ -10,6 +10,7 @@ const CLAVE = "openroll.ajustesVista";
 interface Guardado {
   edicionRejilla?: boolean;
   soloMapaActual?: boolean;
+  tutoriales?: boolean;
 }
 
 function leer(): Guardado {
@@ -27,6 +28,14 @@ class AjustesVista {
    *  activo y no lo puede cambiar (sus fichas de otros mapas no salen, pero puede poner la suya en el mapa que ve). */
   soloMapaActual = $state(esJugador || (leer().soloMapaActual ?? false));
 
+  /** Si se enseñan los mensajes de ayuda al pasar el ratón por encima (host y jugadores lo eligen por separado). */
+  tutoriales = $state(leer().tutoriales ?? true);
+
+  alternarTutoriales() {
+    this.tutoriales = !this.tutoriales;
+    this.#guardar();
+  }
+
   alternarEdicionRejilla() {
     this.edicionRejilla = !this.edicionRejilla;
     this.#guardar();
@@ -40,7 +49,7 @@ class AjustesVista {
 
   #guardar() {
     try {
-      const guardado: Guardado = { edicionRejilla: this.edicionRejilla, soloMapaActual: this.soloMapaActual };
+      const guardado: Guardado = { edicionRejilla: this.edicionRejilla, soloMapaActual: this.soloMapaActual, tutoriales: this.tutoriales };
       localStorage.setItem(CLAVE, JSON.stringify(guardado));
     } catch {
       // Sin almacenamiento (ventana privada, tests...): solo dura esta sesión
@@ -49,3 +58,8 @@ class AjustesVista {
 }
 
 export const ajustesVista = new AjustesVista();
+
+/** Para el atributo `title` de los mensajes de ayuda: sin tutoriales no hay mensaje. */
+export function ayuda(texto: string | undefined): string | undefined {
+  return ajustesVista.tutoriales ? texto : undefined;
+}

@@ -1,5 +1,6 @@
 <!-- src/routes/componentes/panel-izquierdo/ListaZonas.svelte -->
 <script lang="ts">
+  import { ayuda } from "$lib/ajustesVista.svelte";
   import { flip } from "svelte/animate";
   import { partida, type Zona } from "$lib/partida.svelte";
   import { ListaOrdenable } from "$lib/ordenable.svelte";
@@ -56,7 +57,7 @@
             if (!esJugador) iniciarEdicion(z);
           }}
           oncontextmenu={(e) => (esJugador ? e.preventDefault() : abrirMenu(e, z))}
-          title={z.nombre}
+          title={ayuda(z.nombre)}
         >
           {#if editandoId === z.id}
             <input
@@ -78,7 +79,7 @@
       </div>
     {/each}
     {#if !esJugador}
-      <button class="item-zona nueva" onclick={() => partida.crearZona()} title="Añadir zona">+</button>
+      <button class="item-zona nueva" onclick={() => partida.crearZona()} title={ayuda("Añadir zona")}>+</button>
     {/if}
   </div>
 </div>

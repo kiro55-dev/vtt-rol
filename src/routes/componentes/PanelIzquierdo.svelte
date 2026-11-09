@@ -17,7 +17,7 @@
   let partidasAbierto = $state(false);
 
   // Más opciones de configuración se añaden aquí
-  const opciones = $derived([
+  const opcionesHost = $derived([
     {
       texto: "Partidas…",
       accion: () => (partidasAbierto = true),
@@ -48,6 +48,13 @@
       }
     }
   ]);
+
+  // Lo que cada uno elige para sí: también lo tienen los jugadores
+  const opcionTutoriales = $derived({
+    texto: ajustesVista.tutoriales ? "Quitar tutoriales" : "Mostrar tutoriales",
+    accion: () => ajustesVista.alternarTutoriales()
+  });
+  const opciones = $derived(esJugador ? [opcionTutoriales] : [...opcionesHost, opcionTutoriales]);
 </script>
 
 <aside class="panel-izquierdo">
