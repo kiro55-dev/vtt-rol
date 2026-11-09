@@ -1,7 +1,5 @@
 <!-- src/routes/componentes/BarraDados.svelte -->
 <script>
-  import { tiradas } from "$lib/tiradas.svelte";
-  import { esJugador } from "$lib/modo";
   let { onSumarAlChat, onRestarDelChat, onLanzarTirada } = $props();
 
   let bonificador = $state(0);
@@ -69,16 +67,6 @@
       <span>Desv</span>
     </label>
   </div>
-
-  {#if !esJugador}
-    <!-- Solo el host: desmarcada, la tirada no llega a los jugadores -->
-    <div class="zona-modificadores">
-      <label class="check-label" title="Si está desmarcada, solo tú ves la tirada">
-        <input type="checkbox" bind:checked={tiradas.publica} />
-        <span>Pública</span>
-      </label>
-    </div>
-  {/if}
 
   <div class="bonif">
     <span>+ Bonf:</span>

@@ -16,14 +16,14 @@
       title={t.total === null ? undefined : "Arrastra sobre un valor de una ficha: botón izquierdo quita, derecho suma"}
       onpointerdown={(e) => t.total !== null && arrastreTirada.preparar(e, t.total)}
     >
-      {#if t.total !== null}<span class="hora">{t.autor || "rollmaster"}{t.publica === false ? " · privada" : ""}</span>{/if}
+      {#if t.total !== null}
+        <strong class="total">= {t.total}</strong>
+      {/if}
+      {#if t.total !== null}<span class="hora">{t.autor || "rollmaster"}{t.publica === false ? " · p" : ""}</span>{/if}
       <!-- @html a propósito: Rust devuelve el desglose con <b> para resaltar el dado ganador. Lo genera
            solo Rust con números y palabras fijas (el comando escrito nunca llega aquí), y además
            `desgloseSeguro` escapa todo salvo <b> y </b>. -->
       <span class="cmd">{@html desgloseSeguro(t.comando)}</span>
-      {#if t.total !== null}
-        <strong class="total">= {t.total}</strong>
-      {/if}
     </div>
   {/each}
 </div>
@@ -49,18 +49,20 @@
   .lista-tiradas::-webkit-scrollbar-thumb:hover { background: #71717a; }
 
   .linea-tirada.arrastrable { cursor: grab; user-select: none; }
+  /* Sangría fija: la primera línea arranca en el borde y las demás a 4 caracteres, sea cual sea el autor.
+     El total flota a la derecha de la primera línea (por eso va antes en el marcado). */
   .linea-tirada {
-    display: flex;
-    align-items: flex-start;
-    gap: 6px;
-    padding: 1px 0;
+    display: block;
+    padding: 1px 0 1px 4ch;
+    text-indent: -4ch;
   }
 
   .hora {
+    text-indent: 0; /* el inline-block heredaría la sangría negativa y se cortaría por la izquierda */
     color: #52525b;
     font-size: 9px;
-    flex-shrink: 0;
-    margin-top: 2px;
+    display: inline-block;
+    margin-right: 6px;
     letter-spacing: -0.5px;
     user-select: none;
   }
@@ -72,7 +74,6 @@
   }
 
   .cmd {
-    flex: 1;
     color: #e4e4e7;
     font-size: 11px;
     white-space: normal;
@@ -87,7 +88,9 @@
   .total {
     color: #4ade80;
     font-size: 12px;
-    flex-shrink: 0;
+    float: right;
+    text-indent: 0;
+    margin-left: 6px;
     white-space: nowrap;
   }
 </style>
