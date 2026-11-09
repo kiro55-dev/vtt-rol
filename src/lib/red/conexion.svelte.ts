@@ -98,6 +98,18 @@ export class Conexion {
     }
   }
 
+  /** Recupera del host los comandos de dados de este jugador (se guardan en su disco, uno por jugador). */
+  async #cargarPersonales() {
+    try {
+      const guardados = await this.pedir({ cmd: "obtener_historial_personal" });
+      if (!Array.isArray(guardados)) return;
+      const nuevos = this.#personales.filter((c) => !guardados.includes(c)); // escritos mientras llegaba
+      this.#personales = [...guardados.map(String), ...nuevos].slice(-MAX_COMANDOS_PERSONALES);
+    } catch {
+      // Sin historial previo: se empieza con lo que escriba ahora
+    }
+  }
+
   #recordarComando(c: string) {
     const limpio = c.trim();
     if (!limpio || this.#personales.at(-1) === limpio) return;
@@ -219,6 +231,7 @@ export class Conexion {
         this.sesion = m.sesion;
         this.#cortadoDesde = null;
         this.estado = { tipo: "dentro" };
+        void this.#cargarPersonales(); // sus comandos de dados anteriores (↑ ↓), guardados en el host
         return;
       case "Vista": {
         const primera = this.#alPrimeraVista;

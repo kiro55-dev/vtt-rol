@@ -69,6 +69,7 @@ pub fn eliminar_jugador_en(state: &AppState, id: IdJugador) -> Result<(), String
         return Err("Ese jugador no existe".into());
     }
     state.red.expulsar(id)?; // sin el estado cogido (orden de bloqueo: estado, luego la sala)
+    state.almacen.borrar_historial_de(id); // sus comandos de dados (↑ ↓) se van con él
     {
         let mut est = state.lock();
         partida::registrar(&mut est, &state.almacen, DeltaPartida::JugadorEliminado(id));

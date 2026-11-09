@@ -872,6 +872,24 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn el_historial_de_dados_de_cada_jugador_se_guarda_en_el_host_y_se_recupera_al_reconectar() {
+        let sala = sala_con_app("srv_historial").await;
+        let (mut ana, id_ana, _) = entrar(&sala, "Ana").await;
+        let (mut luis, _, _) = entrar(&sala, "Luis").await;
+        for (n, c) in ["1d6 + 2", "2d8", "2d8"].iter().enumerate() {
+            assert!(pedir(&mut ana, n as u32, json!({ "cmd": "tirar_dado", "comando": c })).await.1.is_ok());
+        }
+        let (_, r) = pedir(&mut ana, 10, json!({ "cmd": "obtener_historial_personal" })).await;
+        assert_eq!(r.unwrap(), json!(["1d6 + 2", "2d8"]), "sin repetir el último");
+        let (_, r) = pedir(&mut luis, 1, json!({ "cmd": "obtener_historial_personal" })).await;
+        assert_eq!(r.unwrap(), json!([]), "el de Ana no es suyo");
+
+        // Quitar a Ana de la partida borra su historial
+        crate::red::comandos::eliminar_jugador_en(sala.estado(), id_ana).unwrap();
+        assert!(sala.estado().almacen.leer_historial_de(id_ana).is_empty());
+    }
+
+    #[tokio::test]
     async fn demasiadas_peticiones_seguidas_se_contestan_con_un_error() {
         let sala = sala_con_app("srv_limite").await;
         let (mut ana, _, _) = entrar(&sala, "Ana").await;

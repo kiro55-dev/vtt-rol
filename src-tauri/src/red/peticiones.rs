@@ -42,6 +42,8 @@ const MAX_FICHAS_PROPIAS: usize = 20;
 #[serde(tag = "cmd", rename_all = "snake_case", rename_all_fields = "camelCase")]
 pub enum Peticion {
     TirarDado { comando: String },
+    /// Sus comandos de dados anteriores (las flechas ↑ ↓ al reconectar).
+    ObtenerHistorialPersonal,
     MoverInstancia { id_instancia: u16, destino: Option<Destino> },
     MoverInstancias { ids: Vec<u16>, id_mapa: u16, dx: i32, dy: i32 },
     RotarInstancia { id_instancia: u16 },
@@ -144,7 +146,7 @@ pub fn permitida_con(est: &EstadoPartida, jugador: IdJugador, p: &Peticion, subi
         return Ok(());
     }
     match p {
-        Peticion::TirarDado { .. } => Ok(()), // cualquiera tira; `tirar_dado_de` rechaza el `clean`
+        Peticion::TirarDado { .. } | Peticion::ObtenerHistorialPersonal => Ok(()), // cualquiera tira; `tirar_dado_de` rechaza el `clean`
         Peticion::MoverInstancia { id_instancia, destino } => {
             instancia_suya(est, jugador, *id_instancia)?;
             destino_ok(est, destino)
@@ -314,6 +316,10 @@ pub fn ejecutar_en(state: &AppState, red: &Red, jugador: IdJugador, p: Peticion)
         let est = state.lock(); // estado → red
         permitida_con(&est, jugador, &p, &red.subidas_de(jugador), &red.borradores_de(jugador))?;
     }
+    // Solo lee su historial: nada cambia (ni hace falta avisar a nadie)
+    if matches!(p, Peticion::ObtenerHistorialPersonal) {
+        return json(state.almacen.leer_historial_de(jugador));
+    }
     // Qué tiene que volver a leer la pantalla del host: el chat, o las fichas (banco e instancias)
     let partes = if matches!(p, Peticion::TirarDado { .. }) {
         serde_json::json!({ "tiradas": true })
@@ -322,6 +328,7 @@ pub fn ejecutar_en(state: &AppState, red: &Red, jugador: IdJugador, p: Peticion)
     };
     let resultado = match p {
         Peticion::TirarDado { comando } => json(tirar_dado_de(state, jugador, &comando)?),
+        Peticion::ObtenerHistorialPersonal => unreachable!("se contesta antes"),
         Peticion::MoverInstancia { id_instancia, destino } => json(partida::mover_instancia_en(id_instancia, destino, state)?),
         Peticion::MoverInstancias { ids, id_mapa, dx, dy } => json(partida::mover_instancias_en(ids, id_mapa, dx, dy, state)?),
         Peticion::RotarInstancia { id_instancia } => json(partida::rotar_instancia_en(id_instancia, state)?),

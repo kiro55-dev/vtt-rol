@@ -257,10 +257,9 @@ pub fn tirar_dado_de(state: &AppState, jugador: IdJugador, comando: &str) -> Res
     // 1. Registra en el estado de la partida / deltas (con el total tal cual, sin releerlo de un texto)
     registrar_tirada(state, jugador, &desglose, total);
 
-    // 2. El historial personal (↑ ↓) es de quien usa este equipo: solo el del host se guarda en su disco
-    if jugador == ID_HOST {
-        registrar_comando_personal(state, comando);
-    }
+    // 2. El historial personal (↑ ↓) es de quien tira: se guarda en el disco del host, uno por jugador (así lo
+    //    recupera al reconectar; se borra al quitarlo de la partida)
+    state.almacen.anadir_historial_de(jugador, comando);
 
     // El front espera "desglose = total"
     Ok(format!("{desglose} = {total}"))

@@ -5,7 +5,8 @@
 //
 //   partida.json           snapshot completo del estado
 //   deltas.jsonl           cambios posteriores al snapshot, una línea por cambio
-//   historial_personal.txt últimos comandos de dados escritos por este usuario
+//   historial_personal.txt últimos comandos de dados escritos por este usuario (el host)
+//   historial_jugador_<id>.txt lo mismo de cada jugador de la sala (se borra al quitarlo de la partida)
 //   imagenes/              fondos de mapa importados
 //
 // Este módulo no sabe nada de Tauri ni de los modelos: solo mueve texto y archivos.
@@ -165,8 +166,13 @@ impl Almacen {
     // Historial personal de comandos
     // ------------------------------------------------------------------
 
-    fn leer_historial_interno(&self) -> Vec<String> {
-        fs::read(self.dir().join(HISTORIAL))
+    /// Archivo del historial de `jugador` (el host, `0`, usa el de siempre).
+    fn archivo_historial(jugador: u16) -> String {
+        if jugador == 0 { HISTORIAL.to_string() } else { format!("historial_jugador_{jugador}.txt") }
+    }
+
+    fn leer_historial_interno(&self, jugador: u16) -> Vec<String> {
+        fs::read(self.dir().join(Self::archivo_historial(jugador)))
             .map(|b| {
                 String::from_utf8_lossy(&b)
                     .lines()
@@ -178,18 +184,32 @@ impl Almacen {
     }
 
     pub fn leer_historial(&self) -> Vec<String> {
+        self.leer_historial_de(0)
+    }
+
+    pub fn leer_historial_de(&self, jugador: u16) -> Vec<String> {
         let _g = bloquear(&self.historial);
-        self.leer_historial_interno()
+        self.leer_historial_interno(jugador)
     }
 
     pub fn anadir_historial(&self, comando: &str) {
+        self.anadir_historial_de(0, comando)
+    }
+
+    /// Borra el historial de un jugador (al quitarlo de la partida).
+    pub fn borrar_historial_de(&self, jugador: u16) {
+        let _g = bloquear(&self.historial);
+        let _ = fs::remove_file(self.dir().join(Self::archivo_historial(jugador)));
+    }
+
+    pub fn anadir_historial_de(&self, jugador: u16, comando: &str) {
         let cmd = comando.replace(['\n', '\r'], " ").trim().to_string();
         if cmd.is_empty() {
             return;
         }
 
         let _g = bloquear(&self.historial);
-        let mut lineas = self.leer_historial_interno();
+        let mut lineas = self.leer_historial_interno(jugador);
 
         if lineas.last() != Some(&cmd) {
             lineas.push(cmd);
@@ -201,7 +221,7 @@ impl Almacen {
 
         let mut salida = lineas.join("\n");
         salida.push('\n');
-        if let Err(e) = fs::write(self.dir().join(HISTORIAL), salida) {
+        if let Err(e) = fs::write(self.dir().join(Self::archivo_historial(jugador)), salida) {
             eprintln!("[almacen] no se pudo guardar el historial personal: {e}");
         }
     }
@@ -249,6 +269,22 @@ pub mod pruebas {
 mod tests {
     use super::pruebas::dir_temporal;
     use super::*;
+
+    #[test]
+    fn cada_jugador_tiene_su_historial_y_se_borra_aparte() {
+        let a = Almacen::abrir(dir_temporal("historial_jugadores")).unwrap();
+        a.anadir_historial("1d20");
+        a.anadir_historial_de(3, "2d6+1");
+        a.anadir_historial_de(3, "1d8");
+        a.anadir_historial_de(4, "1d4");
+        assert_eq!(a.leer_historial(), vec!["1d20"]);
+        assert_eq!(a.leer_historial_de(3), vec!["2d6+1", "1d8"]);
+        assert_eq!(a.leer_historial_de(4), vec!["1d4"]);
+        a.borrar_historial_de(3);
+        assert!(a.leer_historial_de(3).is_empty());
+        assert_eq!(a.leer_historial_de(4), vec!["1d4"], "los demás no se tocan");
+        assert_eq!(a.leer_historial(), vec!["1d20"]);
+    }
 
     #[test]
     fn el_historial_no_repite_el_ultimo_y_se_limita_a_100() {

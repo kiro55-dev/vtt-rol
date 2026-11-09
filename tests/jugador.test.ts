@@ -127,6 +127,15 @@ describe("conexión del jugador: pedirle acciones al host", () => {
     await expect(c.responder("obtener_historial_personal", {})).resolves.toEqual(["1d6", "2d8 + 1"]);
   });
 
+  it("al entrar recupera del host sus comandos de dados anteriores, y lo que escriba mientras tanto se conserva", async () => {
+    const { c, ws } = await conectado();
+    const pedida = ws.enviados.filter((m) => m.tipo === "Pedir").find((m) => m.peticion.cmd === "obtener_historial_personal");
+    expect(pedida).toBeTruthy();
+    void c.responder("tirar_dado", { comando: "1d20" }); // escrito antes de que llegue la respuesta
+    ws.recibir({ tipo: "Respuesta", id: pedida.id, ok: ["2d6", "1d8 + 1"] });
+    await vi.waitFor(async () => expect(await c.responder("obtener_historial_personal", {})).toEqual(["2d6", "1d8 + 1", "1d20"]));
+  });
+
   it("sube la foto al host con la sesión y la extensión del archivo, y devuelve la ruta", async () => {
     const { c } = await conectado();
     const peticiones: { url: string; metodo?: string }[] = [];
