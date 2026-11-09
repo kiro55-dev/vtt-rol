@@ -8,6 +8,27 @@
     <style>
       html, body { margin: 0; background: #09090b; }
     </style>
+    <script>
+      // Si el navegador guardó una página vieja y sus archivos ya no existen (se publicó una versión nueva), se
+      // recarga una vez en vez de quedarse en pantalla negra
+      (function () {
+        function recargar() {
+          try {
+            if (sessionStorage.getItem('openroll.recargado')) return;
+            sessionStorage.setItem('openroll.recargado', '1');
+          } catch (e) {}
+          location.reload();
+        }
+        window.addEventListener('error', function (e) {
+          var t = e.target;
+          if (t && (t.tagName === 'SCRIPT' || t.tagName === 'LINK')) recargar();
+        }, true);
+        window.addEventListener('unhandledrejection', function (e) {
+          var m = String((e.reason && e.reason.message) || e.reason || '');
+          if (/dynamically imported module|Importing a module script failed|error loading dynamically/i.test(m)) recargar();
+        });
+      })();
+    </script>
     %sveltekit.head%
   </head>
   <body data-sveltekit-preload-data="hover">

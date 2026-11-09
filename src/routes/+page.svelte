@@ -105,6 +105,8 @@
 
 <svelte:window onpointerdown={alPulsarEnLaVentana} onkeydown={alPulsarTecla} />
 
+<!-- Si algo falla al pintar la app, en vez de una pantalla negra se ve qué ha pasado (y se puede recargar) -->
+<svelte:boundary>
 {#if esJugador && !dentro}
   <div class="aviso-jugador">
     {#if !conexion}
@@ -170,6 +172,14 @@
   <VisorImagen />
 </div>
 {/if}
+  {#snippet failed(error)}
+    <div class="aviso-jugador">
+      <h1>Algo ha fallado</h1>
+      <p>{error instanceof Error ? error.message : String(error)}</p>
+      <button type="button" onclick={() => location.reload()}>Recargar</button>
+    </div>
+  {/snippet}
+</svelte:boundary>
 
 <style>
   .aviso-linea {
