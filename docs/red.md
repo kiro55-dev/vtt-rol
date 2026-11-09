@@ -149,6 +149,16 @@ su pantalla relee. Las peticiones de un jugador se ejecutan **en orden**, una a 
   que dice la extensión) y hasta 20 por sesión. Solo él la ve (`/imagen`) hasta que la usa una ficha. Como la página
   está en otra dirección que el túnel, `/imagen` y `/subir` llevan **CORS** para el origen de la página (el mismo
   que acepta el WebSocket), y `/subir` contesta al `OPTIONS`; así el editor puede recortar la miniatura en un canvas.
+- **Fichas propias.** Un jugador crea su ficha como el host (borrador con id reservado → guardar / cancelar), pasando por
+  el host: `iniciar_borrador_entidad`, `crear_entidad` y `cancelar_borrador_entidad` están en la lista blanca. El host
+  elige la zona (la que pide si la ve, o la primera con un mapa compartido), y al guardar **fuerza** `propietarios =
+  [jugador]` y `es_unico = false`. Topes: 3 borradores abiertos y 20 fichas por jugador. Los `.txt` de un borrador valen
+  igual que los de una ficha suya. Si el jugador se va (sala cerrada, expulsado, enlace nuevo) sus borradores se
+  anulan solos (`Red::poner_limpiador`), para no dejar ids reservados. El host la controla después como cualquier ficha.
+- **Fondos antiguos.** Versiones muy antiguas guardaban el fondo de un mapa (o la foto de una ficha) como una URL de un
+  archivo del disco del host (`http://asset.localhost/…`). Al abrir una partida, `migrar_fondos_antiguos` los copia a
+  `imagenes/` (un delta normal por cada uno) para poder medirlos, protegerlos y servirlos a los jugadores; si el archivo
+  ya no existe se dejan como estaban.
 - **Qué controla un jugador en la pantalla:** `partida.controla(instancia)` (el host siempre; un jugador, las de las
   fichas de su banco). Oculta o desactiva lo que el host va a rechazar, pero la comprobación de verdad es la del host.
 

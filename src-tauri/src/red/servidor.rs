@@ -384,10 +384,11 @@ async fn cors(State(red): State<Arc<Red>>, peticion: axum::extract::Request, sig
     let origen = origen_permitido(&red, peticion.headers());
     let preflight = peticion.method() == axum::http::Method::OPTIONS;
     let mut r = if preflight { StatusCode::NO_CONTENT.into_response() } else { siguiente.run(peticion).await };
+    // Siempre `Vary: Origin`: así el navegador no reutiliza para un fetch con CORS la copia que dejó un <img> (sin CORS)
+    r.headers_mut().insert(header::VARY, HeaderValue::from_static("Origin"));
     if let Some(o) = origen {
         let c = r.headers_mut();
         c.insert(header::ACCESS_CONTROL_ALLOW_ORIGIN, o);
-        c.insert(header::VARY, HeaderValue::from_static("Origin"));
         if preflight {
             c.insert(header::ACCESS_CONTROL_ALLOW_METHODS, HeaderValue::from_static("GET, POST, OPTIONS"));
             c.insert(header::ACCESS_CONTROL_ALLOW_HEADERS, HeaderValue::from_static("content-type"));
@@ -906,6 +907,11 @@ mod tests {
         assert_eq!(r.headers()["access-control-allow-origin"], origen.as_str());
         assert_eq!(r.bytes().await.unwrap().as_ref(), png().as_slice());
         assert_eq!(pedir_imagen(&sesion_luis).await.unwrap().status(), 404);
+        // Con o sin `Origin` lleva `Vary: Origin`: el navegador no reutiliza para un fetch con CORS la copia de un <img>
+        let sin_origen = cliente.get(url(&format!("/imagen?ruta={ruta}&sesion={sesion}"))).send().await.unwrap();
+        assert_eq!(sin_origen.status(), 200);
+        assert_eq!(sin_origen.headers()["vary"], "Origin");
+        assert!(sin_origen.headers().get("access-control-allow-origin").is_none());
 
         // El pre-vuelo del navegador
         let r = cliente.request(reqwest::Method::OPTIONS, url("/subir")).header("origin", origen.clone()).send().await.unwrap();
@@ -950,5 +956,73 @@ mod tests {
         for (n, cambio) in cambios.iter().enumerate() {
             assert!(pedir(&mut ana, 2 + n as u32, editar(cambio)).await.1.is_err());
         }
+    }
+
+    #[tokio::test]
+    async fn un_jugador_crea_su_ficha_con_un_txt_y_queda_a_su_nombre() {
+        let sala = sala_con_app("srv_ficha_nueva").await;
+        let (mut ana, id, _) = entrar(&sala, "Ana").await;
+        vaciar(&mut ana).await;
+
+        // Un borrador: el host le da un id y la zona (la que ve)
+        let (_, r) = pedir(&mut ana, 1, json!({ "cmd": "iniciar_borrador_entidad", "zonaId": 99, "fotoUrl": null })).await;
+        let borrador: Entidad = serde_json::from_value(r.unwrap()).unwrap();
+        assert_eq!((borrador.zona_id, borrador.propietarios.clone()), (1, vec![id]));
+        assert!(sala.estado().lock().banco_entidades.is_empty(), "aún no existe en el banco");
+
+        // Un .txt en la carpeta de la ficha nueva
+        let (_, r) = pedir(&mut ana, 2, json!({ "cmd": "crear_documento_texto", "entidad": serde_json::to_value(&borrador).unwrap() })).await;
+        let adjunto = r.unwrap();
+        let ruta = adjunto["ruta"].as_str().unwrap().to_string();
+        assert!(ruta.starts_with(&format!("archivos/entidad_{}/", borrador.id)) && ruta.ends_with(".txt"), "{ruta}");
+        let (_, r) = pedir(&mut ana, 3, json!({ "cmd": "guardar_archivo_texto", "adjunto": adjunto, "contenido": "hola" })).await;
+        assert!(r.is_ok(), "{r:?}");
+
+        // Guarda: lo que el jugador manda de más (otros dueños, única) lo corrige el host
+        let mut nueva = borrador.clone();
+        nueva.nombre = "Mi guerrera".into();
+        nueva.es_unico = true;
+        nueva.propietarios = vec![];
+        nueva.archivos_adjuntos = vec![Some(ruta.clone())];
+        let (_, r) = pedir(&mut ana, 4, json!({ "cmd": "crear_entidad", "entidad": serde_json::to_value(&nueva).unwrap() })).await;
+        assert!(r.is_ok(), "{r:?}");
+        let guardada = sala.estado().lock().banco_entidades.iter().find(|e| e.id == borrador.id).unwrap().clone();
+        assert_eq!((guardada.nombre.as_str(), guardada.es_unico, guardada.propietarios.clone()), ("Mi guerrera", false, vec![id]));
+        assert!(sala.red.borradores_de(id).is_empty());
+
+        // Ya no es un borrador: no se puede crear otra vez, y como ficha suya sí la puede editar
+        assert!(pedir(&mut ana, 5, json!({ "cmd": "crear_entidad", "entidad": serde_json::to_value(&nueva).unwrap() })).await.1.is_err());
+        let mut editada = guardada.clone();
+        editada.nombre = "Otra".into();
+        assert!(pedir(&mut ana, 6, json!({ "cmd": "modificar_entidad", "entidad": serde_json::to_value(&editada).unwrap() })).await.1.is_ok());
+    }
+
+    #[tokio::test]
+    async fn los_borradores_de_un_jugador_se_anulan_al_cancelar_y_al_cerrar_la_sala() {
+        let sala = sala_con_app("srv_borradores").await;
+        let (mut ana, id, _) = entrar(&sala, "Ana").await;
+        let anulados = Arc::new(Mutex::new(Vec::new()));
+        let guardados = anulados.clone();
+        sala.red.poner_limpiador(move |ids| guardados.lock().unwrap().extend(ids));
+
+        let iniciar = |n| json!({ "cmd": "iniciar_borrador_entidad", "zonaId": 1, "fotoUrl": null, "n": n });
+        let mut ids = Vec::new();
+        for n in 0..crate::red::MAX_BORRADORES_POR_JUGADOR {
+            let (_, r) = pedir(&mut ana, n as u32, iniciar(n)).await;
+            ids.push(serde_json::from_value::<Entidad>(r.unwrap()).unwrap().id);
+        }
+        assert!(pedir(&mut ana, 10, iniciar(9)).await.1.is_err(), "tope de fichas nuevas abiertas");
+
+        // Cancelar una libera su id y su hueco
+        let (_, r) = pedir(&mut ana, 11, json!({ "cmd": "cancelar_borrador_entidad", "id": ids[0], "rutas": [] })).await;
+        assert!(r.is_ok(), "{r:?}");
+        assert!(!sala.red.borradores_de(id).contains(&ids[0]));
+        assert!(pedir(&mut ana, 12, json!({ "cmd": "cancelar_borrador_entidad", "id": 4000, "rutas": [] })).await.1.is_err(), "no es suyo");
+
+        // Cerrar la sala anula los que quedan
+        sala.red.cerrar();
+        let mut anulados = anulados.lock().unwrap().clone();
+        anulados.sort();
+        assert_eq!(anulados, vec![ids[1], ids[2]]);
     }
 }

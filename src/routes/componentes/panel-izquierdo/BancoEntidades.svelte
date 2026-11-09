@@ -8,7 +8,6 @@
   import { alSoltarArchivos } from "$lib/soltarArchivos";
   import { arrastre } from "$lib/arrastreFicha.svelte";
   import { arrastreJugador } from "$lib/arrastreJugador.svelte";
-  import { esJugador } from "$lib/modo";
 
   // Soltar aquí una instancia la elimina: se marca el banco mientras pasa por encima
   const recibeInstancia = $derived(arrastre.actual?.zona === "banco" && "instancia" in arrastre.actual.origen);
@@ -106,11 +105,9 @@
   <div class="sub-busqueda">
     <div class="fila-cabecera">
       <span class="titulo-mini">BANCO DE FICHAS</span>
-      {#if !esJugador}
-        <button type="button" class="btn-anadir" onclick={() => void partida.abrirEditorEntidad(null)}>
-          + Añadir Ficha
-        </button>
-      {/if}
+      <button type="button" class="btn-anadir" onclick={() => void partida.abrirEditorEntidad(null)}>
+        + Añadir Ficha
+      </button>
     </div>
 
     <input type="text" placeholder="Buscar ficha..." bind:value={busqueda} class="input-buscar" />

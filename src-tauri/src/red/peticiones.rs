@@ -33,6 +33,8 @@ const MAX_GRUPO: usize = 100;
 /// Tamaño máximo de la miniatura que sube un jugador (un WebP de 128 px pesa unos KB).
 const MAX_MINIATURA: usize = 256 * 1024;
 const MAX_NOMBRE_ARCHIVO: usize = 80;
+/// Fichas que puede tener un jugador (las que crea él; el host puede darle más).
+const MAX_FICHAS_PROPIAS: usize = 20;
 
 /// La lista blanca. Las variantes se llaman igual que los comandos de Tauri y los campos igual que sus
 /// argumentos en JS, así el `invoke(cmd, args)` del navegador se envía tal cual: `{ cmd, ...args }`.
@@ -50,6 +52,9 @@ pub enum Peticion {
     InstanciarEntidades { ids: Vec<u16>, destino: Option<Destino> },
     ModificarEntidad { entidad: Entidad },
     GuardarMiniaturaFicha { id: u16, datos: Vec<u8> },
+    IniciarBorradorEntidad { zona_id: u16, foto_url: Option<String> },
+    CrearEntidad { entidad: Entidad },
+    CancelarBorradorEntidad { id: u16, rutas: Vec<String> },
     LeerArchivoTexto { ruta_relativa: String },
     GuardarArchivoTexto { adjunto: ArchivoAdjunto, contenido: String },
     CrearDocumentoTexto { entidad: Entidad },
@@ -94,22 +99,47 @@ fn grupo_ok(n: usize) -> Result<(), String> {
 
 /// De qué ficha es un archivo (`archivos/entidad_<id>/<nombre>.txt`): solo un `.txt` en la carpeta de una ficha
 /// del jugador. Devuelve el id de la ficha.
-fn archivo_de_ficha_suya(est: &EstadoPartida, j: IdJugador, ruta: &str) -> Result<u16, String> {
+fn archivo_de_ficha_suya(est: &EstadoPartida, j: IdJugador, ruta: &str, borradores: &HashSet<u16>) -> Result<u16, String> {
     let resto = ruta.strip_prefix("archivos/entidad_").ok_or("Ese archivo no es de una ficha tuya")?;
     let (id, nombre) = resto.split_once('/').ok_or("Ese archivo no es de una ficha tuya")?;
     let id: u16 = id.parse().map_err(|_| "Ese archivo no es de una ficha tuya")?;
     if nombre.is_empty() || nombre.contains(['/', '\\']) {
         return Err("Ruta de archivo no válida".into());
     }
-    ficha_suya(est, j, id)?;
+    if !borradores.contains(&id) {
+        ficha_suya(est, j, id)?;
+    }
     if !adjunto_permitido_a_jugador(ruta) {
         return Err("Solo puedes usar archivos de texto (.txt)".into());
     }
     Ok(id)
 }
 
+/// Zonas que ve un jugador: las que tienen algún mapa compartido.
+fn zona_visible(est: &EstadoPartida, id_zona: u16) -> bool {
+    est.mapas.iter().any(|m| m.id_zona == id_zona && m.compartido)
+}
+
+/// La zona de una ficha nueva: la pedida si el jugador la ve; si no, la primera que ve.
+fn zona_para_ficha_nueva(est: &EstadoPartida, pedida: u16) -> Result<u16, String> {
+    if zona_visible(est, pedida) {
+        return Ok(pedida);
+    }
+    est.zonas.iter().map(|z| z.id).find(|z| zona_visible(est, *z)).ok_or_else(|| "El host aún no ha compartido ningún mapa".to_string())
+}
+
+fn fichas_de(est: &EstadoPartida, j: IdJugador) -> usize {
+    est.banco_entidades.iter().filter(|e| e.propietarios.contains(&j)).count()
+}
+
 /// ¿Puede `jugador` hacer esto? `subidas` son las imágenes que ha subido en esta sala.
+#[cfg(test)]
 pub fn permitida(est: &EstadoPartida, jugador: IdJugador, p: &Peticion, subidas: &HashSet<String>) -> Result<(), String> {
+    permitida_con(est, jugador, p, subidas, &HashSet::new())
+}
+
+/// Como `permitida`, y `borradores` son las fichas nuevas que tiene abiertas (su id está reservado, aún no están en el banco).
+pub fn permitida_con(est: &EstadoPartida, jugador: IdJugador, p: &Peticion, subidas: &HashSet<String>, borradores: &HashSet<u16>) -> Result<(), String> {
     if jugador == ID_HOST {
         return Ok(());
     }
@@ -138,29 +168,76 @@ pub fn permitida(est: &EstadoPartida, jugador: IdJugador, p: &Peticion, subidas:
             ids.iter().try_for_each(|id| ficha_suya(est, jugador, *id))
         }
         Peticion::ModificarEntidad { entidad } => entidad_modificable(est, jugador, entidad, subidas),
+        Peticion::IniciarBorradorEntidad { zona_id, foto_url } => {
+            if borradores.len() >= crate::red::MAX_BORRADORES_POR_JUGADOR {
+                return Err("Tienes demasiadas fichas nuevas abiertas".into());
+            }
+            if fichas_de(est, jugador) + borradores.len() >= MAX_FICHAS_PROPIAS {
+                return Err("Has llegado al máximo de fichas".into());
+            }
+            if let Some(f) = foto_url.as_deref().filter(|f| !f.trim().is_empty()) {
+                if !subidas.contains(f) {
+                    return Err("Esa foto no la has subido tú".into());
+                }
+            }
+            zona_para_ficha_nueva(est, *zona_id).map(|_| ())
+        }
+        Peticion::CrearEntidad { entidad } => {
+            if !borradores.contains(&entidad.id) {
+                return Err("Esa ficha no es una ficha nueva tuya".into());
+            }
+            if !zona_visible(est, entidad.zona_id) {
+                return Err("Esa zona no está disponible".into());
+            }
+            if let Some(f) = entidad.foto_url.as_deref().filter(|f| !f.trim().is_empty()) {
+                if !subidas.contains(f) {
+                    return Err("Esa foto no la has subido tú".into());
+                }
+            }
+            for a in entidad.archivos_adjuntos.iter().flatten() {
+                if archivo_de_ficha_suya(est, jugador, a, borradores) != Ok(entidad.id) {
+                    return Err("Solo puedes adjuntar archivos de texto (.txt) de tu ficha".into());
+                }
+            }
+            Ok(())
+        }
+        Peticion::CancelarBorradorEntidad { id, rutas } => {
+            if !borradores.contains(id) {
+                return Err("Esa ficha no es una ficha nueva tuya".into());
+            }
+            grupo_ok(rutas.len())?;
+            for r in rutas {
+                if !subidas.contains(r) && archivo_de_ficha_suya(est, jugador, r, borradores).is_err() {
+                    return Err("Ese archivo no es tuyo".into());
+                }
+            }
+            Ok(())
+        }
         Peticion::GuardarMiniaturaFicha { id, datos } => {
             ficha_suya(est, jugador, *id)?;
             if datos.len() > MAX_MINIATURA { Err("La miniatura es demasiado grande".into()) } else { Ok(()) }
         }
-        Peticion::LeerArchivoTexto { ruta_relativa } => archivo_de_ficha_suya(est, jugador, ruta_relativa).map(|_| ()),
+        Peticion::LeerArchivoTexto { ruta_relativa } => archivo_de_ficha_suya(est, jugador, ruta_relativa, borradores).map(|_| ()),
         Peticion::GuardarArchivoTexto { adjunto, contenido } => {
             if contenido.len() > MAX_TEXTO_JUGADOR {
                 return Err("El texto es demasiado largo".into());
             }
-            archivo_de_ficha_suya(est, jugador, &adjunto.ruta).map(|_| ())
+            archivo_de_ficha_suya(est, jugador, &adjunto.ruta, borradores).map(|_| ())
         }
-        Peticion::CrearDocumentoTexto { entidad } => ficha_suya(est, jugador, entidad.id),
+        Peticion::CrearDocumentoTexto { entidad } => {
+            if borradores.contains(&entidad.id) { Ok(()) } else { ficha_suya(est, jugador, entidad.id) }
+        }
         Peticion::RenombrarArchivoAdjunto { adjunto, nuevo_nombre } => {
             if nuevo_nombre.chars().count() > MAX_NOMBRE_ARCHIVO || nuevo_nombre.contains(['/', '\\', ':']) {
                 return Err("Nombre de archivo no válido".into());
             }
-            archivo_de_ficha_suya(est, jugador, &adjunto.ruta).map(|_| ())
+            archivo_de_ficha_suya(est, jugador, &adjunto.ruta, borradores).map(|_| ())
         }
         Peticion::DescartarArchivosBorrador { rutas } => {
             grupo_ok(rutas.len())?;
             // Solo lo suyo: archivos de sus fichas o imágenes que él subió (nunca borra lo que la partida usa)
             for r in rutas {
-                if !subidas.contains(r) && archivo_de_ficha_suya(est, jugador, r).is_err() {
+                if !subidas.contains(r) && archivo_de_ficha_suya(est, jugador, r, borradores).is_err() {
                     return Err("Ese archivo no es tuyo".into());
                 }
             }
@@ -191,7 +268,7 @@ fn entidad_modificable(est: &EstadoPartida, jugador: IdJugador, e: &Entidad, sub
             CambioEntidad::Adjuntos(lista) => {
                 for a in lista.iter().flatten() {
                     let ya_estaba = guardada.archivos_adjuntos.iter().flatten().any(|g| g == a);
-                    if !ya_estaba && archivo_de_ficha_suya(est, jugador, a) != Ok(e.id) {
+                    if !ya_estaba && archivo_de_ficha_suya(est, jugador, a, &HashSet::new()) != Ok(e.id) {
                         return Err("Solo puedes adjuntar archivos de texto (.txt) de tu ficha".into());
                     }
                 }
@@ -221,7 +298,7 @@ pub fn ejecutar<R: Runtime>(app: &AppHandle<R>, red: &Red, jugador: IdJugador, p
 pub fn ejecutar_en(state: &AppState, red: &Red, jugador: IdJugador, p: Peticion) -> Result<Value, String> {
     {
         let est = state.lock(); // estado → red
-        permitida(&est, jugador, &p, &red.subidas_de(jugador))?;
+        permitida_con(&est, jugador, &p, &red.subidas_de(jugador), &red.borradores_de(jugador))?;
     }
     // Qué tiene que volver a leer la pantalla del host: el chat, o las fichas (banco e instancias)
     let partes = if matches!(p, Peticion::TirarDado { .. }) {
@@ -249,7 +326,7 @@ pub fn ejecutar_en(state: &AppState, red: &Red, jugador: IdJugador, p: Peticion)
             json(partida::guardar_archivo_texto_en(adjunto, contenido, state)?)
         }
         Peticion::CrearDocumentoTexto { entidad } => {
-            let entidad = ficha_guardada(state, entidad.id)?;
+            let entidad = ficha_guardada(state, entidad);
             json(partida::crear_documento_texto_en(entidad, state)?)
         }
         Peticion::RenombrarArchivoAdjunto { adjunto, nuevo_nombre } => {
@@ -257,6 +334,29 @@ pub fn ejecutar_en(state: &AppState, red: &Red, jugador: IdJugador, p: Peticion)
             json(partida::renombrar_archivo_adjunto_en(adjunto, nuevo_nombre, state)?)
         }
         Peticion::DescartarArchivosBorrador { rutas } => json(partida::descartar_archivos_borrador_en(rutas, state)),
+        Peticion::IniciarBorradorEntidad { zona_id, foto_url } => {
+            let zona = zona_para_ficha_nueva(&state.lock(), zona_id)?;
+            let mut borrador = partida::iniciar_borrador_entidad_en(zona, foto_url, state)?;
+            if let Err(m) = red.anotar_borrador(jugador, borrador.id) {
+                partida::cancelar_borrador_entidad_en(borrador.id, vec![], state);
+                return Err(m);
+            }
+            borrador.propietarios = vec![jugador];
+            json(borrador)
+        }
+        Peticion::CrearEntidad { mut entidad } => {
+            // Lo que decide el host, no el jugador: la ficha es suya, no es única y no trae miniatura propia
+            entidad.propietarios = vec![jugador];
+            entidad.es_unico = false;
+            let creada = partida::crear_entidad_en(entidad, state)?;
+            red.soltar_borrador(jugador, creada.id);
+            json(creada)
+        }
+        Peticion::CancelarBorradorEntidad { id, rutas } => {
+            partida::cancelar_borrador_entidad_en(id, rutas, state);
+            red.soltar_borrador(jugador, id);
+            json(())
+        }
         Peticion::AvisarTablero { aviso } => {
             // El foco de un jugador es suyo: no se envía a nadie (ni al host ni a los demás)
             if aviso.id_mapa().is_none() {
@@ -279,13 +379,14 @@ pub fn ejecutar_en(state: &AppState, red: &Red, jugador: IdJugador, p: Peticion)
     Ok(resultado)
 }
 
-/// La ficha tal como está guardada (lo que manda el navegador sobre ella no se usa: solo su id).
-fn ficha_guardada(state: &AppState, id: u16) -> Result<Entidad, String> {
-    state.lock().banco_entidades.iter().find(|e| e.id == id).cloned().ok_or_else(|| "La ficha ya no existe".into())
+/// La ficha tal como está guardada (lo que manda el navegador sobre ella no se usa: solo su id). Una ficha nueva
+/// aún no está en el banco (`permitida` ya comprobó que es un borrador suyo): se usa la que manda.
+fn ficha_guardada(state: &AppState, enviada: Entidad) -> Entidad {
+    state.lock().banco_entidades.iter().find(|e| e.id == enviada.id).cloned().unwrap_or(enviada)
 }
 
 fn con_ficha_guardada(state: &AppState, adjunto: ArchivoAdjunto) -> Result<ArchivoAdjunto, String> {
-    let entidad = ficha_guardada(state, adjunto.entidad_archivo.id)?;
+    let entidad = ficha_guardada(state, adjunto.entidad_archivo.clone());
     Ok(ArchivoAdjunto { entidad_archivo: entidad, ..adjunto })
 }
 
@@ -504,5 +605,58 @@ mod tests {
         assert!(ok(&e, 1, ping(2)).is_err());
         assert!(ok(&e, 1, json!({ "cmd": "avisar_tablero", "aviso": { "RecorridoBorrado": { "id_mapa": 1 } } })).is_ok());
         assert!(ok(&e, 1, json!({ "cmd": "avisar_tablero", "aviso": { "Foco": { "ids_instancias": [3] } } })).is_ok());
+    }
+
+    #[test]
+    fn una_ficha_nueva_solo_con_borrador_propio_en_una_zona_que_ve_y_con_topes() {
+        let mut e = estado();
+        let (subidas, ninguno) = (HashSet::from(["imagenes/mia.png".to_string()]), HashSet::new());
+        let suyos = HashSet::from([50u16]);
+        let con = |e: &EstadoPartida, v: Value, b: &HashSet<u16>| permitida_con(e, 1, &pet(v), &subidas, b);
+        let iniciar = |foto: Value| json!({ "cmd": "iniciar_borrador_entidad", "zonaId": 1, "fotoUrl": foto });
+
+        // Empezar: con un mapa compartido en la zona sí; la foto solo si la subió él
+        assert!(con(&e, iniciar(Value::Null), &ninguno).is_ok());
+        assert!(con(&e, iniciar(json!("imagenes/mia.png")), &ninguno).is_ok());
+        assert!(con(&e, iniciar(json!("imagenes/de_otro.png")), &ninguno).is_err());
+        // Tope de borradores abiertos
+        assert!(con(&e, iniciar(Value::Null), &HashSet::from([1, 2, 3])).is_err());
+        // Tope de fichas propias
+        for id in 100..(100 + MAX_FICHAS_PROPIAS as u16) {
+            e.banco_entidades.push(ficha(id, vec![1]));
+        }
+        assert!(con(&e, iniciar(Value::Null), &ninguno).is_err());
+        e.banco_entidades.truncate(3);
+
+        // Guardar: solo un borrador suyo, en una zona que ve, con .txt de su carpeta
+        let mut nueva = ficha(50, vec![]);
+        nueva.foto_url = None;
+        nueva.archivos_adjuntos = vec![Some("archivos/entidad_50/a.txt".into())];
+        let crear = |n: &Entidad| json!({ "cmd": "crear_entidad", "entidad": serde_json::to_value(n).unwrap() });
+        assert!(con(&e, crear(&nueva), &suyos).is_ok());
+        assert!(con(&e, crear(&nueva), &ninguno).is_err(), "no es un borrador suyo");
+        let mut otra_zona = nueva.clone();
+        otra_zona.zona_id = 9;
+        assert!(con(&e, crear(&otra_zona), &suyos).is_err());
+        let mut pdf = nueva.clone();
+        pdf.archivos_adjuntos = vec![Some("archivos/entidad_50/a.pdf".into())];
+        assert!(con(&e, crear(&pdf), &suyos).is_err());
+        let mut ajeno = nueva.clone();
+        ajeno.archivos_adjuntos = vec![Some("archivos/entidad_11/a.txt".into())];
+        assert!(con(&e, crear(&ajeno), &suyos).is_err());
+        let mut foto = nueva.clone();
+        foto.foto_url = Some("imagenes/de_otro.png".into());
+        assert!(con(&e, crear(&foto), &suyos).is_err());
+
+        // Los .txt del borrador valen mientras es un borrador, y cancelarlo
+        let leer = json!({ "cmd": "leer_archivo_texto", "rutaRelativa": "archivos/entidad_50/a.txt" });
+        assert!(con(&e, leer.clone(), &suyos).is_ok());
+        assert!(con(&e, leer, &ninguno).is_err());
+        let cancelar = |id: u16| json!({ "cmd": "cancelar_borrador_entidad", "id": id, "rutas": ["imagenes/mia.png", "archivos/entidad_50/a.txt"] });
+        assert!(con(&e, cancelar(50), &suyos).is_ok());
+        assert!(con(&e, cancelar(51), &suyos).is_err());
+        // Un mapa sin compartir no abre ninguna zona
+        e.mapas.iter_mut().for_each(|m| m.compartido = false);
+        assert!(con(&e, iniciar(Value::Null), &ninguno).is_err());
     }
 }

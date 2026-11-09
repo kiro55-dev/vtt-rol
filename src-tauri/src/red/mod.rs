@@ -134,7 +134,16 @@ pub struct Red {
     emisor: Mutex<Option<Box<dyn Fn(&str, serde_json::Value) + Send + Sync>>>,
     /// Ejecuta lo que pide un jugador (peticiones::ejecutar con el `AppHandle`). Lo pone lib.rs.
     ejecutor: Mutex<Option<Ejecutor>>,
+    /// Fichas nuevas (borradores con id reservado) que tiene abiertas cada jugador. Si el jugador se va (se cierra la
+    /// sala, se le expulsa o cambia el enlace) se anulan con `limpiador`, para no dejar ids reservados.
+    borradores: Mutex<HashMap<IdJugador, HashSet<u16>>>,
+    limpiador: Mutex<Option<Limpiador>>,
 }
+
+type Limpiador = Arc<dyn Fn(Vec<u16>) + Send + Sync>;
+
+/// Borradores que puede tener abiertos un jugador a la vez.
+pub const MAX_BORRADORES_POR_JUGADOR: usize = 3;
 
 type Ejecutor = Arc<dyn Fn(IdJugador, Peticion) -> Result<serde_json::Value, String> + Send + Sync>;
 
@@ -182,6 +191,52 @@ impl Red {
             siguiente_id: AtomicU64::new(1),
             emisor: Mutex::new(None),
             ejecutor: Mutex::new(None),
+            borradores: Mutex::new(HashMap::new()),
+            limpiador: Mutex::new(None),
+        }
+    }
+
+    pub fn poner_limpiador(&self, f: impl Fn(Vec<u16>) + Send + Sync + 'static) {
+        *bloquear(&self.limpiador) = Some(Arc::new(f));
+    }
+
+    /// Los borradores abiertos de `jugador`.
+    pub(crate) fn borradores_de(&self, jugador: IdJugador) -> HashSet<u16> {
+        bloquear(&self.borradores).get(&jugador).cloned().unwrap_or_default()
+    }
+
+    /// Anota un borrador del jugador. `Err` si ya tiene demasiados abiertos.
+    pub(crate) fn anotar_borrador(&self, jugador: IdJugador, id: u16) -> Result<(), String> {
+        let mut b = bloquear(&self.borradores);
+        let suyos = b.entry(jugador).or_default();
+        if suyos.len() >= MAX_BORRADORES_POR_JUGADOR {
+            return Err("Tienes demasiadas fichas nuevas abiertas".into());
+        }
+        suyos.insert(id);
+        Ok(())
+    }
+
+    pub(crate) fn soltar_borrador(&self, jugador: IdJugador, id: u16) {
+        if let Some(s) = bloquear(&self.borradores).get_mut(&jugador) {
+            s.remove(&id);
+        }
+    }
+
+    /// Anula los borradores de un jugador (`None`: de todos). Sin ningún cerrojo cogido al llamar al limpiador.
+    fn anular_borradores(&self, jugador: Option<IdJugador>) {
+        let ids: Vec<u16> = {
+            let mut b = bloquear(&self.borradores);
+            match jugador {
+                Some(j) => b.remove(&j).map(|s| s.into_iter().collect()).unwrap_or_default(),
+                None => b.drain().flat_map(|(_, s)| s).collect(),
+            }
+        };
+        if ids.is_empty() {
+            return;
+        }
+        let limpiador = bloquear(&self.limpiador).clone();
+        if let Some(f) = limpiador {
+            f(ids);
         }
     }
 
@@ -357,6 +412,8 @@ impl Red {
         if let Some(mut p) = s.proceso_tunel.take() {
             let _ = p.start_kill();
         }
+        drop(s);
+        self.anular_borradores(None);
         self.avisar();
     }
 
@@ -400,6 +457,7 @@ impl Red {
                 let _ = c.enviar.send(MensajeHost::Rechazado { motivo: "El host ha cambiado el enlace de la sala".into() });
             }
         }
+        self.anular_borradores(None);
         self.avisar();
         Ok(())
     }
@@ -421,6 +479,7 @@ impl Red {
         }) {
             let _ = c.enviar.send(MensajeHost::Rechazado { motivo: "El host te ha sacado de la sala".into() });
         }
+        self.anular_borradores(Some(id));
         self.avisar();
         Ok(())
     }

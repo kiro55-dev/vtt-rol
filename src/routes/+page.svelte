@@ -142,6 +142,9 @@
         onLanzarTirada={(bonificador: number | null) => tiradas.tirarConBonificador(bonificador)}
       />
     </div>
+    {#if partida.avisos}
+      <div class="aviso-linea" role="status">{partida.avisos}</div>
+    {/if}
     {#if esJugador && conexion}
       <div class="yo-jugador">
         Conectado como <b>{conexion.yo?.nombre}</b>
@@ -169,6 +172,11 @@
 {/if}
 
 <style>
+  .aviso-linea {
+    position: absolute; left: 50%; bottom: 44px; transform: translateX(-50%); z-index: 900;
+    background: #7f1d1d; color: #fecaca; border: 1px solid #b91c1c; border-radius: 6px;
+    padding: 4px 10px; font-size: 11px; max-width: 80%;
+  }
   :global(body, html) {
     margin: 0; padding: 0; width: 100vw; height: 100vh;
     overflow: hidden; background: #09090b; color: #fafafa;

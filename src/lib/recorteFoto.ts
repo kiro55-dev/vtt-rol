@@ -63,7 +63,8 @@ export async function miniaturaWebp(img: HTMLImageElement, encuadre: Encuadre, l
 
 /** Carga una imagen desde su URL como un <img> que se puede dibujar sin «manchar» el lienzo. */
 export async function cargarImagen(url: string): Promise<HTMLImageElement> {
-  const respuesta = await fetch(url);
+  // `reload`: una copia que dejó un <img> (sin cabeceras CORS) no sirve para este fetch
+  const respuesta = await fetch(url, { cache: "reload" });
   if (!respuesta.ok) throw new Error(`No se pudo leer la imagen (${respuesta.status})`);
   const objeto = URL.createObjectURL(await respuesta.blob());
   try {

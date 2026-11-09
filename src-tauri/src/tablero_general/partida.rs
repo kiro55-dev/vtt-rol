@@ -193,6 +193,7 @@ fn cambiar_de_partida(state: &AppState, nombre: &str) -> Result<(), String> {
     match estado::cargar(&state.almacen) {
         Ok((mut nuevo, informe)) => {
             eprintln!("[partida] abierta «{nombre}» · {informe:?}");
+            migrar_fondos_antiguos(&mut nuevo, &state.almacen);
             corregir_tamanos_mapas(&mut nuevo, &state.almacen);
             if informe.conviene_compactar() {
                 if let Err(e) = estado::compactar(&state.almacen, &nuevo) {
@@ -705,6 +706,70 @@ pub fn corregir_tamanos_mapas(est: &mut EstadoPartida, almacen: &Almacen) {
     }
 }
 
+/// El archivo del disco al que apunta una URL de versiones antiguas de la app (`http://asset.localhost/<ruta
+/// codificada>` en Windows, `asset://localhost/<ruta>` en otros sistemas). `None` si no es una de ellas.
+fn ruta_de_url_antigua(url: &str) -> Option<PathBuf> {
+    let resto = ["http://asset.localhost/", "https://asset.localhost/", "asset://localhost/"]
+        .iter()
+        .find_map(|p| url.strip_prefix(p))?;
+    let resto = resto.split(['?', '#']).next().unwrap_or("");
+    let bytes = resto.as_bytes();
+    let mut salida = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%' && i + 2 < bytes.len() {
+            let hex = std::str::from_utf8(&bytes[i + 1..i + 3]).ok()?;
+            salida.push(u8::from_str_radix(hex, 16).ok()?);
+            i += 3;
+        } else {
+            salida.push(bytes[i]);
+            i += 1;
+        }
+    }
+    let ruta = String::from_utf8(salida).ok()?;
+    (!ruta.is_empty()).then(|| PathBuf::from(ruta))
+}
+
+/// Las imágenes de versiones antiguas se guardaban como URL de un archivo del disco del host (fuera de la carpeta
+/// de datos): el host las veía, pero no se podían medir, ni proteger, ni servir a un jugador. Aquí se copian a
+/// `imagenes/` y la partida pasa a usar la ruta nueva (un delta normal por cada una). Si el archivo ya no existe
+/// se deja como estaba. Se llama al abrir una partida, ANTES de `corregir_tamanos_mapas` (que mide el mapa nuevo).
+pub fn migrar_fondos_antiguos(est: &mut EstadoPartida, almacen: &Almacen) {
+    let dir = almacen.dir();
+    let migrar = |url: &str, uso: imagenes::Uso| -> Option<String> {
+        let origen = ruta_de_url_antigua(url)?;
+        match imagenes::importar(&dir, &origen, uso) {
+            Ok(nueva) => Some(nueva),
+            Err(e) => {
+                eprintln!("[partida] no se pudo migrar {}: {e}", origen.display());
+                None
+            }
+        }
+    };
+    let mapas: Vec<Mapa> = est
+        .mapas
+        .iter()
+        .filter_map(|m| {
+            let nueva = migrar(m.url_imagen_fondo.as_deref()?, imagenes::Uso::Mapa)?;
+            Some(Mapa { url_imagen_fondo: Some(nueva), ..m.clone() })
+        })
+        .collect();
+    for mapa in mapas {
+        eprintln!("[partida] el fondo del mapa {} pasa a imagenes/", mapa.id);
+        registrar(est, almacen, DeltaPartida::MapaModificado(mapa));
+    }
+    let fotos: Vec<(u16, String)> = est
+        .banco_entidades
+        .iter()
+        .filter_map(|e| Some((e.id, migrar(e.foto_url.as_deref()?, imagenes::Uso::Ficha)?)))
+        .collect();
+    for (id, nueva) in fotos {
+        eprintln!("[partida] la foto de la ficha {id} pasa a imagenes/");
+        let cambios = vec![cambios_entidad::CambioEntidad::Foto(Some(nueva))];
+        registrar(est, almacen, DeltaPartida::EntidadCambiada { id, cambios });
+    }
+}
+
 /// La casilla de un mapa: lo ven (o dejan de ver) los jugadores de la sala, al instante. Es independiente
 /// del mapa que tenga abierto el host, así puede preparar otros sin que se vean.
 #[tauri::command]
@@ -798,6 +863,11 @@ pub fn iniciar_borrador_entidad(
     foto_url: Option<String>,
     state: State<'_, AppState>,
 ) -> Result<Entidad, String> {
+    iniciar_borrador_entidad_en(zona_id, foto_url, &state)
+}
+
+/// Lo que hace `iniciar_borrador_entidad`, con el estado ya en la mano (así también lo ejecuta el host a petición de un jugador).
+pub fn iniciar_borrador_entidad_en(zona_id: u16, foto_url: Option<String>, state: &AppState) -> Result<Entidad, String> {
     let est = state.lock();
     let mut reservas = state.reservas();
 
@@ -839,6 +909,11 @@ pub fn iniciar_borrador_entidad(
 /// (la foto, etc.) siempre que la partida no lo use.
 #[tauri::command]
 pub fn cancelar_borrador_entidad(id: u16, rutas: Vec<String>, state: State<'_, AppState>) {
+    cancelar_borrador_entidad_en(id, rutas, &state)
+}
+
+/// Lo que hace `cancelar_borrador_entidad`, con el estado ya en la mano.
+pub fn cancelar_borrador_entidad_en(id: u16, rutas: Vec<String>, state: &AppState) {
     let est = state.lock();
     let mut reservas = state.reservas();
 
@@ -905,7 +980,12 @@ fn validar_entidad(est: &EstadoPartida, dir: &Path, e: &Entidad) -> Result<(), S
 
 /// Añade al banco una ficha iniciada con `iniciar_borrador_entidad` (su id ya es el definitivo).
 #[tauri::command]
-pub fn crear_entidad(mut entidad: Entidad, state: State<'_, AppState>) -> Result<Entidad, String> {
+pub fn crear_entidad(entidad: Entidad, state: State<'_, AppState>) -> Result<Entidad, String> {
+    crear_entidad_en(entidad, &state)
+}
+
+/// Lo que hace `crear_entidad`, con el estado ya en la mano (así también lo ejecuta el host a petición de un jugador).
+pub fn crear_entidad_en(mut entidad: Entidad, state: &AppState) -> Result<Entidad, String> {
     let mut est = state.lock();
     let mut reservas = state.reservas();
 
@@ -945,7 +1025,6 @@ pub fn modificar_entidad_en(mut entidad: Entidad, state: &AppState) -> Result<()
         entidad.miniatura_url = guardada.miniatura_url.clone();
     } else {
         entidad.miniatura_url = None;
-        entidad.foto_encuadre = EncuadreFoto::default();
     }
     normalizar_parametros(&est.definiciones_parametros, &mut entidad.parametros);
     validar_entidad(&est, &state.almacen.dir(), &entidad)?;
@@ -1398,5 +1477,65 @@ mod tests_partidas {
         assert!(guardado.contains("Rango arma"));
         assert_eq!(state.lock().definiciones_parametros.len(), 4);
         assert!(partidas::crear(&state.raiz, "tercera").is_err(), "repetida");
+    }
+}
+
+#[cfg(test)]
+mod tests_fondos_antiguos {
+    use super::*;
+    use crate::tablero_general::almacen::pruebas::dir_temporal;
+
+    #[test]
+    fn reconoce_las_urls_antiguas_y_las_decodifica() {
+        assert_eq!(
+            ruta_de_url_antigua("http://asset.localhost/C%3A%5CMapas%5Cel%20desierto%5C1-1.png"),
+            Some(PathBuf::from(r"C:\Mapas\el desierto\1-1.png"))
+        );
+        assert_eq!(ruta_de_url_antigua("asset://localhost/%2Fhome%2Fana%2Fmapa.png"), Some(PathBuf::from("/home/ana/mapa.png")));
+        assert_eq!(ruta_de_url_antigua("imagenes/abc.png"), None);
+        assert_eq!(ruta_de_url_antigua("https://example.com/mapa.png"), None);
+    }
+
+    fn mapa(id: u16, fondo: Option<String>) -> Mapa {
+        Mapa {
+            id, id_zona: 1, nombre: id.to_string(), url_imagen_fondo: fondo, ancho: 1000, alto: 1000, rejilla: 50,
+            color_opacidad: vec![255, 255, 255, 76], grosor: 1, orden: 0, compartido: false,
+        }
+    }
+
+    #[test]
+    fn el_fondo_antiguo_pasa_a_imagenes_con_su_tamano_y_lo_que_no_se_puede_se_deja() {
+        let dir = dir_temporal("fondos_antiguos");
+        let origen = dir_temporal("fondos_antiguos_o");
+        std::fs::create_dir_all(&origen).unwrap();
+        image::RgbaImage::new(40, 30).save(origen.join("mi mapa.png")).unwrap();
+        let url = format!("http://asset.localhost/{}", origen.join("mi mapa.png").to_string_lossy().replace('\\', "%5C").replace(' ', "%20").replace(':', "%3A"));
+        let perdida = "http://asset.localhost/C%3A%5Cno%5Cexiste.png".to_string();
+
+        let almacen = Almacen::abrir(&dir).unwrap();
+        let mut est = EstadoPartida::default();
+        let zona = Zona { id: 1, nombre: "Z".into(), orden: 0 };
+        registrar(&mut est, &almacen, DeltaPartida::ZonaCreada(zona.clone()));
+        registrar(&mut est, &almacen, DeltaPartida::MapaCreado(zona.clone(), mapa(1, Some(url))));
+        registrar(&mut est, &almacen, DeltaPartida::MapaCreado(zona.clone(), mapa(2, Some(perdida.clone()))));
+        registrar(&mut est, &almacen, DeltaPartida::MapaCreado(zona.clone(), mapa(3, Some("imagenes/ya.png".into()))));
+        registrar(&mut est, &almacen, DeltaPartida::MapaCreado(zona, mapa(4, None)));
+
+        migrar_fondos_antiguos(&mut est, &almacen);
+        corregir_tamanos_mapas(&mut est, &almacen);
+
+        let fondo = |id: u16| est.mapas.iter().find(|m| m.id == id).unwrap().url_imagen_fondo.clone();
+        let nuevo = fondo(1).unwrap();
+        assert!(nuevo.starts_with("imagenes/") && nuevo.ends_with(".png"), "{nuevo}");
+        assert!(dir.join(&nuevo).is_file(), "se copió a la carpeta de datos");
+        let m1 = est.mapas.iter().find(|m| m.id == 1).unwrap();
+        assert_eq!((m1.ancho, m1.alto), (40, 30), "y ya se pudo medir");
+        assert_eq!(fondo(2), Some(perdida), "el archivo ya no existe: se deja");
+        assert_eq!(fondo(3).as_deref(), Some("imagenes/ya.png"), "una ruta normal no se toca");
+        assert_eq!(fondo(4), None);
+
+        // Queda en el log como cualquier cambio: al reabrir, sale igual
+        let (releido, _) = estado::cargar(&almacen).unwrap();
+        assert_eq!(releido.mapas.iter().find(|m| m.id == 1).unwrap().url_imagen_fondo.as_deref(), Some(nuevo.as_str()));
     }
 }

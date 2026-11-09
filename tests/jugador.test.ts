@@ -194,12 +194,30 @@ describe("un jugador solo cambia las fichas que son suyas", () => {
     await partida.guardarValoresPendientes();
   });
 
-  it("puede abrir en el editor una ficha de su banco, pero no crear una nueva", async () => {
-    const { partida } = await comoJugador();
+  it("puede abrir en el editor una ficha de su banco y crear una nueva (el host le da el borrador)", async () => {
+    const { partida, llamadas } = await comoJugador();
     partida.banco = [{ id: 10, nombre: "Ana" }] as any;
-    expect(await partida.abrirEditorEntidad(null)).toBe(false);
-    expect(partida.entidadEnEdicion).toBeNull();
     expect(await partida.abrirEditorEntidad(partida.banco[0])).toBe(true);
     expect(partida.entidadEnEdicion?.id).toBe(10);
+    expect(partida.editorEsBorrador).toBe(false);
+
+    // Una ficha nueva: se pide un borrador (que contesta el host)
+    partida.entidadEnEdicion = null;
+    expect(await partida.abrirEditorEntidad(null)).toBe(true);
+    expect(llamadas).toContain("iniciar_borrador_entidad");
+    expect(partida.editorEsBorrador).toBe(true);
+  });
+
+  it("un aviso se enseña y se quita solo", async () => {
+    vi.useFakeTimers();
+    try {
+      const { partida } = await comoJugador();
+      partida.avisar("algo falló");
+      expect(partida.avisos).toBe("algo falló");
+      vi.advanceTimersByTime(6001);
+      expect(partida.avisos).toBe("");
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

@@ -50,6 +50,7 @@ async function nuevoEditor(e = entidad(), esBorrador = false) {
     errorEditor: "",
     definiciones: structuredClone(DEFINICIONES),
     entidadEnEdicion: e,
+    avisar: vi.fn(),
     guardarEntidad: vi.fn(async () => true),
     cancelarEditorEntidad: vi.fn(async () => {}),
     borrarEntidad: vi.fn(async () => {

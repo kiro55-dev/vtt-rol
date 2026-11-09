@@ -350,6 +350,7 @@ export class EditorFicha {
       this.#encuadreTocado = this.#fotoCambiada = false;
     } catch (err) {
       console.warn("No se pudo guardar la miniatura de la ficha:", err);
+      partida.avisar(`La ficha se guardó, pero no se pudo actualizar su miniatura: ${err instanceof Error ? err.message : String(err)}`);
     }
   }
 

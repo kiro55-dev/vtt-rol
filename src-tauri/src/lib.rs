@@ -14,7 +14,7 @@ use tablero_general::dados::{limpiar_chat, tirar_dado};
 use tablero_general::estado;
 use tablero_general::partidas;
 use tablero_general::partida::{
-    corregir_tamanos_mapas,
+    corregir_tamanos_mapas, migrar_fondos_antiguos, cancelar_borrador_entidad_en,
     AppState, abrir_archivo_en_sistema, avisar_tablero, borrar_entidad, borrar_mapa, cancelar_borrador_entidad,
     borrar_definicion_parametro, modificar_definicion_parametro, crear_definicion_parametro, reordenar_definiciones_parametros,
     crear_documento_texto, crear_entidad, crear_mapa, crear_zona,
@@ -66,6 +66,7 @@ pub fn run() {
 
             let (mut estado_inicial, informe) = estado::cargar(&almacen)?;
             eprintln!("[partida] datos en {} · {:?}", dir.display(), informe);
+            migrar_fondos_antiguos(&mut estado_inicial, &almacen);
             corregir_tamanos_mapas(&mut estado_inicial, &almacen);
 
             // Consolida los deltas pendientes en el snapshot al arrancar (mantiene corto el log).
@@ -89,6 +90,14 @@ pub fn run() {
             });
             let (handle, red) = (app.handle().clone(), state.red.clone());
             state.red.poner_ejecutor(move |jugador, peticion| red::peticiones::ejecutar(&handle, &red, jugador, peticion));
+            // Si un jugador se va con una ficha nueva a medias (sala cerrada, expulsado...), se anula su borrador
+            let limpiador = app.handle().clone();
+            state.red.poner_limpiador(move |ids| {
+                let estado = limpiador.state::<AppState>();
+                for id in ids {
+                    cancelar_borrador_entidad_en(id, vec![], &estado);
+                }
+            });
             red::instalar(state.red.clone());
             app.manage(state);
             iniciar_autoguardado(app.handle().clone());

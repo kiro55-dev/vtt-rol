@@ -246,6 +246,15 @@ class Partida {
   valoresPendientes = $state<Record<string, number>>({});
   #temporizadorValores: ReturnType<typeof setTimeout> | null = null;
 
+  /** Aviso de una línea (algo que falló sin que haya una ventana donde mostrarlo); desaparece solo. */
+  avisos = $state("");
+  #temporizadorAviso: ReturnType<typeof setTimeout> | null = null;
+  avisar(texto: string) {
+    this.avisos = texto;
+    if (this.#temporizadorAviso) clearTimeout(this.#temporizadorAviso);
+    this.#temporizadorAviso = setTimeout(() => (this.avisos = ""), 6000);
+  }
+
   /** `null` = no hay ninguna zona (todavía no se ha creado, o se borró la última). */
   zonaId = $state<number | null>(null);
   mapaActual = $state<Mapa | null>(null);
@@ -1004,8 +1013,7 @@ class Partida {
    * y no se abre nada. Pedir la que ya está abierta no hace nada. Devuelve true si se abrió la pedida.
    */
   async abrirEditorEntidad(entidad?: Entidad | null, fotoUrl: string | null = null): Promise<boolean> {
-    // El jugador edita las fichas que ve en su banco (las suyas), pero no crea fichas nuevas
-    if (this.#abriendo || (esJugador && !entidad)) return false;
+    if (this.#abriendo) return false;
     const abierta = this.entidadEnEdicion;
     if (abierta && entidad && !this.editorEsBorrador && abierta.id === entidad.id) return false;
     this.#abriendo = true;
@@ -1031,6 +1039,7 @@ class Partida {
       return true;
     } catch (err) {
       console.error("No se pudo abrir la ficha:", err);
+      this.avisar(`No se pudo abrir la ficha: ${err instanceof Error ? err.message : String(err)}`);
       return false;
     } finally {
       this.#abriendo = false;
