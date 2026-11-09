@@ -1,7 +1,13 @@
 // src-tauri/src/lib.rs
+mod red;
 mod tablero_general;
 
-use tauri::Manager;
+use tauri::{Emitter, Manager};
+
+use red::comandos::{
+    abrir_sala, asignar_propietario, cerrar_sala, estado_sala, expulsar_jugador, obtener_jugadores, poner_contrasena,
+    quitar_propietario, regenerar_enlace,
+};
 
 use tablero_general::almacen::Almacen;
 use tablero_general::dados::{limpiar_chat, tirar_dado};
@@ -69,7 +75,14 @@ pub fn run() {
                 }
             }
 
-            app.manage(AppState::nuevo(estado_inicial, almacen, raiz));
+            let state = AppState::nuevo(estado_inicial, almacen, raiz);
+            // La sala avisa al front de cada cambio (abrir, progreso, conectados...) y recibe los deltas
+            let avisador = app.handle().clone();
+            state.red.al_cambiar(move || {
+                let _ = avisador.emit("sala-cambiada", ());
+            });
+            red::instalar(state.red.clone());
+            app.manage(state);
             iniciar_autoguardado(app.handle().clone());
             Ok(())
         })
@@ -105,6 +118,15 @@ pub fn run() {
             reordenar_instancias,
             elegir_mapa_publico,
             obtener_mapa_publico,
+            estado_sala,
+            abrir_sala,
+            cerrar_sala,
+            regenerar_enlace,
+            poner_contrasena,
+            expulsar_jugador,
+            obtener_jugadores,
+            asignar_propietario,
+            quitar_propietario,
             obtener_historial_tiradas,
             obtener_historial_personal,
             crear_zona,

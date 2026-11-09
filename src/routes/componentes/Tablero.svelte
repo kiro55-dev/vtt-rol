@@ -9,6 +9,7 @@
   import { partida, numeroDe, veParametro } from '$lib/partida.svelte';
   import { arrastre, baseDe, ladosDeEntidad, instanciasArrastradas } from '$lib/arrastreFicha.svelte';
   import { miniaturas } from '$lib/miniaturas.svelte';
+  import { arrastreJugador } from '$lib/arrastreJugador.svelte';
   import {
     fichasDelMapa, fichaEnPunto, fichasEnRectangulo, imagenDe, dibujarFicha, dibujarDestino, dibujarFormas, rectanguloFicha
   } from '$lib/fichasTablero';
@@ -752,11 +753,19 @@
       return { id_mapa: id, casilla: origenAlSoltar(casillas, centro.x, centro.y, lados) };
     });
 
+    // Qué ficha hay bajo el cursor, para soltar encima a un jugador (ver $lib/arrastreJugador)
+    const dejarDeResolverJugador = arrastreJugador.registrarTablero((clientX, clientY) => {
+      const r = contenedor.getBoundingClientRect();
+      const p = pantallaAMundo(cam, clientX - r.left, clientY - r.top);
+      return fichaEnPunto(fichas, casillas, p.x, p.y)?.base.id ?? null;
+    });
+
     return () => {
       observador.disconnect();
       window.removeEventListener('pointerdown', alPulsarEnLaVentana, true);
       dejarDeEscuchar();
       dejarDeResolver();
+      dejarDeResolverJugador();
       cancelAnimationFrame(rafId);
     };
   });

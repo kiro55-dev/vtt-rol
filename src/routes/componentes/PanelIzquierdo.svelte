@@ -9,6 +9,8 @@
   import BotonAjustes from "./panel-izquierdo/BotonAjustes.svelte";
   import VentanaParametros from "./VentanaParametros.svelte";
   import VentanaPartidas from "./VentanaPartidas.svelte";
+  import VentanaSala from "./VentanaSala.svelte";
+  import { sala } from "$lib/sala.svelte";
 
   let parametrosAbierto = $state(false);
   let partidasAbierto = $state(false);
@@ -18,8 +20,17 @@
     {
       texto: "Partidas…",
       accion: () => (partidasAbierto = true),
-      // Una ficha nueva abierta tiene su carpeta en esta partida: no puede acompañarte a otra
-      deshabilitada: partida.entidadEnEdicion ? "Cierra la ficha que tienes abierta" : undefined
+      // Una ficha nueva abierta tiene su carpeta en esta partida: no puede acompañarte a otra. Y los
+      // jugadores de la sala están en esta partida
+      deshabilitada: sala.enMarcha
+        ? "Cierra la sala antes de cambiar de partida"
+        : partida.entidadEnEdicion
+          ? "Cierra la ficha que tienes abierta"
+          : undefined
+    },
+    {
+      texto: "Configuración de sala…",
+      accion: () => (sala.ventanaAbierta = true)
     },
     {
       texto: "Editar parámetros de esta partida",
@@ -59,6 +70,10 @@
 
 {#if partidasAbierto}
   <VentanaPartidas onCerrar={() => (partidasAbierto = false)} />
+{/if}
+
+{#if sala.ventanaAbierta}
+  <VentanaSala />
 {/if}
 
 <style>

@@ -25,11 +25,19 @@ tauri-plugin-dialog = "2"          # selector de archivos nativo
 sha2 = "0.10"                      # nombre de las imágenes importadas = hash de su contenido
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-tokio = { version = "1", features = ["time"] }
+tokio = { version = "1", features = ["io-util", "macros", "net", "process", "rt-multi-thread", "sync", "time"] }
 chrono = "0.4" # Para sacar la hora "HH:MM" directamente en Rust
 rand = "0.10.3"
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "webp", "bmp"] }
 webp = "0.3"
+axum = { version = "0.8.9", features = ["ws"] }
+argon2 = "0.6.0"
+base64 = "0.23.1"
+subtle = "2.6.1"
+futures-util = "0.3.34"
+reqwest = { version = "0.13.5", default-features = false, features = ["rustls", "stream"] }
+hmac = "0.12"
+hex = "0.4.3"
 
 # Read the optimization guideline for more details: https://tauri.app/concept/size/#cargo-configuration
 [profile.release]
@@ -38,3 +46,10 @@ lto = true
 opt-level = 3
 panic = "abort"
 strip = true
+
+[target.'cfg(target_os = "macos")'.dependencies]
+flate2 = "1.1.11"
+tar = "0.4.46"
+
+[dev-dependencies]
+tokio-tungstenite = "0.30.0"

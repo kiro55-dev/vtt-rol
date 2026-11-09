@@ -5,7 +5,9 @@
 use std::collections::HashSet;
 use serde::Serialize;
 use std::path::{Path, PathBuf};
-use std::sync::{Mutex, MutexGuard};
+use std::sync::{Arc, Mutex, MutexGuard};
+
+use crate::red::{self, Red};
 use tauri::{AppHandle, Manager, State};
 use tauri_plugin_opener::OpenerExt;
 
@@ -25,18 +27,24 @@ use crate::tablero_general::tablero::{self, AvisoTablero};
 use crate::tablero_general::visibilidad;
 
 pub struct AppState {
-    pub estado: Mutex<EstadoPartida>,
-    pub almacen: Almacen,
+    /// En `Arc` para que el servidor de la sala (red/) también pueda leer y registrar cambios.
+    pub estado: Arc<Mutex<EstadoPartida>>,
+    pub almacen: Arc<Almacen>,
     /// Ids reservados por fichas NUEVAS que se están editando y todavía no están en el banco.
-    /// Orden de bloqueo: siempre `estado` primero y `borradores` después.
+    /// Orden de bloqueo: siempre `estado` primero y `borradores` (o la red) después.
     borradores: Mutex<HashSet<u16>>,
     /// Carpeta de datos de la app: las partidas están en `<raiz>/partidas/`.
     pub raiz: PathBuf,
+    /// La sala de la partida abierta (ver red/).
+    pub red: Arc<Red>,
 }
 
 impl AppState {
     pub fn nuevo(estado: EstadoPartida, almacen: Almacen, raiz: PathBuf) -> Self {
-        Self { estado: Mutex::new(estado), almacen, borradores: Mutex::new(HashSet::new()), raiz }
+        let estado = Arc::new(Mutex::new(estado));
+        let almacen = Arc::new(almacen);
+        let red = Arc::new(Red::nueva(estado.clone(), almacen.clone(), raiz.clone()));
+        Self { estado, almacen, borradores: Mutex::new(HashSet::new()), raiz, red }
     }
 
     pub fn lock(&self) -> MutexGuard<'_, EstadoPartida> {
@@ -58,8 +66,10 @@ impl AppState {
 /// foto, quitar un adjunto...), se comparan las referencias de antes y de después y se borra lo que
 /// sobra, pero solo cuando el delta ya está escrito en el log: si algo falla, el cambio no se da
 /// por hecho y no se borra nada.
-fn registrar(est: &mut EstadoPartida, almacen: &Almacen, delta: DeltaPartida) {
-    // FUTURA RED: aquí es donde enviarás `delta` por websocket/red.
+///
+/// Con la sala abierta, cada jugador conectado recibe lo que cambió en SU vista (red::tras_cambio), todavía
+/// bajo el mismo lock: el orden de lo que reciben es el del log.
+pub(crate) fn registrar(est: &mut EstadoPartida, almacen: &Almacen, delta: DeltaPartida) {
     let antes = recursos::afecta_a_recursos(&delta).then(|| recursos::referencias(est));
 
     match est.registrar(almacen, delta) {
@@ -73,6 +83,7 @@ fn registrar(est: &mut EstadoPartida, almacen: &Almacen, delta: DeltaPartida) {
         }
         Err(e) => eprintln!("[partida] {e}"),
     }
+    red::tras_cambio(est);
 }
 
 /// Punto de entrada para cualquier cambio: lo aplica en RAM y lo añade al log, en ese orden
@@ -154,6 +165,10 @@ fn cambiar_de_partida(state: &AppState, nombre: &str) -> Result<(), String> {
     // en ESTA partida y su carpeta de archivos en ella: no puede acompañarnos a la otra.
     if !reservas.is_empty() {
         return Err("Cierra la ficha que tienes abierta antes de cambiar de partida".into());
+    }
+    // Los jugadores conectados están en ESTA partida (cada partida es un mundo aparte, con su sala)
+    if state.red.esta_abierta() {
+        return Err("Cierra la sala antes de cambiar de partida".into());
     }
 
     // `buscar` solo devuelve carpetas que existen, así que el nombre nunca sale de `partidas/`
@@ -682,16 +697,13 @@ pub fn borrar_mapa(mapa: Mapa, state: State<'_, AppState>) -> Result<(), String>
 
 /// Envía un aviso a los demás jugadores. Aún no hay red: este es el único sitio que habrá que
 /// completar. Un aviso no es un delta (no se aplica al estado ni se guarda): solo se reenvía.
-fn difundir_aviso(_aviso: &AvisoTablero) {
-    // FUTURA RED: aquí es donde enviarás `_aviso` por websocket/red. Al RECIBIR uno de otro jugador,
-    // emite al front el evento de Tauri "aviso-tablero" con el mismo contenido (src/lib/avisosTablero.ts).
-}
-
-/// El jugador ha hecho un ping o ha movido su recorrido en el tablero (ver `AvisoTablero`).
-/// Su propio tablero ya lo ha dibujado; esto solo lo prepara para el resto.
+/// El host ha hecho un ping o ha movido su recorrido en el tablero (ver `AvisoTablero`).
+/// Su propio tablero ya lo ha dibujado; esto lo envía a los jugadores si es del mapa que ven
+/// (`Red::difundir`). FUTURA RED: al RECIBIR uno de un jugador, se emitirá al front el evento de Tauri
+/// "aviso-tablero" con el mismo contenido (src/lib/avisosTablero.ts).
 #[tauri::command]
 pub fn avisar_tablero(aviso: AvisoTablero, state: State<'_, AppState>) -> Result<(), String> {
-    {
+    let mapa_publico = {
         let est = state.lock();
         match aviso.id_mapa() {
             Some(id) => aviso.validar(est.mapas.iter().find(|m| m.id == id).ok_or("Ese mapa no existe")?)?,
@@ -700,8 +712,9 @@ pub fn avisar_tablero(aviso: AvisoTablero, state: State<'_, AppState>) -> Result
                 aviso.validar_foco(&ids)?;
             }
         }
-    }
-    difundir_aviso(&aviso);
+        est.mapa_publico
+    };
+    state.red.difundir(&aviso, mapa_publico);
     Ok(())
 }
 
@@ -938,6 +951,8 @@ fn vaciar_papelera(est: &mut EstadoPartida, almacen: &Almacen) {
 
 /// Al cerrar la ventana principal: se vacía la papelera y se guarda la partida.
 pub fn cerrar_partida(state: &AppState) {
+    // Los jugadores reciben «sala cerrada» y el túnel se para
+    state.red.cerrar();
     let mut est = state.lock();
     vaciar_papelera(&mut est, &state.almacen);
     if let Err(e) = estado::compactar(&state.almacen, &est) {
@@ -1281,6 +1296,11 @@ mod tests_partidas {
         state.reservas().insert(7);
         assert!(cambiar_de_partida(&state, "B").unwrap_err().contains("Cierra la ficha"));
         state.reservas().clear();
+
+        // Con la sala abierta tampoco: sus jugadores están en esta partida
+        state.red.abrir_sin_servidor();
+        assert!(cambiar_de_partida(&state, "B").unwrap_err().contains("Cierra la sala"));
+        state.red.cerrar();
 
         for mala in ["C", "../A", "..", ""] {
             assert!(cambiar_de_partida(&state, mala).is_err(), "debía rechazar {mala:?}");

@@ -63,7 +63,7 @@ impl From<CoordenadaGuardada> for Coordenada {
 //                 con `tiene_maximo` (p. ej. la vida): el valor de la ficha es el máximo y cada
 //                 instancia lleva su valor actual.
 
-#[derive(Serialize, Deserialize, Clone, Debug)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 #[serde(from = "DefinicionGuardada")]
 pub struct DefinicionParametro {
     pub id: u16,
@@ -127,7 +127,7 @@ pub enum Visibilidad {
     Variable,
 }
 
-#[derive(Serialize, Deserialize, Clone, Debug)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub enum Forma {
     //en todos los casos vec<u8> representan RGBA
     Rombo(Vec<u8>),
@@ -280,7 +280,7 @@ impl EncuadreFoto {
 }
 
 // Representa la definición de una entidad
-#[derive(Serialize, Deserialize, Clone, Debug)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 #[serde(from = "EntidadGuardada")]
 pub struct Entidad {
     pub id: u16,
@@ -388,7 +388,7 @@ impl From<EntidadGuardada> for Entidad {
 }
 
 // Representa una instancia de una entidad en el mapa
-#[derive(Serialize, Deserialize, Clone, Debug)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub struct Instancia {
     pub id_instancia: u16,
     pub id_mapa: Option<u16>,
@@ -423,7 +423,7 @@ pub struct Instancia {
     pub capa: u32,
 }
 
-#[derive(Serialize, Deserialize, Clone, Debug)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub struct Zona {
     pub id: u16,
     pub nombre: String,
@@ -434,7 +434,7 @@ pub struct Zona {
 }
 
 // El mapa relacionado con una zona
-#[derive(Serialize, Deserialize, Clone, Debug)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub struct Mapa {
     pub id: u16,
     pub id_zona: u16,
@@ -455,7 +455,7 @@ pub struct Mapa {
     pub orden: u16,
 }
 
-#[derive(Serialize, Deserialize, Clone, Debug)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub struct Tiradas {
     pub total: i32,
     pub comando: String,

@@ -5,6 +5,7 @@
   import { tiradas } from "$lib/tiradas.svelte";
   import { ajustesVista } from "$lib/ajustesVista.svelte";
   import { alRecibirAviso } from "$lib/avisosTablero";
+  import { sala } from "$lib/sala.svelte";
 
   import PanelIzquierdo from "./componentes/PanelIzquierdo.svelte";
   import PanelDerecho from "./componentes/PanelDerecho.svelte";
@@ -75,6 +76,7 @@
     try {
       await partida.iniciar();
       await tiradas.cargar();
+      await sala.iniciar();
     } catch (err) {
       console.error("Error al obtener datos de Rust:", err);
     }

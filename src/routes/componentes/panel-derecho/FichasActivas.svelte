@@ -10,6 +10,7 @@
 <script lang="ts">
   import { partida, numeroDe, veParametro, type Instancia } from "$lib/partida.svelte";
   import { ajustesVista } from "$lib/ajustesVista.svelte";
+  import { arrastreJugador } from "$lib/arrastreJugador.svelte";
   import { arrastre, moverEnLista } from "$lib/arrastreFicha.svelte";
   import { arrastreTirada } from "$lib/arrastreTirada.svelte";
   import { miniaturas } from "$lib/miniaturas.svelte";
@@ -98,7 +99,9 @@
       class:caida={partida.estaCaida(ficha)}
       class:foco-ajeno={partida.idsFocoAjeno.includes(ficha.id_instancia) && !partida.estaSeleccionada(ficha.id_instancia)}
       class:arrastrada={idArrastrada === ficha.id_instancia}
+      class:recibe-jugador={arrastreJugador.actual?.idEntidad === ficha.base.id}
       data-indice={i}
+      data-id-entidad={ficha.base.id}
       onpointerdown={(e) => arrastre.preparar(e, { instancia: ficha, desde: "activas" })}
       onclick={(e) => alPulsar(e, ficha)}
       ondblclick={(e) => visorImagen.abrir(ficha.base.foto_url, e.clientX, e.clientY)}
@@ -211,6 +214,8 @@
   .tarjeta.foco-ajeno { border-color: #a855f7; border-style: dotted; }
   /* El hueco donde caerá la tarjeta que se está reordenando */
   .tarjeta.arrastrada { opacity: 0.35; border-style: dashed; border-color: #60a5fa; }
+  /* Se está soltando encima un jugador (pasará a controlar esta ficha) */
+  .tarjeta.recibe-jugador { border-color: #22c55e; background: rgba(34, 197, 94, 0.12); }
 
   /* Foto dentro de la forma de su tipo (como en el banco, más grande) */
   .foto {

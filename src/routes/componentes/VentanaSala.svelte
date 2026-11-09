@@ -1,0 +1,275 @@
+<!-- src/routes/componentes/VentanaSala.svelte -->
+<!-- Ventana flotante «Configuración de sala» (mismo estilo que la de la ficha). Abrir o cerrar la sala,
+     el enlace para los jugadores, la contraseña, el mapa que ven y quién está conectado. Arrastrar a una
+     persona sobre una ficha (banco, «Fichas activas» o tablero) le da el control de esa ficha.
+     La lógica está en Rust (src-tauri/src/red/) y en $lib/sala. -->
+<script lang="ts" module>
+  let ultimaPosicion = { x: 300, y: 80 };
+</script>
+
+<script lang="ts">
+  import { onMount } from "svelte";
+  import { sala } from "$lib/sala.svelte";
+  import { partida } from "$lib/partida.svelte";
+  import { arrastreJugador } from "$lib/arrastreJugador.svelte";
+  import { moverVentana } from "$lib/moverVentana";
+
+  let ventana = $state<HTMLDivElement | null>(null);
+  let pos = $state({ ...ultimaPosicion });
+  $effect(() => {
+    ultimaPosicion = { x: pos.x, y: pos.y };
+  });
+
+  let error = $state("");
+  let copiado = $state(false);
+  let contrasena = $state("");
+  let confirmandoEnlace = $state(false);
+  let ocupado = $state(false);
+
+  const fase = $derived(sala.estado.fase);
+  const nombreMapa = (id: number | null) =>
+    id === null ? null : (partida.mapas.find((m) => m.id === id)?.nombre ?? `Mapa ${id}`);
+  const nombreFicha = (id: number) => partida.banco.find((e) => e.id === id)?.nombre ?? `Ficha ${id}`;
+
+  onMount(() => {
+    void sala.recargar();
+  });
+
+  /** Ejecuta una acción mostrando su error, sin dejar pulsar otra a la vez. */
+  async function hacer(accion: () => Promise<unknown>) {
+    if (ocupado) return;
+    ocupado = true;
+    error = "";
+    try {
+      await accion();
+    } catch (err) {
+      error = String(err);
+    } finally {
+      ocupado = false;
+    }
+  }
+
+  async function copiar() {
+    copiado = await sala.copiarEnlace();
+    if (copiado) setTimeout(() => (copiado = false), 1500);
+  }
+
+  function guardarContrasena() {
+    void hacer(async () => {
+      await sala.ponerContrasena(contrasena);
+      contrasena = "";
+    });
+  }
+</script>
+
+<!-- svelte-ignore a11y_no_noninteractive_tabindex -->
+<div
+  class="ventana-flotante"
+  style="left: {pos.x}px; top: {pos.y}px;"
+  role="dialog"
+  aria-label="Configuración de sala"
+  tabindex="-1"
+  data-conserva-foco
+  onkeydown={(e) => e.key === "Escape" && (sala.ventanaAbierta = false)}
+  bind:this={ventana}
+>
+  <div class="cabecera" role="presentation" onpointerdown={(e) => moverVentana(e, pos, ventana)}>
+    <span class="icono-drag">⋮⋮</span>
+    <span class="titulo">Configuración de sala</span>
+    <button type="button" class="btn-cerrar" aria-label="Cerrar" onclick={() => (sala.ventanaAbierta = false)}>✕</button>
+  </div>
+
+  <div class="cuerpo">
+    <!-- Estado y abrir/cerrar -->
+    <div class="fila">
+      {#if fase.tipo === "Cerrada"}
+        <span class="estado cerrada">● Sala cerrada</span>
+        <button type="button" class="btn-principal" disabled={ocupado} onclick={() => hacer(() => sala.abrir())}>Abrir sala</button>
+      {:else if fase.tipo === "Preparando"}
+        <span class="estado preparando">● {fase.paso}{fase.progreso !== null ? ` ${Math.round(fase.progreso * 100)} %` : ""}</span>
+        <button type="button" class="btn-secundario" onclick={() => hacer(() => sala.cerrar())}>Cancelar</button>
+      {:else}
+        <span class="estado abierta">● Sala abierta</span>
+        <button type="button" class="btn-peligro" disabled={ocupado} onclick={() => hacer(() => sala.cerrar())}>Cerrar sala</button>
+      {/if}
+    </div>
+    {#if fase.tipo === "Preparando" && fase.progreso !== null}
+      <div class="barra"><div class="relleno" style:width="{Math.round(fase.progreso * 100)}%"></div></div>
+    {/if}
+
+    <!-- Enlace -->
+    <div class="seccion">
+      <span class="etiqueta">Enlace para los jugadores</span>
+      {#if sala.estado.enlace}
+        <div class="fila">
+          <input class="input-texto" readonly value={sala.estado.enlace} onfocus={(e) => e.currentTarget.select()} />
+          <button type="button" class="btn-secundario" onclick={copiar}>{copiado ? "¡Copiado!" : "Copiar"}</button>
+        </div>
+        <span class="nota">Cambia cada vez que abres la sala. Los que ya entraron no repiten la contraseña.</span>
+      {:else}
+        <span class="nota">Abre la sala para obtenerlo.</span>
+      {/if}
+      {#if confirmandoEnlace}
+        <div class="confirmar">
+          <span>El enlace actual dejará de servir, los conectados saldrán y todos tendrán que volver a poner la contraseña.</span>
+          <div class="fila">
+            <button type="button" class="btn-peligro" onclick={() => hacer(async () => { await sala.regenerarEnlace(); confirmandoEnlace = false; })}>Generar enlace nuevo</button>
+            <button type="button" class="btn-secundario" onclick={() => (confirmandoEnlace = false)}>No</button>
+          </div>
+        </div>
+      {:else}
+        <button type="button" class="btn-enlace" onclick={() => (confirmandoEnlace = true)}>Generar enlace nuevo (por si se ha filtrado)</button>
+      {/if}
+    </div>
+
+    <!-- Contraseña -->
+    <div class="seccion">
+      <span class="etiqueta">
+        Contraseña {sala.estado.pide_contrasena ? "(puesta)" : "(ninguna: entra cualquiera con el enlace)"}
+      </span>
+      <div class="fila">
+        <input
+          class="input-texto"
+          type="password"
+          placeholder={sala.estado.pide_contrasena ? "Nueva contraseña" : "Poner contraseña"}
+          maxlength="128"
+          bind:value={contrasena}
+          onkeydown={(e) => e.key === "Enter" && contrasena && guardarContrasena()}
+        />
+        <button type="button" class="btn-secundario" disabled={ocupado || !contrasena} onclick={guardarContrasena}>Guardar</button>
+        {#if sala.estado.pide_contrasena}
+          <button type="button" class="btn-secundario" disabled={ocupado} onclick={() => hacer(() => sala.ponerContrasena(null))}>Quitar</button>
+        {/if}
+      </div>
+    </div>
+
+    <!-- Mapa de los jugadores -->
+    <div class="seccion">
+      <span class="etiqueta">Mapa que ven los jugadores: <b>{nombreMapa(sala.mapaPublico) ?? "ninguno"}</b></span>
+      <div class="fila">
+        <button
+          type="button"
+          class="btn-secundario"
+          disabled={!partida.mapaActual || partida.mapaActual.id === sala.mapaPublico}
+          onclick={() => hacer(() => sala.elegirMapaPublico(partida.mapaActual?.id ?? null))}
+        >Enseñar el mapa abierto{partida.mapaActual ? ` (${partida.mapaActual.nombre})` : ""}</button>
+        <button type="button" class="btn-secundario" disabled={sala.mapaPublico === null} onclick={() => hacer(() => sala.elegirMapaPublico(null))}>Ninguno</button>
+      </div>
+      <span class="nota">Puedes abrir y preparar otros mapas: los jugadores solo ven este.</span>
+    </div>
+
+    <!-- Jugadores -->
+    <div class="seccion">
+      <span class="etiqueta">Jugadores de esta partida · arrastra uno sobre una ficha para dársela</span>
+      <div class="jugadores">
+        {#each sala.jugadores as j (j.id)}
+          <div class="jugador">
+            <button
+              type="button"
+              class="nombre-jugador"
+              class:conectado={j.conectado}
+              title="Arrastra sobre una ficha (banco, «Fichas activas» o tablero) para que la controle"
+              onpointerdown={(e) => arrastreJugador.preparar(e, j)}
+            >
+              <span class="punto">●</span> {j.nombre}
+            </button>
+            <div class="fichas">
+              {#each j.fichas as id (id)}
+                <span class="ficha">
+                  {nombreFicha(id)}
+                  <button type="button" title="Quitarle esta ficha" onclick={() => hacer(() => sala.quitar(j.id, id))}>✕</button>
+                </span>
+              {/each}
+            </div>
+            {#if j.conectado}
+              <button type="button" class="btn-expulsar" title="Lo saca de la sala; para volver tendrá que poner la contraseña" onclick={() => hacer(() => sala.expulsar(j.id))}>Expulsar</button>
+            {/if}
+          </div>
+        {:else}
+          <span class="nota">Aún no ha entrado nadie. Los que entren se quedan guardados en esta partida.</span>
+        {/each}
+      </div>
+    </div>
+
+    {#if error || sala.estado.error}
+      <p class="error" role="alert">{error || sala.estado.error}</p>
+    {/if}
+  </div>
+</div>
+
+<!-- La persona que se está arrastrando -->
+{#if arrastreJugador.actual}
+  {@const a = arrastreJugador.actual}
+  <div class="fantasma" style="left: {a.x + 12}px; top: {a.y + 8}px;">
+    {a.jugador.nombre}{a.idEntidad !== null ? ` → ${nombreFicha(a.idEntidad)}` : ""}
+  </div>
+{/if}
+
+<style>
+  .ventana-flotante {
+    position: fixed; z-index: 1000; width: 420px; max-height: calc(100vh - 40px);
+    display: flex; flex-direction: column; overflow: hidden;
+    background: #18181b; border: 1px solid #3f3f46; border-radius: 8px;
+    box-shadow: 0 14px 35px rgba(0, 0, 0, 0.75);
+    user-select: none; font-size: 11px; color: #f4f4f5;
+  }
+  .cabecera {
+    display: flex; align-items: center; gap: 6px; padding: 6px 10px; cursor: grab;
+    background: #27272a; border-bottom: 1px solid #3f3f46;
+  }
+  .cabecera:active { cursor: grabbing; }
+  .icono-drag { color: #71717a; font-size: 12px; }
+  .titulo { font-weight: bold; flex: 1; }
+  .btn-cerrar { background: none; border: none; color: #a1a1aa; cursor: pointer; font-size: 13px; }
+  .btn-cerrar:hover { color: white; }
+
+  .cuerpo { padding: 10px; display: flex; flex-direction: column; gap: 10px; overflow-y: auto; }
+  .seccion { display: flex; flex-direction: column; gap: 4px; }
+  .fila { display: flex; align-items: center; gap: 6px; }
+  .etiqueta { color: #a1a1aa; font-size: 10px; }
+  .nota { color: #71717a; font-size: 10px; }
+
+  .estado { flex: 1; font-weight: bold; }
+  .estado.cerrada { color: #71717a; }
+  .estado.preparando { color: #facc15; }
+  .estado.abierta { color: #22c55e; }
+  .barra { height: 4px; background: #27272a; border-radius: 2px; overflow: hidden; }
+  .relleno { height: 100%; background: #facc15; }
+
+  .input-texto {
+    flex: 1; min-width: 0; padding: 3px 6px; border-radius: 4px;
+    background: #09090b; border: 1px solid #3f3f46; color: white; font-size: 11px;
+  }
+  .btn-principal, .btn-secundario, .btn-peligro {
+    border: none; padding: 4px 10px; border-radius: 4px; font-size: 11px; font-weight: 600; cursor: pointer; white-space: nowrap;
+  }
+  .btn-principal { background: #2563eb; color: white; }
+  .btn-principal:hover { background: #1d4ed8; }
+  .btn-secundario { background: #27272a; color: #d4d4d8; }
+  .btn-secundario:hover { background: #3f3f46; }
+  .btn-peligro { background: #7f1d1d; color: #fca5a5; }
+  .btn-peligro:hover { background: #991b1b; }
+  button:disabled { opacity: 0.45; cursor: not-allowed; }
+  .btn-enlace { align-self: flex-start; background: none; border: none; color: #60a5fa; font-size: 10px; cursor: pointer; padding: 0; }
+  .btn-enlace:hover { text-decoration: underline; }
+  .confirmar { display: flex; flex-direction: column; gap: 4px; padding: 6px; border: 1px solid #7f1d1d; border-radius: 4px; color: #fca5a5; font-size: 10px; }
+
+  .jugadores { display: flex; flex-direction: column; gap: 4px; }
+  .jugador { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; background: #1f1f23; border-radius: 4px; padding: 4px 6px; }
+  .nombre-jugador {
+    background: #27272a; border: 1px solid #3f3f46; color: #f4f4f5; border-radius: 12px; padding: 2px 8px;
+    font-size: 11px; cursor: grab; touch-action: none;
+  }
+  .nombre-jugador .punto { color: #52525b; }
+  .nombre-jugador.conectado .punto { color: #22c55e; }
+  .fichas { display: flex; gap: 3px; flex-wrap: wrap; flex: 1; }
+  .ficha { background: #14532d; color: #bbf7d0; border-radius: 3px; padding: 1px 4px; font-size: 10px; display: flex; gap: 3px; align-items: center; }
+  .ficha button { background: none; border: none; color: #86efac; cursor: pointer; font-size: 9px; padding: 0; }
+  .btn-expulsar { background: none; border: none; color: #f87171; font-size: 10px; cursor: pointer; }
+  .error { margin: 0; color: #f87171; font-size: 12px; }
+
+  .fantasma {
+    position: fixed; z-index: 2000; pointer-events: none;
+    background: #14532d; color: #bbf7d0; border: 1px solid #22c55e; border-radius: 12px; padding: 2px 8px; font-size: 11px;
+  }
+</style>

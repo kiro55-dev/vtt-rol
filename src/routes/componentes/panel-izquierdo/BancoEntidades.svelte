@@ -7,6 +7,7 @@
   import { esImagen, importarImagen } from "$lib/imagenes";
   import { alSoltarArchivos } from "$lib/soltarArchivos";
   import { arrastre } from "$lib/arrastreFicha.svelte";
+  import { arrastreJugador } from "$lib/arrastreJugador.svelte";
 
   // Soltar aquí una instancia la elimina: se marca el banco mientras pasa por encima
   const recibeInstancia = $derived(arrastre.actual?.zona === "banco" && "instancia" in arrastre.actual.origen);
@@ -175,6 +176,8 @@
         type="button"
         class="fila-entidad"
         class:seleccionada={seleccion.includes(item.id)}
+        class:recibe-jugador={arrastreJugador.actual?.idEntidad === item.id}
+        data-id-entidad={item.id}
         use:vigilarVisibilidad={item.id}
         onpointerdown={(e) => alPulsarFila(e, item)}
         onclick={(e) => alHacerClicFila(e, item)}
@@ -320,6 +323,8 @@
     background: #1e2a3d;
     border-color: #3b82f6;
   }
+  /* Se está soltando encima un jugador (pasará a controlar esta ficha) */
+  .fila-entidad.recibe-jugador { border-color: #22c55e; background: rgba(34, 197, 94, 0.12); }
 
   /* Rombo azul para NPC */
   .contenedor-rombo {

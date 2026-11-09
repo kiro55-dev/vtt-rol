@@ -5,6 +5,7 @@
   import { open } from "@tauri-apps/plugin-dialog";
   import { partida, type Mapa } from "$lib/partida.svelte";
   import { miniaturas } from "$lib/miniaturas.svelte";
+  import { sala } from "$lib/sala.svelte";
   import { ListaOrdenable } from "$lib/ordenable.svelte";
   import { esImagen, EXTENSIONES_IMAGEN } from "$lib/imagenes";
   import { alSoltarArchivos } from "$lib/soltarArchivos";
@@ -135,6 +136,9 @@
           {:else}
             <span class="nombre-mapa texto-recortado">{m.nombre}</span>
           {/if}
+          {#if sala.mapaPublico === m.id}
+            <span class="publico" title="Es el mapa que ven los jugadores">👁</span>
+          {/if}
         </button>
       </div>
     {/each}
@@ -195,6 +199,8 @@
   .tarjeta-mapa.nueva { border-style: dashed; font-size: 14px; padding: 6px; cursor: pointer; }
   .tarjeta-mapa.nueva:disabled { opacity: 0.4; cursor: not-allowed; }
   .previa-mapa { font-size: 16px; display: block; pointer-events: none; }
+  .tarjeta-mapa { position: relative; }
+  .publico { position: absolute; top: 2px; right: 3px; font-size: 10px; pointer-events: none; }
   .nombre-mapa { font-size: 9px; color: #d4d4d8; display: block; margin-top: 2px; pointer-events: none; }
 
   /* Efecto hueco punteado mientras se arrastra */

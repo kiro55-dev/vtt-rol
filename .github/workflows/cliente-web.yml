@@ -1,0 +1,52 @@
+# Publica el cliente web del jugador (cliente-web/) en GitHub Pages: https://kiro55-dev.github.io/vtt-rol/
+# Es la página fija a la que apuntan los enlaces de las salas (ver docs/red.md). Se publica sola al subir
+# cambios del cliente o del dibujo del tablero que comparte con la app; también se puede lanzar a mano.
+name: Cliente web (GitHub Pages)
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "cliente-web/**"
+      - "src/lib/tablero.ts"
+      - "src/lib/fichasTablero.ts"
+      - "src/lib/marcasTablero.ts"
+      - "src/lib/partida.svelte.ts"
+      - "src/lib/avisosTablero.ts"
+      - "package.json"
+      - "bun.lock"
+      - ".github/workflows/cliente-web.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  construir:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+      - run: bun install --frozen-lockfile
+      - run: bunx vitest run tests/clienteWeb.test.ts
+      - run: bun run web:check
+      - run: bun run web:build
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: cliente-web/dist
+
+  publicar:
+    needs: construir
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.publicacion.outputs.page_url }}
+    steps:
+      - id: publicacion
+        uses: actions/deploy-pages@v4
