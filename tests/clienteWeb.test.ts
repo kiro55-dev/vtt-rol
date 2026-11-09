@@ -3,7 +3,7 @@
 // fijo que en src-tauri/src/red/sala.rs).
 import { describe, expect, it } from "vitest";
 import { leerEnlace, urlImagen, urlWebSocket } from "$lib/red/enlace";
-import { aplicarCambios, NO_DISPONIBLE, partesCambiadas, responder, rutaMiniatura, separarMiniatura, vistaVacia } from "$lib/red/replica";
+import { aplicarCambios, NO_DISPONIBLE, PETICIONES, partesCambiadas, responder, rutaMiniatura, separarMiniatura, vistaVacia } from "$lib/red/replica";
 import { prueba } from "$lib/red/conexion.svelte";
 
 const S = "AbCdEfGhIjKlMnOpQrStUv";
@@ -63,14 +63,16 @@ describe("réplica: aplicar los cambios del host", () => {
   });
 
   it("dice qué partes de la app tienen que releer", () => {
-    expect(partesCambiadas({ instancias_quitadas: [1] })).toEqual({ zonas: false, mapas: false, entidades: true, definiciones: false });
-    expect(partesCambiadas({ mapas: [mapa(1)], definiciones: [] })).toEqual({ zonas: false, mapas: true, entidades: false, definiciones: true });
-    expect(partesCambiadas({ zonas_quitadas: [3], entidades: [] })).toEqual({ zonas: true, mapas: false, entidades: false, definiciones: false });
+    expect(partesCambiadas({ instancias_quitadas: [1] })).toEqual({ zonas: false, mapas: false, entidades: true, definiciones: false, tiradas: false });
+    expect(partesCambiadas({ mapas: [mapa(1)], definiciones: [] })).toEqual({ zonas: false, mapas: true, entidades: false, definiciones: true, tiradas: false });
+    expect(partesCambiadas({ zonas_quitadas: [3], entidades: [] })).toEqual({ zonas: true, mapas: false, entidades: false, definiciones: false, tiradas: false });
+    expect(partesCambiadas({ historial_tiradas: [] })).toEqual({ zonas: false, mapas: false, entidades: false, definiciones: false, tiradas: true });
   });
 });
 
 describe("réplica: contesta los comandos de la app como lo haría Rust", () => {
-  const vista = { zonas: [zona(1), zona(2)], mapas: [mapa(1, 1), mapa(2, 2), mapa(3, 1)], instancias: [inst(5)], entidades: [{ id: 9 }] as any, definiciones: [{ id: 1 }] as any };
+  const chat = [{ total: 9, comando: "1d10 (9)", hora: "10:00", jugador: 1, autor: "Ana" }];
+  const vista = { zonas: [zona(1), zona(2)], mapas: [mapa(1, 1), mapa(2, 2), mapa(3, 1)], instancias: [inst(5)], entidades: [{ id: 9 }] as any, definiciones: [{ id: 1 }] as any, historial_tiradas: chat };
 
   it("las lecturas salen de la réplica (copias, para que nadie la cambie sin querer)", () => {
     expect(responder("obtener_zonas", {}, vista)).toEqual(vista.zonas);
@@ -78,7 +80,8 @@ describe("réplica: contesta los comandos de la app como lo haría Rust", () => 
     expect(responder("obtener_banco_entidades", {}, vista)).toEqual(vista.entidades);
     expect(responder("obtener_instancias_activas", {}, vista)).toEqual(vista.instancias);
     expect(responder("obtener_definiciones_parametros", {}, vista)).toEqual(vista.definiciones);
-    expect(responder("obtener_historial_tiradas", {}, vista)).toEqual([]);
+    expect(responder("obtener_historial_tiradas", {}, vista)).toEqual(chat);
+    expect(responder("obtener_historial_personal", {}, vista, ["1d6", "2d8"])).toEqual(["1d6", "2d8"]);
     expect(responder("obtener_zonas", {}, vista)).not.toBe(vista.zonas);
   });
 
@@ -89,10 +92,14 @@ describe("réplica: contesta los comandos de la app como lo haría Rust", () => 
     expect(separarMiniatura("imagenes/b.png")).toEqual({ ruta: "imagenes/b.png" });
   });
 
-  it("lo que cambia la partida aún no lo puede hacer un jugador", () => {
-    for (const cmd of ["crear_zona", "mover_instancia", "borrar_entidad", "compartir_mapa", "tirar_dado"]) {
+  it("lo que no está en la lista blanca de acciones lo rechaza (y las acciones permitidas no las contesta la réplica)", () => {
+    for (const cmd of ["crear_zona", "borrar_entidad", "compartir_mapa", "limpiar_chat", "reordenar_instancias", "importar_archivo"]) {
+      expect(PETICIONES.has(cmd), cmd).toBe(false);
       expect(() => responder(cmd, {}, vista), cmd).toThrow(NO_DISPONIBLE);
     }
-    expect(responder("avisar_tablero", {}, vista)).toBeNull();
+    for (const cmd of ["tirar_dado", "mover_instancia", "modificar_entidad", "avisar_tablero"]) {
+      expect(PETICIONES.has(cmd), cmd).toBe(true);
+      expect(() => responder(cmd, {}, vista), cmd).toThrow(NO_DISPONIBLE); // se piden al host, no se leen de aquí
+    }
   });
 });

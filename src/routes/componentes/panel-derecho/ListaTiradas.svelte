@@ -17,6 +17,7 @@
       onpointerdown={(e) => t.total !== null && arrastreTirada.preparar(e, t.total)}
     >
       <span class="hora">{t.hora}</span>
+      {#if t.autor}<span class="autor">{t.autor}:</span>{/if}
       <!-- @html a propósito: Rust devuelve el desglose con <b> para resaltar el dado ganador. Lo genera
            solo Rust con números y palabras fijas (el comando escrito nunca llega aquí), y además
            `desgloseSeguro` escapa todo salvo <b> y </b>. -->
@@ -64,6 +65,9 @@
     letter-spacing: -0.5px;
     user-select: none;
   }
+
+  /* Quién tiró (en el chat compartido): «Ana: 1d20 (7) = 7» */
+  .autor { color: #93c5fd; font-size: 11px; font-weight: bold; flex-shrink: 0; }
 
   .cmd :global(b) {
     font-weight: 900;

@@ -2,6 +2,7 @@
 use std::fmt::Write;
 use tauri::State;
 use crate::tablero_general::estado::DeltaPartida;
+use crate::tablero_general::modelos::{IdJugador, ID_HOST};
 use crate::tablero_general::partida::{procesar_delta, registrar_comando_personal, registrar_tirada, AppState};
 
 pub struct Tirada {
@@ -240,14 +241,26 @@ fn ejecutar_tiradas(tiradas: &[Tirada]) -> Result<(String, i32), String> {
 
 #[tauri::command]
 pub fn tirar_dado(comando: String, state: State<'_, AppState>) -> Result<String, String> {
-    let tiradas = parsear_comando(&comando)?;
+    tirar_dado_de(&state, ID_HOST, &comando)
+}
+
+/// La tirada de `jugador` (el host o un jugador de la sala, que la pide por la red). Rust la procesa y la
+/// registra con el nombre de quien tira; el chat de tiradas llega así a todos. Un `clean` no es una tirada
+/// (`limpiar_chat` es solo del host).
+pub fn tirar_dado_de(state: &AppState, jugador: IdJugador, comando: &str) -> Result<String, String> {
+    if jugador != ID_HOST && es_comando_limpiar(comando) {
+        return Err("Solo el host puede limpiar el chat".into());
+    }
+    let tiradas = parsear_comando(comando)?;
     let (desglose, total) = ejecutar_tiradas(&tiradas)?;
 
     // 1. Registra en el estado de la partida / deltas (con el total tal cual, sin releerlo de un texto)
-    registrar_tirada(&state, &desglose, total);
+    registrar_tirada(state, jugador, &desglose, total);
 
-    // 2. Guarda el comando en el historial personal de este cliente directamente en disco
-    registrar_comando_personal(&state, &comando);
+    // 2. El historial personal (↑ ↓) es de quien usa este equipo: solo el del host se guarda en su disco
+    if jugador == ID_HOST {
+        registrar_comando_personal(state, comando);
+    }
 
     // El front espera "desglose = total"
     Ok(format!("{desglose} = {total}"))
@@ -291,7 +304,7 @@ mod tests {
         }
 
         let mut e = crate::tablero_general::estado::EstadoPartida::default();
-        let t = crate::tablero_general::modelos::Tiradas { total: 3, comando: "1d6 (3)".into(), hora: "10:00".into(), jugador: 0 };
+        let t = crate::tablero_general::modelos::Tiradas { total: 3, comando: "1d6 (3)".into(), hora: "10:00".into(), jugador: 0, autor: String::new() };
         e.aplicar_delta(&DeltaPartida::TiradaRealizada(t));
         e.aplicar_delta(&DeltaPartida::HistorialTiradasLimpiado);
         assert!(e.historial_tiradas.is_empty());

@@ -14,7 +14,7 @@ import { EVENTO_AVISO } from "$lib/avisosTablero";
 import { esJugador } from "$lib/modo";
 import { claveAlmacen, leerEnlace, urlImagen, urlWebSocket, type Enlace } from "./enlace";
 import { VERSION_PROTOCOLO, type Jugador, type MensajeCliente, type MensajeHost, type VistaJugador } from "./protocolo";
-import { aplicarCambios, partesCambiadas, responder, separarMiniatura, vistaVacia } from "./replica";
+import { aplicarCambios, partesCambiadas, PETICIONES, responder, separarMiniatura, vistaVacia } from "./replica";
 
 export type EstadoConexion =
   | { tipo: "conectando" }
@@ -24,6 +24,9 @@ export type EstadoConexion =
   | { tipo: "fuera"; motivo: string };
 
 const REINTENTAR_DURANTE_MS = 60_000;
+/** Lo que se espera la respuesta del host a una acción. */
+const TIEMPO_RESPUESTA_MS = 30_000;
+const MAX_COMANDOS_PERSONALES = 100;
 
 const hex = (b: ArrayBuffer) => [...new Uint8Array(b)].map((x) => x.toString(16).padStart(2, "0")).join("");
 
@@ -60,6 +63,11 @@ export class Conexion {
   sesion = $state<string | null>(null);
 
   readonly enlace: Enlace;
+  /** Los comandos de dados que ha escrito este jugador (flechas ↑ ↓ del chat). Solo en esta pestaña. */
+  #personales: string[] = [];
+  /** Acciones enviadas al host que aún no han tenido respuesta. */
+  #pendientes = new Map<number, { ok: (v: unknown) => void; error: (e: unknown) => void; reloj: ReturnType<typeof setTimeout> }>();
+  #siguiente = 1;
   #ws: WebSocket | null = null;
   #cortadoDesde: number | null = null;
   #final = false;
@@ -72,13 +80,64 @@ export class Conexion {
     this.lista = new Promise((r) => (this.#alPrimeraVista = r));
   }
 
-  /** Lo que la app pide con `invoke` se contesta con la réplica. */
+  /**
+   * Lo que la app pide con `invoke`: las lecturas se contestan con la réplica; las acciones de la lista blanca
+   * se piden al host, que comprueba que puede hacerlas y las ejecuta en su Rust.
+   */
   responder(cmd: string, args: Record<string, unknown>): Promise<unknown> {
+    // El foco de un jugador es suyo: no se envía a nadie (ni al host)
+    if (cmd === "avisar_tablero" && "Foco" in ((args.aviso as object) ?? {})) return Promise.resolve(null);
+    if (PETICIONES.has(cmd)) {
+      if (cmd === "tirar_dado") this.#recordarComando(String(args.comando ?? ""));
+      return this.pedir({ cmd, ...args });
+    }
     try {
-      return Promise.resolve(responder(cmd, args, this.vista));
+      return Promise.resolve(responder(cmd, args, this.vista, this.#personales));
     } catch (err) {
       return Promise.reject(err);
     }
+  }
+
+  #recordarComando(c: string) {
+    const limpio = c.trim();
+    if (!limpio || this.#personales.at(-1) === limpio) return;
+    this.#personales.push(limpio);
+    if (this.#personales.length > MAX_COMANDOS_PERSONALES) this.#personales.shift();
+  }
+
+  /** Pide una acción al host y espera su respuesta (el error del host llega tal cual, como texto). */
+  pedir(peticion: Record<string, unknown>): Promise<unknown> {
+    if (this.estado.tipo !== "dentro" || this.#ws?.readyState !== WebSocket.OPEN) {
+      return Promise.reject("Sin conexión con la sala");
+    }
+    const id = this.#siguiente++;
+    return new Promise((ok, error) => {
+      const reloj = setTimeout(() => {
+        this.#pendientes.delete(id);
+        error("El host no ha contestado");
+      }, TIEMPO_RESPUESTA_MS);
+      this.#pendientes.set(id, { ok, error, reloj });
+      this.#enviar({ tipo: "Pedir", id, peticion });
+    });
+  }
+
+  /** Sube la foto de una de sus fichas al host. Devuelve la ruta ("imagenes/…") para ponerla en la ficha. */
+  async subirImagen(archivo: File): Promise<string> {
+    if (!this.sesion) throw "Sin conexión con la sala";
+    const ext = /\.([A-Za-z0-9]+)$/.exec(archivo.name)?.[1] ?? "";
+    const q = new URLSearchParams({ sesion: this.sesion, ext });
+    const r = await fetch(`https://${this.enlace.tunel}/subir?${q}`, { method: "POST", body: archivo });
+    if (!r.ok) throw (await r.text().catch(() => "")) || `No se pudo subir la imagen (${r.status})`;
+    return String((await r.json()).ruta);
+  }
+
+  /** Al cortarse la conexión, lo que esperaba respuesta falla (el host ya no la va a dar). */
+  #fallarPendientes(motivo: string) {
+    for (const { error, reloj } of this.#pendientes.values()) {
+      clearTimeout(reloj);
+      error(motivo);
+    }
+    this.#pendientes.clear();
   }
 
   /** URL de una imagen de la partida (la ruta puede llevar la marca de miniatura de `obtener_miniatura`). */
@@ -102,7 +161,9 @@ export class Conexion {
       void this.#recibir(m);
     };
     ws.onclose = () => {
-      if (this.#ws !== ws || this.#final) return;
+      if (this.#ws !== ws) return;
+      this.#fallarPendientes("Sin conexión con la sala");
+      if (this.#final) return;
       this.#ws = null;
       this.#reintentar();
     };
@@ -167,7 +228,7 @@ export class Conexion {
           primera();
         } else {
           // Al reconectar: todo puede haber cambiado
-          emitirLocal(EVENTO_PARTIDA_CAMBIADA, { zonas: true, mapas: true, entidades: true, definiciones: true });
+          emitirLocal(EVENTO_PARTIDA_CAMBIADA, { zonas: true, mapas: true, entidades: true, definiciones: true, tiradas: true });
         }
         return;
       }
@@ -176,9 +237,18 @@ export class Conexion {
         emitirLocal(EVENTO_PARTIDA_CAMBIADA, partesCambiadas(m.cambios));
         return;
       case "Aviso":
-        // El tablero ya escucha este evento (los avisos del host: ping y recorrido)
+        // El tablero ya escucha este evento (ping y recorrido del host y de los demás jugadores)
         emitirLocal(EVENTO_AVISO, m.aviso);
         return;
+      case "Respuesta": {
+        const p = this.#pendientes.get(m.id);
+        if (!p) return;
+        this.#pendientes.delete(m.id);
+        clearTimeout(p.reloj);
+        if (m.error !== undefined) p.error(m.error);
+        else p.ok(m.ok ?? null);
+        return;
+      }
       case "Rechazado":
         return this.#terminar(m.motivo);
       case "SalaCerrada":

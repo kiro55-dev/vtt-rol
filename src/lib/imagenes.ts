@@ -40,8 +40,19 @@ export async function iniciarImagenes(): Promise<void> {
 // Valores que ya son una URL completa (mapas creados con versiones anteriores de la app).
 const YA_ES_URL = /^(https?:|data:|blob:|asset:)/i;
 
-/** Copia una imagen del sistema a la carpeta de datos de la app. Devuelve la ruta relativa a guardar. */
-export async function importarImagen(origen: string, uso: UsoImagen): Promise<string> {
+/**
+ * Copia una imagen del sistema a la carpeta de datos de la app. Devuelve la ruta relativa a guardar. Un jugador
+ * (que no tiene rutas del disco del host) pasa el archivo que eligió en su navegador y se SUBE al host, que
+ * comprueba que es una imagen de verdad (solo formatos rasterizados: nada de SVG).
+ */
+export async function importarImagen(origen: string | File, uso: UsoImagen): Promise<string> {
+  if (typeof origen !== "string") {
+    if (!esJugador || !conexion) throw "Solo un jugador sube archivos desde el navegador";
+    if (!esImagen(origen.name, "mapa")) throw `Formato de imagen no admitido: ${origen.name}`;
+    const subida = await conexion.subirImagen(origen);
+    for (const cb of alImportar) cb(subida);
+    return subida;
+  }
   // Se rechaza aquí, antes de copiar nada: Rust lo vuelve a comprobar
   if (!esImagen(origen, uso)) {
     throw `Formato de imagen no admitido para ${uso === "mapa" ? "un mapa" : "una ficha"}: ${origen}`;

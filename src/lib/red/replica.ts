@@ -6,7 +6,14 @@
 // Puro (sin conexión ni estado global), con tests.
 import type { Cambios, VistaJugador } from "./protocolo";
 
-export const vistaVacia = (): VistaJugador => ({ zonas: [], mapas: [], instancias: [], entidades: [], definiciones: [] });
+export const vistaVacia = (): VistaJugador => ({
+  zonas: [],
+  mapas: [],
+  instancias: [],
+  entidades: [],
+  definiciones: [],
+  historial_tiradas: []
+});
 
 function poner<T>(lista: readonly T[], nuevas: readonly T[] = [], quitadas: readonly number[] = [], id: (x: T) => number): T[] {
   const resultado = lista.filter((x) => !quitadas.includes(id(x)));
@@ -24,7 +31,8 @@ export function aplicarCambios(vista: VistaJugador, c: Cambios): VistaJugador {
     mapas: poner(vista.mapas, c.mapas, c.mapas_quitados, (m) => m.id),
     instancias: poner(vista.instancias, c.instancias, c.instancias_quitadas, (i) => i.id_instancia),
     entidades: poner(vista.entidades, c.entidades, c.entidades_quitadas, (e) => e.id),
-    definiciones: c.definiciones ?? vista.definiciones
+    definiciones: c.definiciones ?? vista.definiciones,
+    historial_tiradas: c.historial_tiradas ?? vista.historial_tiradas
   };
 }
 
@@ -34,6 +42,7 @@ export interface PartesCambiadas {
   mapas: boolean;
   entidades: boolean;
   definiciones: boolean;
+  tiradas: boolean;
 }
 
 export function partesCambiadas(c: Cambios): PartesCambiadas {
@@ -42,7 +51,8 @@ export function partesCambiadas(c: Cambios): PartesCambiadas {
     zonas: algo(c.zonas, c.zonas_quitadas),
     mapas: algo(c.mapas, c.mapas_quitados),
     entidades: algo(c.instancias, c.instancias_quitadas) || algo(c.entidades, c.entidades_quitadas),
-    definiciones: c.definiciones !== undefined
+    definiciones: c.definiciones !== undefined,
+    tiradas: c.historial_tiradas !== undefined
   };
 }
 
@@ -62,13 +72,38 @@ export function separarMiniatura(ref: string): { ruta: string; mini?: "ficha" | 
   return { ruta: ref.slice(0, i), mini: mini === "mapa" ? "mapa" : "ficha" };
 }
 
-export const NO_DISPONIBLE = "Aún no disponible para jugadores";
+export const NO_DISPONIBLE = "Esto solo lo puede hacer el host";
 
 /**
- * Contesta un comando de la app con la réplica. Solo lecturas: lo demás (crear, mover, borrar...) lo hará
- * el host cuando se lo pida el jugador (fase 2, docs/red.md); hasta entonces se rechaza.
+ * Las acciones que un jugador puede pedirle al host: la lista blanca de `red/peticiones.rs`. Se envían tal cual
+ * (`{ cmd, ...args }`) y el host comprueba si puede hacerlas (sus fichas, mapas compartidos...).
  */
-export function responder(cmd: string, args: Record<string, unknown>, vista: VistaJugador): unknown {
+export const PETICIONES = new Set([
+  "tirar_dado",
+  "mover_instancia",
+  "mover_instancias",
+  "rotar_instancia",
+  "espejar_instancia",
+  "borrar_instancia",
+  "modificar_valor_actual",
+  "instanciar_entidad",
+  "instanciar_entidades",
+  "modificar_entidad",
+  "guardar_miniatura_ficha",
+  "leer_archivo_texto",
+  "guardar_archivo_texto",
+  "crear_documento_texto",
+  "renombrar_archivo_adjunto",
+  "descartar_archivos_borrador",
+  "avisar_tablero"
+]);
+
+/**
+ * Contesta un comando de LECTURA con la réplica. Lo que cambia la partida (`PETICIONES`) se lo pide la
+ * conexión al host; cualquier otra cosa se rechaza. `personales` son los comandos que ha escrito este jugador
+ * (para las flechas ↑ ↓ del chat).
+ */
+export function responder(cmd: string, args: Record<string, unknown>, vista: VistaJugador, personales: readonly string[] = []): unknown {
   const copia = <T>(x: T): T => structuredClone(x);
   switch (cmd) {
     case "obtener_zonas":
@@ -82,16 +117,15 @@ export function responder(cmd: string, args: Record<string, unknown>, vista: Vis
     case "obtener_definiciones_parametros":
       return copia(vista.definiciones);
     case "obtener_historial_tiradas":
+      return copia(vista.historial_tiradas);
     case "obtener_historial_personal":
-      return [];
+      return [...personales];
     case "obtener_partidas":
       return { actual: "", partidas: [] };
     case "obtener_dir_datos":
       return "";
     case "obtener_miniatura":
       return rutaMiniatura(String(args.ruta ?? ""), String(args.tipo ?? "ficha"));
-    case "avisar_tablero":
-      return null; // fase 2: el ping y el recorrido del jugador irán al host
     default:
       throw NO_DISPONIBLE;
   }

@@ -1,7 +1,6 @@
 <!-- src/routes/componentes/PanelDerecho.svelte -->
 <!-- Solo la estructura del panel: cada parte vive en su componente y lee el estado de los stores. -->
 <script>
-  import { esJugador } from "$lib/modo";
   import FichasActivas from "./panel-derecho/FichasActivas.svelte";
   import ParametrosFicha from "./panel-derecho/ParametrosFicha.svelte";
   import TiradasChat from "./panel-derecho/TiradasChat.svelte";
@@ -10,10 +9,8 @@
 <aside class="panel-derecho">
   <div class="sub-fichas-activas"><FichasActivas /></div>
   <div class="sub-parametros"><ParametrosFicha /></div>
-  {#if !esJugador}
-    <!-- Fase 2: el chat de tiradas del jugador (las tiradas las hará el host, ver docs/red.md) -->
-    <div class="sub-tiradas"><TiradasChat /></div>
-  {/if}
+  <!-- El chat es de todos: las tiradas del jugador las hace el host y llegan con el nombre de quien tira -->
+  <div class="sub-tiradas"><TiradasChat /></div>
 </aside>
 
 <style>

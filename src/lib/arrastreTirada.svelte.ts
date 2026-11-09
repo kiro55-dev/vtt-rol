@@ -17,6 +17,13 @@ export function deltaDeArrastre(boton: number, total: number): number {
   return boton === 2 ? total : -total;
 }
 
+/** Lo mismo, pero solo si esta pantalla puede cambiar ese valor (el jugador, solo en sus fichas). */
+function destinoPermitido(el: Element | null | undefined) {
+  const d = destinoDeValor(el);
+  const i = d && partida.instancias.find((x) => x.id_instancia === d.idInstancia);
+  return d && i && partida.controla(i) ? d : null;
+}
+
 /** Lee "idInstancia:idDefinicion" del elemento `data-valor` más cercano. */
 export function destinoDeValor(el: Element | null | undefined): { idInstancia: number; idDefinicion: number } | null {
   const texto = el?.closest<HTMLElement>("[data-valor]")?.dataset.valor;
@@ -78,7 +85,7 @@ class ArrastreTirada {
         if (Math.hypot(ev.clientX - inicio.x, ev.clientY - inicio.y) <= UMBRAL_ARRASTRE_TIRADA_PX) return;
         empezado = true;
       }
-      const destino = destinoDeValor(document.elementFromPoint(ev.clientX, ev.clientY));
+      const destino = destinoPermitido(document.elementFromPoint(ev.clientX, ev.clientY));
       this.actual = { delta, x: ev.clientX, y: ev.clientY, destino };
     };
     const soltar = (ev: PointerEvent) => {
@@ -88,7 +95,7 @@ class ArrastreTirada {
       this.#ignorarClic = true;
       setTimeout(() => (this.#ignorarClic = false), 0);
       if (ev.button === 2) silenciarMenuContextual();
-      const destino = destinoDeValor(document.elementFromPoint(ev.clientX, ev.clientY));
+      const destino = destinoPermitido(document.elementFromPoint(ev.clientX, ev.clientY));
       if (destino) partida.cambiarValorActual(destino.idInstancia, destino.idDefinicion, delta);
     };
     const cancelar = (ev: Event) => {

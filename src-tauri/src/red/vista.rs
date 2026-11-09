@@ -13,7 +13,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::tablero_general::estado::EstadoPartida;
-use crate::tablero_general::modelos::{DefinicionParametro, Entidad, IdJugador, Instancia, Mapa, Zona};
+use crate::tablero_general::modelos::{DefinicionParametro, Entidad, IdJugador, Instancia, Mapa, Tiradas, Zona};
 use crate::tablero_general::visibilidad;
 
 #[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq)]
@@ -28,6 +28,8 @@ pub struct VistaJugador {
     pub entidades: Vec<Entidad>,
     /// Solo las definiciones de los parámetros que ve: los nombres de los privados no salen.
     pub definiciones: Vec<DefinicionParametro>,
+    /// El chat de tiradas: es de todos (cada tirada lleva el nombre de quien la hizo), la más reciente primero.
+    pub historial_tiradas: Vec<Tiradas>,
 }
 
 /// Lo que cambió en la vista de un jugador. Lo que no aparece, sigue igual.
@@ -53,6 +55,9 @@ pub struct Cambios {
     /// La lista entera cuando cambia (es corta).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub definiciones: Option<Vec<DefinicionParametro>>,
+    /// El chat entero cuando cambia (son 20 tiradas como mucho).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub historial_tiradas: Option<Vec<Tiradas>>,
 }
 
 impl Cambios {
@@ -75,7 +80,7 @@ pub fn vista_para(jugador: IdJugador, est: &EstadoPartida) -> VistaJugador {
         .flat_map(|e| e.parametros.iter().map(|p| p.id_definicion))
         .collect();
     let definiciones = est.definiciones_parametros.iter().filter(|d| usadas.contains(&d.id)).cloned().collect();
-    VistaJugador { zonas, mapas, instancias, entidades, definiciones }
+    VistaJugador { zonas, mapas, instancias, entidades, definiciones, historial_tiradas: est.historial_tiradas.clone() }
 }
 
 /// Qué hay que enviar para pasar de `antes` a `despues`. `None` si no cambió nada.
@@ -87,6 +92,9 @@ pub fn diferencias(antes: &VistaJugador, despues: &VistaJugador) -> Option<Cambi
     (c.entidades, c.entidades_quitadas) = por_id(&antes.entidades, &despues.entidades, |e| e.id);
     if antes.definiciones != despues.definiciones {
         c.definiciones = Some(despues.definiciones.clone());
+    }
+    if antes.historial_tiradas != despues.historial_tiradas {
+        c.historial_tiradas = Some(despues.historial_tiradas.clone());
     }
     (!c.esta_vacio()).then_some(c)
 }
@@ -121,6 +129,9 @@ pub fn aplicar(vista: &mut VistaJugador, cambios: &Cambios) {
     poner(&mut vista.entidades, &cambios.entidades, &cambios.entidades_quitadas, |e| e.id);
     if let Some(d) = &cambios.definiciones {
         vista.definiciones = d.clone();
+    }
+    if let Some(h) = &cambios.historial_tiradas {
+        vista.historial_tiradas = h.clone();
     }
 }
 
@@ -260,6 +271,30 @@ mod tests {
         let inst = &c.instancias[0];
         assert!(inst.base.parametros.iter().all(|p| p.id_definicion != ID_ARMADURA), "ni su valor viejo");
         assert!(c.definiciones.unwrap().iter().all(|d| d.id != ID_ARMADURA), "ni su nombre");
+    }
+
+    #[test]
+    fn el_chat_es_de_todos_con_el_nombre_de_quien_tira_y_llega_como_cambio() {
+        let mut e = estado();
+        let antes = vista_para(7, &e);
+        assert!(antes.historial_tiradas.is_empty());
+
+        let tirada = |jugador, autor: &str| Tiradas { total: 9, comando: "1d10 (9)".into(), hora: "10:00".into(), jugador, autor: autor.into() };
+        e.aplicar_delta(&DeltaPartida::TiradaRealizada(tirada(1, "Ana")));
+        let despues = vista_para(7, &e);
+        assert_eq!(despues.historial_tiradas[0].autor, "Ana", "un jugador ve lo que tira otro");
+        let c = diferencias(&antes, &despues).unwrap();
+        assert_eq!(c.historial_tiradas.as_ref().map(|h| h.len()), Some(1));
+        assert!(c.instancias.is_empty() && c.mapas.is_empty());
+        let mut aplicada = antes.clone();
+        aplicar(&mut aplicada, &c);
+        assert_eq!(aplicada, despues);
+
+        // Y el host tira (sin autor): llega igual; limpiar el chat también
+        e.aplicar_delta(&DeltaPartida::TiradaRealizada(tirada(0, "")));
+        assert_eq!(vista_para(1, &e).historial_tiradas.len(), 2);
+        e.aplicar_delta(&DeltaPartida::HistorialTiradasLimpiado);
+        assert!(diferencias(&despues, &vista_para(7, &e)).unwrap().historial_tiradas.unwrap().is_empty());
     }
 
     #[test]

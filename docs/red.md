@@ -1,8 +1,9 @@
 # Red: la sala del host y los jugadores
 
-Estado: **fase 1**. El host abre una sala; los jugadores entran con un enlace en el navegador y ven **la misma
-app que el host** (zonas, mapas, banco, «Fichas activas», tablero…), pero solo con lo que el host comparte, en
-tiempo real. Todavía no pueden cambiar nada: eso es la fase 2 (al final está exactamente lo que falta).
+Estado: **fase 2**. El host abre una sala; los jugadores entran con un enlace en el navegador y usan **la misma app
+que el host** (zonas, mapas, banco, «Fichas activas», tablero, dados y chat), pero solo con lo que el host
+comparte, y solo pueden actuar sobre las fichas que el host les da. Cada acción del jugador se la pide al host,
+que la valida y la ejecuta en su Rust; el resultado llega a todos en tiempo real.
 
 ## Cómo funciona
 
@@ -24,8 +25,10 @@ https://kiro55-dev.github.io/vtt-rol/#t=…&s=…&k=…
     vista filtrada al entrar y después solo lo que cambia (`Vista` y `Cambios`); la conexión
     (`src/lib/red/conexion.svelte.ts`) la aplica y emite `partida-cambiada`, y los stores releen como hace el
     host tras cada acción suya. Es lo mismo que «pedírselo al host», pero sin una ida y vuelta por cada lectura.
-  - Lo que solo puede hacer el host (crear, borrar, renombrar, arrastrar, ⚙, editar fichas, dados…) está oculto
-    o desactivado en modo jugador (`esJugador`), y la réplica rechaza cualquier comando que no sea de lectura.
+  - **Acciones del jugador:** lo que cambia la partida (mover, tirar dados, editar su ficha…) se lo pide al host
+    (`Pedir { id, peticion }` → `Respuesta { id, ok | error }`, ver «Acciones del jugador»). Lo que solo es del
+    host (⚙, crear, borrar, renombrar o reordenar, el orden de «Fichas activas», limpiar el chat) está oculto o
+    desactivado en modo jugador (`esJugador`) y el host lo rechaza de todos modos.
 - **Qué comparte el host:** cada mapa tiene una casilla arriba a la derecha (en la lista de mapas). Marcada, los
   jugadores ven ese mapa (y su zona) al instante; desmarcada, deja de verse. Es independiente del mapa que el host
   tenga abierto: puede preparar otros sin que se vean. Cada jugador ve además sus propias fichas (las que el host le
@@ -106,48 +109,57 @@ imágenes) y `bunx vitest run` (enlace, réplica, respuesta al reto con el mismo
 | `red/servidor.rs` | axum en 127.0.0.1: `/ws` (saludo y envíos) y `/imagen` |
 | `red/tunel.rs` | descarga verificada de cloudflared y arranque del túnel |
 | `red/vista.rs` | qué ve cada jugador y la diferencia con lo último enviado |
-| `red/protocolo.rs` | los mensajes (espejo: `src/lib/red/protocolo.ts`) |
+| `red/protocolo.rs` | los mensajes (espejo: `src/lib/red/protocolo.ts`); versión 3 |
+| `red/peticiones.rs` | lo que un jugador puede pedir: lista blanca, permisos y ejecución |
 | `red/comandos.rs` | comandos de la ventana «Configuración de sala» |
 | `src/lib/modo.ts`, `src/lib/backend.ts` | host o jugador; la puerta única de datos |
 | `src/lib/red/` | lo del jugador: enlace, conexión, réplica |
 | `src/lib/sala.svelte.ts`, `VentanaSala.svelte`, `arrastreJugador.svelte.ts` | el lado del host en la interfaz |
 | `EntradaSala.svelte` | nombre y contraseña del jugador al entrar |
 
-## Lo que falta para el cliente completo (fase 2)
+## Acciones del jugador (fase 2)
 
-**El camino es el mismo para todo:** el `invoke` del jugador, para los comandos que no sean de lectura, envía al
-host `Pedir { id, cmd, args }` (mensaje nuevo; subir `VERSION_PROTOCOLO`). El host solo acepta una **lista blanca**
-de comandos, comprueba los permisos de `jugadores.rs`, registra el delta como cualquier otro (`partida::registrar`)
-y contesta `Respuesta { id, ok | error }`. El cambio llega a todos los jugadores por `tras_cambio`, y al host hay que
-emitirle `partida-cambiada` (el store `partida` ya lo escucha y relee). En el front, se quita la restricción de
-`esJugador` de cada acción que se habilite. Lo que hay que habilitar (entre paréntesis, lo que ya está en Rust):
+Cada acción viaja como `Pedir { id, peticion: { cmd, ...args } }` y el host contesta `Respuesta { id, ok | error }`
+**después** de los `Cambios` que provocó (van por el mismo canal), así la réplica del jugador ya está al día cuando
+su pantalla relee. Las peticiones de un jugador se ejecutan **en orden**, una a una, con un tope de 30 por segundo.
 
-1. **Mover su instancia** a una casilla, **varias a la vez**, **girarla**, **espejarla** y **quitarla del
-   tablero** (sigue activa). Permiso: `jugadores::controla_instancia`. Reglas: `instancias::mover`, `mover_grupo`,
-   `rotar`, `espejar`. Solo en mapas compartidos. En el front: quitar el `esJugador` de `arrastre.preparar` y del
-   clic derecho del tablero, y comprobar también allí que la ficha es suya.
-2. **Valores actuales de sus fichas** (vida, etc.): `instancias::cambiar_valor_actual` con `controla_instancia`.
-   Decidir si el host lo permite o solo lo ve.
-3. **Editar su ficha** en la misma ventana del host: el host filtra los `CambioEntidad` con
-   `jugadores::cambio_permitido` (no puede cambiar propietarios, zona ni si es única) y valida como
-   `modificar_entidad`. Las fotos nuevas necesitarían subir la imagen al host (endpoint nuevo).
-4. **Adjuntos .txt de su ficha**: leer, crear y editar. Solo `.txt` (`adjunto_permitido_a_jugador`), tamaño máximo
-   `MAX_TEXTO_JUGADOR`, rutas por `archivos::ruta_segura`. Servirlos como texto plano (nunca HTML).
-5. **Tiradas**: el host usa `parsear_comando` (solo tiradas), registra `TiradaRealizada` con `Tiradas.jugador` y el
-   historial se comparte (añadir `historial_tiradas` a la vista; quitar el `esJugador` del chat y la barra de dados).
-6. **Ping y recorrido** del jugador en un mapa compartido: hoy la réplica los ignora; enviarlos al host, validar con
-   `AvisoTablero::validar` y reenviar a los demás y al host (evento de Tauri `aviso-tablero`, que `Tablero.svelte` ya
-   escucha).
-7. **Foco** de cada jugador (`AvisoTablero::Foco`) para que el host lo vea en violeta (`partida.idsFocoAjeno`).
+- **Lista blanca** (`red/peticiones.rs`, `Peticion`; espejo en `PETICIONES` de `src/lib/red/replica.ts`): tirar
+  dados, mover una o varias instancias, girarlas, espejarlas, sacarlas del tablero (eliminarlas), cambiar su valor
+  (vida…), poner fichas del banco en el tablero, guardar su ficha y su miniatura, leer, crear, editar y renombrar
+  sus `.txt`, descartar archivos de una edición cancelada, y ping y recorrido. Lo demás ni se decodifica.
+- **Permisos** (`permitida`, pura y con tests, sobre `jugadores.rs`): solo sus fichas (`Entidad.propietarios`) e
+  instancias; solo llevar fichas a mapas **compartidos** (el host no tiene este límite: puede llevar cualquier
+  ficha a cualquier mapa); de su ficha no puede cambiar de quién es, su zona ni si es única (`cambio_permitido`);
+  la foto solo si la ha subido él; los adjuntos nuevos, solo `.txt` en `archivos/entidad_<id>/`.
+- **Se ejecuta con la misma función que el comando del host.** Cada comando de la lista blanca tiene su
+  `xxx_en(…, &AppState)` en `partida.rs` (el comando de Tauri solo la llama): así hay una sola regla y se prueba
+  sin Tauri. Al añadir una acción nueva: variante en `Peticion`, caso en `permitida`, caso en `ejecutar_en`,
+  nombre en `PETICIONES` y tests.
+- **Chat compartido.** `tirar_dado_de(estado, jugador, comando)` lo procesa el Rust del host y lo registra en el
+  chat con el nombre de quien tira (`Tiradas.autor`, vacío si es el host). El chat entero va en la vista de cada
+  jugador (`historial_tiradas`) y en los `Cambios`: todos ven las tiradas de todos, como «Ana: 1d20 (7) = 7».
+  `clean`/`c` solo lo puede usar el host. El historial personal (↑ ↓) de un jugador es suyo, en su navegador.
+- **Pantalla del host.** Tras una acción de un jugador el host emite `partida-cambiada` (`tiradas` o `entidades`)
+  y su store relee (`partida.alCambiarPartida`); el ping y el recorrido de un jugador llegan al host como el
+  evento `aviso-tablero` y a los demás jugadores como `Aviso`.
+- **Foco.** El foco es de cada uno: un jugador puede dar el foco a cualquier ficha que ve (para ver sus formas
+  públicas), pero no se envía a nadie: el host no ve el foco de los jugadores ni ellos el suyo.
+- **Fotos.** Un jugador sube la foto de una ficha suya con `POST /subir?sesion=…&ext=…`: hasta 8 MiB, solo si tiene
+  alguna ficha, solo imágenes de verdad (png, jpg, webp, gif o bmp; **nada de SVG**; el contenido debe ser del tipo
+  que dice la extensión) y hasta 20 por sesión. Solo él la ve (`/imagen`) hasta que la usa una ficha. Como la página
+  está en otra dirección que el túnel, `/imagen` y `/subir` llevan **CORS** para el origen de la página (el mismo
+  que acepta el WebSocket), y `/subir` contesta al `OPTIONS`; así el editor puede recortar la miniatura en un canvas.
+- **Qué controla un jugador en la pantalla:** `partida.controla(instancia)` (el host siempre; un jugador, las de las
+  fichas de su banco). Oculta o desactiva lo que el host va a rechazar, pero la comprobación de verdad es la del host.
 
-**Más:**
-8. Ver quién más está conectado (nombre del host y de los demás jugadores, sin nada más).
-9. Lista de jugadores en el host con su foco y sus últimas acciones; posibilidad de bloquear acciones («solo mirar»).
-10. Nombre de la sala visible para el jugador.
-11. Opcional: **directorio** para que el enlace no cambie entre sesiones (un Worker gratuito que diga «esta sala
-    está ahora en este túnel»). Se añade sin tocar nada más: el navegador lo consultaría si el enlace no trae `t`.
-12. Opcional: miniatura grande (p. ej. 2048 px) de los fondos de mapa para el jugador, si los mapas son muy pesados
-    para la subida del host.
+## Lo que falta
 
-**Probado a mano antes de dar la fase 2 por buena:** dos jugadores a la vez, móvil, cortes de red (el navegador
-reintenta durante un minuto) y cerrar la app del host con gente dentro.
+- Ver quién más está conectado (nombre de los demás jugadores).
+- Lista de jugadores en el host con sus últimas acciones; bloquear acciones («solo mirar»).
+- Nombre de la sala visible para el jugador.
+- Subir adjuntos distintos de `.txt` (hoy no: PDF prohibidos) y fotos de mapas.
+- Opcional: **directorio** para que el enlace no cambie entre sesiones (un Worker gratuito que diga «esta sala está
+  ahora en este túnel»); se añade sin tocar nada más.
+- Opcional: miniatura grande (p. ej. 2048 px) de los fondos de mapa, si son muy pesados para la subida del host.
+- Probar a mano con varios jugadores a la vez, móvil, cortes de red (el navegador reintenta durante un minuto) y
+  cerrar la app del host con gente dentro.

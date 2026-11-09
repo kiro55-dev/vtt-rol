@@ -40,22 +40,25 @@
     // Dentro de un campo de texto las teclas son del campo (Supr borra letras, Ctrl+Z deshace lo escrito)
     if (t?.closest?.("input, textarea, select, [contenteditable='true']")) return;
     if (e.key === "Escape") partida.limpiarSeleccionBanco();
-    // Supr y Ctrl+Z cambian la partida: solo el host
-    if (esJugador && (e.key === "Delete" || ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "z"))) return;
+    // Ctrl+Z (la papelera) es del host; el jugador solo borra sus instancias con Supr (más abajo)
+    if (esJugador && (e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "z") return;
     if ((e.ctrlKey || e.metaKey) && !e.shiftKey && e.key.toLowerCase() === "z") {
       e.preventDefault();
       void partida.restaurarPapelera();
       return;
     }
     if (e.key === "Delete") {
-      const delBanco = [...partida.idsBancoSeleccionados];
+      const delBanco = esJugador ? [] : [...partida.idsBancoSeleccionados]; // borrar fichas del banco es del host
       if (delBanco.length > 0) {
         e.preventDefault();
         void partida.borrarEntidades(delBanco);
         return;
       }
       // Instancias con foco: igual que arrastrarlas al banco (no van a la papelera)
-      const ids = [...partida.idsSeleccionados];
+      const ids = partida.idsSeleccionados.filter((id) => {
+        const i = partida.instancias.find((x) => x.id_instancia === id);
+        return !!i && partida.controla(i); // el jugador, solo las suyas
+      });
       if (ids.length === 0) return;
       e.preventDefault();
       void partida.borrarInstancias(ids);
@@ -132,16 +135,13 @@
       <Tablero mapa={partida.mapaActual} rejilla={partida.rejilla} />
     </div>
 
-    {#if !esJugador}
-      <!-- Los dados del jugador llegan en la fase 2 (las tiradas las hará el host: docs/red.md) -->
-      <div class="barra-inferior">
-        <BarraDados
-          onSumarAlChat={(fragmento: string) => tiradas.sumarDado(fragmento)}
-          onRestarDelChat={(fragmento: string) => tiradas.restarDado(fragmento)}
-          onLanzarTirada={(bonificador: number | null) => tiradas.tirarConBonificador(bonificador)}
-        />
-      </div>
-    {/if}
+    <div class="barra-inferior">
+      <BarraDados
+        onSumarAlChat={(fragmento: string) => tiradas.sumarDado(fragmento)}
+        onRestarDelChat={(fragmento: string) => tiradas.restarDado(fragmento)}
+        onLanzarTirada={(bonificador: number | null) => tiradas.tirarConBonificador(bonificador)}
+      />
+    </div>
     {#if esJugador && conexion}
       <div class="yo-jugador">
         Conectado como <b>{conexion.yo?.nombre}</b>

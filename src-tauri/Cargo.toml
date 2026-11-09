@@ -52,4 +52,5 @@ flate2 = "1.1.11"
 tar = "0.4.46"
 
 [dev-dependencies]
+reqwest = { version = "0.13", default-features = false, features = ["rustls", "stream", "json"] }
 tokio-tungstenite = "0.30.0"

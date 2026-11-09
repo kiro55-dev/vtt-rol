@@ -67,7 +67,12 @@ pub fn importar(dir_datos: &Path, origen: &Path, uso: Uso) -> Result<String, Str
     }
 
     let bytes = fs::read(origen).map_err(|e| format!("No se puede leer la imagen: {e}"))?;
-    let hash = format!("{:x}", Sha256::digest(&bytes));
+    guardar_imagen(dir_datos, &bytes, &ext)
+}
+
+/// Escribe la imagen en `<dir_datos>/imagenes/<hash>.<ext>` (si no estaba ya) y devuelve su ruta relativa.
+fn guardar_imagen(dir_datos: &Path, bytes: &[u8], ext: &str) -> Result<String, String> {
+    let hash = format!("{:x}", Sha256::digest(bytes));
     let nombre = format!("{}.{}", &hash[..32], ext);
 
     let carpeta = dir_datos.join("imagenes");
@@ -77,11 +82,43 @@ pub fn importar(dir_datos: &Path, origen: &Path, uso: Uso) -> Result<String, Str
     if !destino.exists() {
         // Temporal + rename: nunca queda una imagen a medias con el nombre definitivo.
         let tmp = carpeta.join(format!("{nombre}.tmp"));
-        fs::write(&tmp, &bytes).map_err(|e| format!("No se pudo copiar la imagen: {e}"))?;
+        fs::write(&tmp, bytes).map_err(|e| format!("No se pudo copiar la imagen: {e}"))?;
         fs::rename(&tmp, &destino).map_err(|e| format!("No se pudo copiar la imagen: {e}"))?;
     }
 
     Ok(format!("imagenes/{nombre}"))
+}
+
+/// Tamaño máximo de una foto que sube un jugador.
+pub const MAX_BYTES_SUBIDA: usize = 8 * 1024 * 1024;
+
+/// La foto de una ficha que SUBE un jugador desde su navegador (no hay ruta del disco del host). Solo imágenes
+/// rasterizadas (nada de SVG, que puede llevar scripts) y cuyo contenido sea de verdad una imagen de ese tipo.
+pub fn importar_bytes(dir_datos: &Path, bytes: &[u8], extension: &str) -> Result<String, String> {
+    let ext = extension.to_ascii_lowercase();
+    if !EXTENSIONES_MAPA.contains(&ext.as_str()) {
+        return Err("Formato de imagen no admitido (png, jpg, webp, gif o bmp)".into());
+    }
+    if bytes.is_empty() || bytes.len() > MAX_BYTES_SUBIDA {
+        return Err(format!("La imagen no puede pasar de {} MB", MAX_BYTES_SUBIDA / (1024 * 1024)));
+    }
+    let formato = ImageReader::new(std::io::Cursor::new(bytes))
+        .with_guessed_format()
+        .ok()
+        .and_then(|r| r.format())
+        .ok_or("El archivo no es una imagen")?;
+    let esperado: &[&str] = match formato {
+        image::ImageFormat::Png => &["png"],
+        image::ImageFormat::Jpeg => &["jpg", "jpeg"],
+        image::ImageFormat::WebP => &["webp"],
+        image::ImageFormat::Gif => &["gif"],
+        image::ImageFormat::Bmp => &["bmp"],
+        _ => return Err("Formato de imagen no admitido".into()),
+    };
+    if !esperado.contains(&ext.as_str()) {
+        return Err("El archivo no es del tipo que dice su extensión".into());
+    }
+    guardar_imagen(dir_datos, bytes, &ext)
 }
 
 /// Tamaño en píxeles de una imagen ya importada (`ruta` relativa, "imagenes/..."). Solo lee la

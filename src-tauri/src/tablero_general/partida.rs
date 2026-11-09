@@ -96,15 +96,19 @@ pub fn procesar_delta(state: &AppState, delta: DeltaPartida) {
 // Función específica para registrar tiradas (llamada por dados.rs).
 // Recibe el desglose y el total por separado: releer el total de un texto con `parse().unwrap_or(0)`
 // guardaba un 0 silencioso cuando el número no cabía.
-pub fn registrar_tirada(state: &AppState, desglose: &str, total: i32) {
+// `jugador` es quien tiró (`ID_HOST` o un jugador de la sala): su nombre se guarda en la tirada para el chat.
+pub fn registrar_tirada(state: &AppState, jugador: IdJugador, desglose: &str, total: i32) {
+    let mut est = state.lock();
+    let autor = est.jugadores.iter().find(|j| j.id == jugador).map(|j| j.nombre.clone()).unwrap_or_default();
     let tirada = Tiradas {
         total,
         comando: desglose.to_string(),
         hora: chrono::Local::now().format("%H:%M").to_string(),
-        jugador: ID_HOST, // FUTURA RED: el jugador que mandó el comando
+        jugador,
+        autor,
     };
 
-    procesar_delta(state, DeltaPartida::TiradaRealizada(tirada));
+    registrar(&mut est, &state.almacen, DeltaPartida::TiradaRealizada(tirada));
 }
 
 // Historial personal de comandos (dados.rs)
@@ -403,11 +407,14 @@ pub fn obtener_instancias_activas(state: State<'_, AppState>) -> Vec<Instancia> 
 /// Instancia una ficha del banco en una casilla (`destino`) o solo como activa (`None`).
 /// Una ficha única que ya tenía instancia la reutiliza. Devuelve la instancia resultante.
 #[tauri::command]
-pub fn instanciar_entidad(
-    id_entidad: u16,
-    destino: Option<instancias::Destino>,
-    state: State<'_, AppState>,
-) -> Result<Instancia, String> {
+pub fn instanciar_entidad(id_entidad: u16,
+    destino: Option<instancias::Destino>, state: State<'_, AppState>) -> Result<Instancia, String> {
+    instanciar_entidad_en(id_entidad, destino, &state)
+}
+
+/// Lo que hace `instanciar_entidad`, con el estado ya en la mano (así también lo ejecuta el host a petición de un jugador).
+pub fn instanciar_entidad_en(id_entidad: u16,
+    destino: Option<instancias::Destino>, state: &AppState) -> Result<Instancia, String> {
     let mut est = state.lock();
     let delta = instancias::instanciar(&est, id_entidad, destino)?;
     let (DeltaPartida::InstanciaCreada(i) | DeltaPartida::InstanciaModificada(i)) = &delta else {
@@ -423,11 +430,14 @@ pub fn instanciar_entidad(
 /// casilla y las demás a su derecha y debajo, en cuadrícula (`tablero::disposicion_en_cuadricula`); sin
 /// él, todas quedan activas sin colocar. Cada una es un delta normal, registrado en orden bajo el mismo lock.
 #[tauri::command]
-pub fn instanciar_entidades(
-    ids: Vec<u16>,
-    destino: Option<instancias::Destino>,
-    state: State<'_, AppState>,
-) -> Result<Vec<Instancia>, String> {
+pub fn instanciar_entidades(ids: Vec<u16>,
+    destino: Option<instancias::Destino>, state: State<'_, AppState>) -> Result<Vec<Instancia>, String> {
+    instanciar_entidades_en(ids, destino, &state)
+}
+
+/// Lo que hace `instanciar_entidades`, con el estado ya en la mano (así también lo ejecuta el host a petición de un jugador).
+pub fn instanciar_entidades_en(ids: Vec<u16>,
+    destino: Option<instancias::Destino>, state: &AppState) -> Result<Vec<Instancia>, String> {
     let mut est = state.lock();
     let mut destinos: Vec<Option<instancias::Destino>> = vec![None; ids.len()];
     if let Some(d) = destino {
@@ -459,6 +469,11 @@ pub fn instanciar_entidades(
 /// Mueve una instancia a otra casilla o, con `None`, la quita del tablero (sigue activa).
 #[tauri::command]
 pub fn mover_instancia(id_instancia: u16, destino: Option<instancias::Destino>, state: State<'_, AppState>) -> Result<(), String> {
+    mover_instancia_en(id_instancia, destino, &state)
+}
+
+/// Lo que hace `mover_instancia`, con el estado ya en la mano (así también lo ejecuta el host a petición de un jugador).
+pub fn mover_instancia_en(id_instancia: u16, destino: Option<instancias::Destino>, state: &AppState) -> Result<(), String> {
     let mut est = state.lock();
     let delta = instancias::mover(&est, id_instancia, destino)?;
     registrar(&mut est, &state.almacen, delta);
@@ -469,6 +484,11 @@ pub fn mover_instancia(id_instancia: u16, destino: Option<instancias::Destino>, 
 /// (las seleccionadas que se arrastran juntas). Un `InstanciaModificada` por ficha, en orden y bajo el mismo lock.
 #[tauri::command]
 pub fn mover_instancias(ids: Vec<u16>, id_mapa: u16, dx: i32, dy: i32, state: State<'_, AppState>) -> Result<(), String> {
+    mover_instancias_en(ids, id_mapa, dx, dy, &state)
+}
+
+/// Lo que hace `mover_instancias`, con el estado ya en la mano (así también lo ejecuta el host a petición de un jugador).
+pub fn mover_instancias_en(ids: Vec<u16>, id_mapa: u16, dx: i32, dy: i32, state: &AppState) -> Result<(), String> {
     let mut est = state.lock();
     for delta in instancias::mover_grupo(&est, &ids, id_mapa, dx, dy)? {
         registrar(&mut est, &state.almacen, delta);
@@ -479,6 +499,11 @@ pub fn mover_instancias(ids: Vec<u16>, id_mapa: u16, dx: i32, dy: i32, state: St
 /// Gira la instancia un cuarto de vuelta en el sentido del reloj.
 #[tauri::command]
 pub fn rotar_instancia(id_instancia: u16, state: State<'_, AppState>) -> Result<(), String> {
+    rotar_instancia_en(id_instancia, &state)
+}
+
+/// Lo que hace `rotar_instancia`, con el estado ya en la mano (así también lo ejecuta el host a petición de un jugador).
+pub fn rotar_instancia_en(id_instancia: u16, state: &AppState) -> Result<(), String> {
     let mut est = state.lock();
     let delta = instancias::rotar(&est, id_instancia)?;
     registrar(&mut est, &state.almacen, delta);
@@ -488,6 +513,11 @@ pub fn rotar_instancia(id_instancia: u16, state: State<'_, AppState>) -> Result<
 /// Pone o quita el espejo de la imagen de la instancia (solo aspecto).
 #[tauri::command]
 pub fn espejar_instancia(id_instancia: u16, state: State<'_, AppState>) -> Result<(), String> {
+    espejar_instancia_en(id_instancia, &state)
+}
+
+/// Lo que hace `espejar_instancia`, con el estado ya en la mano (así también lo ejecuta el host a petición de un jugador).
+pub fn espejar_instancia_en(id_instancia: u16, state: &AppState) -> Result<(), String> {
     let mut est = state.lock();
     let delta = instancias::espejar(&est, id_instancia)?;
     registrar(&mut est, &state.almacen, delta);
@@ -506,6 +536,11 @@ pub fn reordenar_instancias(ids: Vec<u16>, state: State<'_, AppState>) -> Result
 /// La instancia deja de estar activa.
 #[tauri::command]
 pub fn borrar_instancia(id_instancia: u16, state: State<'_, AppState>) -> Result<(), String> {
+    borrar_instancia_en(id_instancia, &state)
+}
+
+/// Lo que hace `borrar_instancia`, con el estado ya en la mano (así también lo ejecuta el host a petición de un jugador).
+pub fn borrar_instancia_en(id_instancia: u16, state: &AppState) -> Result<(), String> {
     let mut est = state.lock();
     let delta = instancias::borrar(&est, id_instancia)?;
     registrar(&mut est, &state.almacen, delta);
@@ -514,12 +549,16 @@ pub fn borrar_instancia(id_instancia: u16, state: State<'_, AppState>) -> Result
 
 /// Suma `delta` al valor actual (p. ej. la vida) de una instancia, sin bajar de 0 ni pasar del máximo.
 #[tauri::command]
-pub fn modificar_valor_actual(
-    id_instancia: u16,
+pub fn modificar_valor_actual(id_instancia: u16,
     id_definicion: u16,
-    delta: i16,
-    state: State<'_, AppState>,
-) -> Result<(), String> {
+    delta: i16, state: State<'_, AppState>) -> Result<(), String> {
+    modificar_valor_actual_en(id_instancia, id_definicion, delta, &state)
+}
+
+/// Lo que hace `modificar_valor_actual`, con el estado ya en la mano (así también lo ejecuta el host a petición de un jugador).
+pub fn modificar_valor_actual_en(id_instancia: u16,
+    id_definicion: u16,
+    delta: i16, state: &AppState) -> Result<(), String> {
     let mut est = state.lock();
     if let Some(delta) = instancias::cambiar_valor_actual(&est, id_instancia, id_definicion, delta)? {
         registrar(&mut est, &state.almacen, delta);
@@ -813,6 +852,11 @@ pub fn cancelar_borrador_entidad(id: u16, rutas: Vec<String>, state: State<'_, A
 /// guardar). Nunca borra nada que la partida esté usando.
 #[tauri::command]
 pub fn descartar_archivos_borrador(rutas: Vec<String>, state: State<'_, AppState>) {
+    descartar_archivos_borrador_en(rutas, &state)
+}
+
+/// Lo que hace `descartar_archivos_borrador`, con el estado ya en la mano (así también lo ejecuta el host a petición de un jugador).
+pub fn descartar_archivos_borrador_en(rutas: Vec<String>, state: &AppState) {
     let est = state.lock();
     recursos::descartar(&state.almacen.dir(), &est, &rutas);
 }
@@ -884,7 +928,12 @@ pub fn crear_entidad(mut entidad: Entidad, state: State<'_, AppState>) -> Result
 /// lleva los campos que cambiaron; sin cambios no se registra nada. Los adjuntos que ya no están en la
 /// lista se borran solos (recursos.rs).
 #[tauri::command]
-pub fn modificar_entidad(mut entidad: Entidad, state: State<'_, AppState>) -> Result<(), String> {
+pub fn modificar_entidad(entidad: Entidad, state: State<'_, AppState>) -> Result<(), String> {
+    modificar_entidad_en(entidad, &state)
+}
+
+/// Lo que hace `modificar_entidad`, con el estado ya en la mano (así también lo ejecuta el host a petición de un jugador).
+pub fn modificar_entidad_en(mut entidad: Entidad, state: &AppState) -> Result<(), String> {
     let mut est = state.lock();
 
     let Some(guardada) = est.banco_entidades.iter().find(|e| e.id == entidad.id) else {
@@ -995,32 +1044,48 @@ pub async fn importar_archivo(
 
 #[tauri::command]
 pub fn crear_documento_texto(entidad: Entidad, state: State<'_, AppState>) -> Result<ArchivoAdjunto, String> {
+    crear_documento_texto_en(entidad, &state)
+}
+
+/// Lo que hace `crear_documento_texto`, con el estado ya en la mano (así también lo ejecuta el host a petición de un jugador).
+pub fn crear_documento_texto_en(entidad: Entidad, state: &AppState) -> Result<ArchivoAdjunto, String> {
     comprobar_ficha_usable(&state, entidad.id)?;
     archivos::crear_documento_texto(&state.almacen.dir(), entidad)
 }
 
 #[tauri::command]
-pub fn guardar_archivo_texto(
-    adjunto: ArchivoAdjunto,
-    contenido: String,
-    state: State<'_, AppState>,
-) -> Result<ArchivoAdjunto, String> {
+pub fn guardar_archivo_texto(adjunto: ArchivoAdjunto,
+    contenido: String, state: State<'_, AppState>) -> Result<ArchivoAdjunto, String> {
+    guardar_archivo_texto_en(adjunto, contenido, &state)
+}
+
+/// Lo que hace `guardar_archivo_texto`, con el estado ya en la mano (así también lo ejecuta el host a petición de un jugador).
+pub fn guardar_archivo_texto_en(adjunto: ArchivoAdjunto,
+    contenido: String, state: &AppState) -> Result<ArchivoAdjunto, String> {
     archivos::guardar_texto(&state.almacen.dir(), adjunto, &contenido)
 }
 
 #[tauri::command]
 pub fn leer_archivo_texto(ruta_relativa: String, state: State<'_, AppState>) -> Result<String, String> {
+    leer_archivo_texto_en(ruta_relativa, &state)
+}
+
+/// Lo que hace `leer_archivo_texto`, con el estado ya en la mano (así también lo ejecuta el host a petición de un jugador).
+pub fn leer_archivo_texto_en(ruta_relativa: String, state: &AppState) -> Result<String, String> {
     archivos::leer_texto(&state.almacen.dir(), &ruta_relativa)
 }
 
 /// Un archivo que la partida guardada ya usa se COPIA con el nombre nuevo (el original se libera
 /// solo si se guarda la ficha, y no se toca si se cancela). Uno creado en esta edición se mueve.
 #[tauri::command]
-pub fn renombrar_archivo_adjunto(
-    adjunto: ArchivoAdjunto,
-    nuevo_nombre: String,
-    state: State<'_, AppState>,
-) -> Result<ArchivoAdjunto, String> {
+pub fn renombrar_archivo_adjunto(adjunto: ArchivoAdjunto,
+    nuevo_nombre: String, state: State<'_, AppState>) -> Result<ArchivoAdjunto, String> {
+    renombrar_archivo_adjunto_en(adjunto, nuevo_nombre, &state)
+}
+
+/// Lo que hace `renombrar_archivo_adjunto`, con el estado ya en la mano (así también lo ejecuta el host a petición de un jugador).
+pub fn renombrar_archivo_adjunto_en(adjunto: ArchivoAdjunto,
+    nuevo_nombre: String, state: &AppState) -> Result<ArchivoAdjunto, String> {
     let copiar = {
         let est = state.lock();
         recursos::esta_referenciada(&est, &adjunto.ruta)
@@ -1078,6 +1143,11 @@ pub async fn obtener_miniatura(
 /// con lo que queda en el log y en el snapshot, y recursos.rs borra la miniatura anterior.
 #[tauri::command]
 pub fn guardar_miniatura_ficha(id: u16, datos: Vec<u8>, state: State<'_, AppState>) -> Result<(), String> {
+    guardar_miniatura_ficha_en(id, datos, &state)
+}
+
+/// Lo que hace `guardar_miniatura_ficha`, con el estado ya en la mano (así también lo ejecuta el host a petición de un jugador).
+pub fn guardar_miniatura_ficha_en(id: u16, datos: Vec<u8>, state: &AppState) -> Result<(), String> {
     let mut est = state.lock();
     if !est.banco_entidades.iter().any(|e| e.id == id) {
         return Err("La ficha no existe".into());

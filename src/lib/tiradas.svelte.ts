@@ -5,6 +5,7 @@
 // comandos anteriores). La barra de dados, la lista de tiradas y la caja de texto lo comparten
 // sin pasarse nada entre ellas.
 import { invoke } from "$lib/backend";
+import { esJugador } from "$lib/modo";
 
 export interface Tirada {
   hora: string;
@@ -12,6 +13,8 @@ export interface Tirada {
   comando: string;
   /** `null` = la tirada no era válida (no hay total). */
   total: number | null;
+  /** Quién tiró (su nombre), para el chat compartido: «Ana: 1d20 (7) = 7». Vacío si fue el host. */
+  autor?: string;
 }
 
 const MAX_TIRADAS = 20;
@@ -104,9 +107,9 @@ class Tiradas {
 
   /** Carga el historial guardado en Rust. */
   async cargar() {
-    // `jugador`: quién tiró (`IdJugador` en Rust; por ahora siempre el host, 0). Aún no se muestra.
-    const guardadas = await invoke<{ hora: string; comando: string; total: number; jugador: number }[]>("obtener_historial_tiradas");
-    this.historial = guardadas.map((t) => ({ hora: t.hora, comando: t.comando, total: t.total }));
+    // El chat es de todos: cada tirada lleva el nombre de quien la hizo (`autor`, vacío si fue el host)
+    const guardadas = await invoke<{ hora: string; comando: string; total: number; autor?: string }[]>("obtener_historial_tiradas");
+    this.historial = guardadas.map((t) => ({ hora: t.hora, comando: t.comando, total: t.total, autor: t.autor ?? "" }));
     this.#salirDelHistorial(); // los comandos anteriores (↑ ↓) también son de la partida abierta
   }
 
@@ -166,15 +169,17 @@ class Tiradas {
         this.historial = [];
       } catch (err) {
         console.error("limpiar_chat:", err);
+        // Solo el host limpia el chat de todos
+        if (esJugador) this.#anadir({ hora: horaActual(), comando: "Solo el host puede limpiar el chat", total: null });
       }
       return;
     }
 
     try {
-      const resultado = await invoke<string>("tirar_dado", { comando: cmd });
-      const [desglose, total] = resultado.split(" = ");
-      const n = Number(total);
-      this.#anadir({ hora: horaActual(), comando: desglose, total: Number.isFinite(n) ? n : null });
+      await invoke<string>("tirar_dado", { comando: cmd });
+      // La tirada ya está en el chat de la partida (con el nombre de quien tira): se vuelve a leer, así sale
+      // igual para todos y no se duplica cuando llega también como cambio
+      await this.cargar();
     } catch {
       this.#anadir({ hora: horaActual(), comando: "tirada no válida", total: null });
     }

@@ -52,12 +52,16 @@ function referencia(comandoChat: string, fragmento: string, esSuma: boolean): st
 let tirarRespuesta: (cmd: string) => string;
 let personales: string[];
 let llamadas: { cmd: string; args: Args }[];
+/** El chat de la partida (lo que guarda Rust): la más reciente primero, con el nombre de quien tiró. */
+let chat: { hora: string; comando: string; total: number; autor: string }[];
 
-async function nuevoStore() {
+async function nuevoStore(comoJugador = false) {
   vi.resetModules();
   llamadas = [];
   personales = [];
+  chat = [{ hora: "10:00", comando: "1d20 (15)", total: 15, autor: "" }];
   tirarRespuesta = (c) => `${c} (<b>7</b>) = 7`;
+  vi.doMock("$lib/modo", () => ({ esJugador: comoJugador }));
   vi.doMock("@tauri-apps/api/core", () => ({
     convertFileSrc: (p: string) => p,
     invoke: async (cmd: string, args: Args = {}) => {
@@ -65,17 +69,29 @@ async function nuevoStore() {
       if (cmd === "tirar_dado") {
         const r = tirarRespuesta(args.comando);
         if (r === "ERROR") throw "comando inválido";
+        // Rust la registra en el chat de la partida (20 como mucho), con quien la hace
+        const [comando, total] = r.split(" = ");
+        chat.unshift({ hora: "10:01", comando, total: Number(total), autor: comoJugador ? "Ana" : "" });
+        if (chat.length > 20) chat.pop();
         return r;
       }
       if (cmd === "limpiar_chat") {
+        if (comoJugador) throw "Esto solo lo puede hacer el host";
         if (!/^(clean|c)$/i.test(String(args.comando).trim())) throw "no es la orden de limpiar";
+        chat = [];
         return;
       }
       if (cmd === "obtener_historial_personal") return [...personales];
-      if (cmd === "obtener_historial_tiradas") return [{ hora: "10:00", comando: "1d20 (15)", total: 15 }];
+      if (cmd === "obtener_historial_tiradas") return structuredClone(chat);
       throw new Error("comando desconocido " + cmd);
     }
   }));
+  // Un jugador no habla con Tauri: su `invoke` es el de la conexión. Aquí, el mismo backend falso (el del host)
+  if (comoJugador) {
+    vi.doMock("$lib/backend", async () => ({ invoke: (await import("@tauri-apps/api/core")).invoke }));
+  } else {
+    vi.doUnmock("$lib/backend"); // que un test de jugador no deje su mock a los demás
+  }
   return await import("$lib/tiradas.svelte");
 }
 
@@ -138,6 +154,24 @@ describe("tirar", () => {
     await tiradas.tirar("1d20");
     expect(tiradas.historial[0]).toMatchObject({ comando: "1d20 (<b>7</b>)", total: 7 });
     expect(tiradas.historial[1]).toMatchObject({ hora: "10:00", total: 15 }); // la que venía de Rust
+  });
+
+  it("el chat es de todos: la tirada lleva el nombre de quien la hizo y las de los demás llegan al recargar", async () => {
+    const { tiradas } = await nuevoStore(true); // un jugador (se llama Ana)
+    chat.unshift({ hora: "10:02", comando: "1d8 (<b>8</b>)", total: 8, autor: "Luis" }); // la ha tirado otro
+    await tiradas.tirar("1d20");
+    expect(tiradas.historial.map((t) => [t.autor, t.total])).toEqual([["Ana", 7], ["Luis", 8], ["", 15]]);
+    // Una sola vez: no se duplica porque ahora llegue también como cambio
+    await tiradas.cargar();
+    expect(tiradas.historial).toHaveLength(3);
+  });
+
+  it("un jugador no puede limpiar el chat de todos: sale un aviso y el chat sigue", async () => {
+    const { tiradas } = await nuevoStore(true);
+    await tiradas.cargar();
+    await tiradas.tirar("clean");
+    expect(tiradas.historial[0]).toMatchObject({ comando: "Solo el host puede limpiar el chat", total: null });
+    expect(chat).toHaveLength(1);
   });
 
   it("un comando inválido deja una línea de error (total null) en vez de romper", async () => {

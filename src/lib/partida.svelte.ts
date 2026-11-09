@@ -15,6 +15,7 @@ import { enviarAviso, avisoFoco } from "$lib/avisosTablero";
 import { desplazarGrupo, encajar, ladosInstancia, rejillaDe } from "$lib/tablero";
 import { ajustesVista } from "$lib/ajustesVista.svelte";
 import { esJugador } from "$lib/modo";
+import { tiradas } from "$lib/tiradas.svelte";
 
 export interface Zona {
   id: number;
@@ -284,7 +285,8 @@ class Partida {
   }
 
   /** Relee lo que cambió. Si la zona o el mapa abiertos dejan de existir (o de verse), pasa al primero. */
-  async alCambiarPartida(partes: Partial<PartesCambiadas> = { zonas: true, mapas: true, entidades: true, definiciones: true }) {
+  async alCambiarPartida(partes: Partial<PartesCambiadas> = { zonas: true, mapas: true, entidades: true, definiciones: true, tiradas: true }) {
+    if (partes.tiradas) await tiradas.cargar(); // el chat es de todos: también llega lo que tiran los demás
     if (partes.definiciones) await this.recargarDefiniciones();
     if (partes.zonas || partes.mapas) {
       await this.recargarZonas();
@@ -588,9 +590,8 @@ class Partida {
    * 50 pasos de rueda son UN delta de 50, no 50 deltas.
    */
   cambiarValorActual(idInstancia: number, idDefinicion: number, delta: number) {
-    if (esJugador) return; // fase 2: lo pedirá al host
     const instancia = this.instancias.find((i) => i.id_instancia === idInstancia);
-    if (!instancia || delta === 0) return;
+    if (!instancia || delta === 0 || !this.controla(instancia)) return;
     const clave = claveValor(idInstancia, idDefinicion);
     const actual = valorActual(instancia, idDefinicion);
     // El máximo es solo el valor por defecto: se puede pasar de él o bajar de 0 (como en Rust)
@@ -970,6 +971,14 @@ class Partida {
   /** Mensaje de error de la última operación del editor (se muestra en la ventana) */
   errorEditor = $state("");
 
+  /**
+   * ¿Puede esta pantalla cambiar la ficha? El host, todas; un jugador, las suyas (su banco solo trae las que le
+   * ha dado el host). El host lo vuelve a comprobar con cada acción: esto solo evita ofrecer lo que va a rechazar.
+   */
+  controla(instancia: Instancia): boolean {
+    return !esJugador || this.banco.some((e) => e.id === instancia.base.id);
+  }
+
   /** Sube en cada apertura del editor: la vista lo usa de `{#key}` para crear una ventana nueva aunque pase
    *  directamente de una ficha a otra. */
   sesionEditor = $state(0);
@@ -995,7 +1004,8 @@ class Partida {
    * y no se abre nada. Pedir la que ya está abierta no hace nada. Devuelve true si se abrió la pedida.
    */
   async abrirEditorEntidad(entidad?: Entidad | null, fotoUrl: string | null = null): Promise<boolean> {
-    if (this.#abriendo || esJugador) return false; // fase 2: el jugador podrá editar sus fichas
+    // El jugador edita las fichas que ve en su banco (las suyas), pero no crea fichas nuevas
+    if (this.#abriendo || (esJugador && !entidad)) return false;
     const abierta = this.entidadEnEdicion;
     if (abierta && entidad && !this.editorEsBorrador && abierta.id === entidad.id) return false;
     this.#abriendo = true;

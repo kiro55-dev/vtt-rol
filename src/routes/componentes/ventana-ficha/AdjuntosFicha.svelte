@@ -4,6 +4,7 @@
 <script lang="ts">
   import { tick } from "svelte";
   import { esTexto, nombreArchivo, type EditorFicha } from "$lib/editorFicha.svelte";
+  import { esJugador } from "$lib/modo";
 
   let { editor }: { editor: EditorFicha } = $props();
 
@@ -153,9 +154,13 @@
       <div class="placeholder">
         <span class="nombre-centro">{nombreArchivo(ruta)}</span>
         <small>(Archivo no editable como texto)</small>
-        <button type="button" class="btn-abrir" onclick={() => editor.abrirEnSistema(ruta)}>
-          Abrir en el visor del sistema
-        </button>
+        {#if esJugador}
+          <small>Solo el host puede abrir este tipo de archivo.</small>
+        {:else}
+          <button type="button" class="btn-abrir" onclick={() => editor.abrirEnSistema(ruta)}>
+            Abrir en el visor del sistema
+          </button>
+        {/if}
       </div>
     {/if}
   </div>

@@ -7,6 +7,7 @@
 <script lang="ts">
   import { open } from "@tauri-apps/plugin-dialog";
   import { EXTENSIONES_IMAGEN, urlDeImagen } from "$lib/imagenes";
+  import { esJugador } from "$lib/modo";
   import { ZOOM_MAX, ZOOM_MIN, tamanoEnCaja, type Encuadre } from "$lib/recorteFoto";
 
   let {
@@ -17,7 +18,8 @@
   }: {
     foto: string | null;
     encuadre?: Encuadre;
-    onElegir: (origen: string) => void;
+    /** Una ruta del disco (host) o el archivo elegido en el navegador (jugador, que se sube al host). */
+    onElegir: (origen: string | File) => void;
     /** El usuario movió o acercó la foto */
     onCambio?: () => void;
   } = $props();
@@ -42,12 +44,29 @@
 
   async function elegir(e: MouseEvent) {
     e.preventDefault();
+    if (esJugador) return elegirEnNavegador();
     const ruta = await open({
       multiple: false,
       directory: false,
       filters: [{ name: "Imágenes", extensions: EXTENSIONES_IMAGEN.ficha }]
     });
     if (typeof ruta === "string") onElegir(ruta);
+  }
+
+  // En el navegador no hay rutas del disco: se elige un archivo y se sube al host (formatos rasterizados)
+  function elegirEnNavegador() {
+    const entrada = document.createElement("input");
+    entrada.type = "file";
+    entrada.accept = EXTENSIONES_IMAGEN.mapa.map((x) => `.${x}`).join(",");
+    entrada.onchange = () => entrada.files?.[0] && onElegir(entrada.files[0]);
+    entrada.click();
+  }
+
+  // Soltar una imagen sobre la caja (el navegador del jugador; en la app del host lo hace Tauri con rutas)
+  function alSoltarImagen(e: DragEvent) {
+    e.preventDefault();
+    const archivo = e.dataTransfer?.files?.[0];
+    if (esJugador && archivo) onElegir(archivo);
   }
 
   function alPulsar(e: PointerEvent) {
@@ -110,6 +129,8 @@
   tabindex="0"
   bind:this={caja}
   oncontextmenu={elegir}
+  ondragover={(e) => e.preventDefault()}
+  ondrop={alSoltarImagen}
   onpointerdown={alPulsar}
   onpointermove={alMover}
   onpointerup={alSoltar}

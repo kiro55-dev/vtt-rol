@@ -465,9 +465,12 @@ pub struct Tiradas {
     pub total: i32,
     pub comando: String,
     pub hora: String,
-    /// Quién tiró. Por ahora siempre el host; las tiradas guardadas antes del campo también son suyas.
+    /// Quién tiró (`ID_HOST` para el host; las tiradas guardadas antes del campo también son suyas).
     #[serde(default)]
     pub jugador: IdJugador,
+    /// El nombre del jugador al tirar, para escribirlo en el chat («Ana: 1d20 = 7»). Vacío si tiró el host.
+    #[serde(default)]
+    pub autor: String,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]

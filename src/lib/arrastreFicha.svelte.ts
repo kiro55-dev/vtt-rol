@@ -186,16 +186,21 @@ class ArrastreFicha {
    * Llamar en el `pointerdown` de algo que se puede arrastrar. Si el ratón se mueve más del umbral
    * empieza el arrastre; si se suelta antes, es un clic y se llama a `alClic` (si se da).
    */
-  preparar(e: PointerEvent, origen: OrigenArrastre, alClic?: () => void, agarre: ArrastreEnCurso["agarre"] = null) {
+  preparar(e: PointerEvent, pedido: OrigenArrastre, alClic?: () => void, agarre: ArrastreEnCurso["agarre"] = null) {
     if (e.button !== 0 || this.actual) return;
-    if (esJugador) {
-      // Fase 1: el jugador aún no mueve fichas (docs/red.md). Un clic sigue siendo un clic (foco).
-      const alSoltar = () => {
-        window.removeEventListener("pointerup", alSoltar);
-        alClic?.();
-      };
-      window.addEventListener("pointerup", alSoltar);
-      return;
+    let origen = pedido;
+    if (esJugador && "instancia" in pedido) {
+      if (!partida.controla(pedido.instancia)) {
+        // Una ficha de otro: no se puede llevar a ningún sitio, pero un clic sigue siendo un clic (foco)
+        const alSoltar = () => {
+          window.removeEventListener("pointerup", alSoltar);
+          alClic?.();
+        };
+        window.addEventListener("pointerup", alSoltar);
+        return;
+      }
+      // En un grupo, solo van las suyas
+      origen = { ...pedido, grupo: pedido.grupo?.filter((i) => partida.controla(i)) };
     }
     this.#terminar();
     const inicio = { x: e.clientX, y: e.clientY };
@@ -253,6 +258,8 @@ class ArrastreFicha {
     // ahí y luego se pasa al orden completo, que es el que guarda Rust
     const orden = partida.instanciasVisibles.map((i) => i.id_instancia);
     const accion = accionAlSoltar(origen, a.zona, casilla, orden, a.indice);
+    // El orden de «Fichas activas» es de todos: lo cambia el host
+    if (esJugador && accion?.tipo === "reordenar") return;
     if (accion?.tipo === "reordenar") {
       accion.ids = reordenarConOcultas(partida.instanciasOrdenadas.map((i) => i.id_instancia), accion.ids);
     }

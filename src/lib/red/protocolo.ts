@@ -5,11 +5,20 @@
 import type { AvisoTablero } from "$lib/avisosTablero";
 import type { DefinicionParametro, Entidad, Instancia, Mapa, Zona } from "$lib/partida.svelte";
 
-export const VERSION_PROTOCOLO = 2;
+export const VERSION_PROTOCOLO = 3;
 
 export interface Jugador {
   id: number;
   nombre: string;
+}
+
+/** Una tirada del chat (`Tiradas` en Rust). `autor` es el nombre de quien tiró, vacío si fue el host. */
+export interface TiradaChat {
+  total: number;
+  comando: string;
+  hora: string;
+  jugador: number;
+  autor: string;
 }
 
 /** `red::vista::VistaJugador`: lo que ve este jugador de la partida (lo mismo que lee la app, filtrado). */
@@ -19,6 +28,8 @@ export interface VistaJugador {
   instancias: Instancia[];
   entidades: Entidad[];
   definiciones: DefinicionParametro[];
+  /** El chat de tiradas, de todos, la más reciente primero. */
+  historial_tiradas: TiradaChat[];
 }
 
 /** `red::vista::Cambios`: lo que no aparece, sigue igual. */
@@ -32,11 +43,14 @@ export interface Cambios {
   entidades?: Entidad[];
   entidades_quitadas?: number[];
   definiciones?: DefinicionParametro[];
+  historial_tiradas?: TiradaChat[];
 }
 
 export type MensajeCliente =
   | { tipo: "Hola"; version: number; sala: string; secreto: string; prueba?: string }
-  | { tipo: "Unirse"; nombre: string; contrasena?: string };
+  | { tipo: "Unirse"; nombre: string; contrasena?: string }
+  /** Una acción del jugador: `peticion` es `{ cmd, ...args }` (un comando de la lista blanca del host). */
+  | { tipo: "Pedir"; id: number; peticion: Record<string, unknown> };
 
 export type MensajeHost =
   | { tipo: "Reto"; reto: string }
@@ -46,4 +60,6 @@ export type MensajeHost =
   | { tipo: "Vista"; vista: VistaJugador }
   | { tipo: "Cambios"; cambios: Cambios }
   | { tipo: "Aviso"; aviso: AvisoTablero }
+  /** La respuesta a un `Pedir`, después de los `Cambios` que provocó. */
+  | { tipo: "Respuesta"; id: number; ok?: unknown; error?: string }
   | { tipo: "SalaCerrada" };

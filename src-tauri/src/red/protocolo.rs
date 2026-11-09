@@ -21,7 +21,7 @@ use crate::tablero_general::modelos::Jugador;
 use crate::tablero_general::tablero::AvisoTablero;
 
 /// Súbelo cuando cambie cualquier mensaje.
-pub const VERSION_PROTOCOLO: u32 = 2;
+pub const VERSION_PROTOCOLO: u32 = 3;
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 #[serde(tag = "tipo")]
@@ -39,6 +39,9 @@ pub enum MensajeCliente {
         #[serde(default)]
         contrasena: Option<String>,
     },
+    /// Una acción del jugador (ver peticiones.rs): `peticion` es `{ cmd, ...args }`, un comando de la lista
+    /// blanca. El host contesta con `Respuesta` del mismo `id`.
+    Pedir { id: u32, peticion: serde_json::Value },
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
@@ -75,6 +78,15 @@ pub enum MensajeHost {
     Aviso {
         aviso: AvisoTablero,
     },
+    /// La respuesta a un `Pedir`: lo que contestaría el comando (`ok`) o por qué no se pudo (`error`). Llega
+    /// después de los `Cambios` que provocó la acción, porque va por el mismo canal.
+    Respuesta {
+        id: u32,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        ok: Option<serde_json::Value>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        error: Option<String>,
+    },
     /// El host cerró la sala (o la aplicación).
     SalaCerrada,
 }
@@ -87,14 +99,19 @@ mod tests {
     #[test]
     fn los_mensajes_tienen_la_forma_que_espera_el_cliente_web() {
         let hola: MensajeCliente =
-            serde_json::from_str(r#"{"tipo":"Hola","version":1,"sala":"s","secreto":"k"}"#).unwrap();
-        assert_eq!(hola, MensajeCliente::Hola { version: 1, sala: "s".into(), secreto: "k".into(), prueba: None });
+            serde_json::from_str(r#"{"tipo":"Hola","version":3,"sala":"s","secreto":"k"}"#).unwrap();
+        assert_eq!(hola, MensajeCliente::Hola { version: 3, sala: "s".into(), secreto: "k".into(), prueba: None });
         let unirse: MensajeCliente = serde_json::from_str(r#"{"tipo":"Unirse","nombre":"Ana"}"#).unwrap();
         assert_eq!(unirse, MensajeCliente::Unirse { nombre: "Ana".into(), contrasena: None });
         assert!(serde_json::from_str::<MensajeCliente>(r#"{"tipo":"Otro"}"#).is_err());
 
         let json = |m: &MensajeHost| serde_json::to_string(m).unwrap();
         assert_eq!(json(&MensajeHost::SalaCerrada), r#"{"tipo":"SalaCerrada"}"#);
+        let pedir: MensajeCliente =
+            serde_json::from_str(r#"{"tipo":"Pedir","id":7,"peticion":{"cmd":"tirar_dado","comando":"1d6"}}"#).unwrap();
+        assert_eq!(pedir, MensajeCliente::Pedir { id: 7, peticion: serde_json::json!({ "cmd": "tirar_dado", "comando": "1d6" }) });
+        assert_eq!(json(&MensajeHost::Respuesta { id: 7, ok: Some(serde_json::json!("x")), error: None }), r#"{"tipo":"Respuesta","id":7,"ok":"x"}"#);
+        assert_eq!(json(&MensajeHost::Respuesta { id: 8, ok: None, error: Some("no".into()) }), r#"{"tipo":"Respuesta","id":8,"error":"no"}"#);
         assert_eq!(
             json(&MensajeHost::Identificate { pide_contrasena: true, error: None }),
             r#"{"tipo":"Identificate","pide_contrasena":true}"#

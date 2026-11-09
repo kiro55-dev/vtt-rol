@@ -301,7 +301,8 @@ export class EditorFicha {
     }
   }
 
-  async ponerFoto(origen: string) {
+  /** `origen`: una ruta del disco (host) o el archivo que eligió el jugador en su navegador (se sube al host). */
+  async ponerFoto(origen: string | File) {
     try {
       const nueva = await importarImagen(origen, "ficha");
       if (nueva !== this.entidad.foto_url) {

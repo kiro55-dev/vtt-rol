@@ -13,6 +13,7 @@
   import { esImagen } from "$lib/imagenes";
   import { alSoltarArchivos } from "$lib/soltarArchivos";
   import { moverVentana } from "$lib/moverVentana";
+  import { esJugador } from "$lib/modo";
   import CajaFoto from "./ventana-ficha/CajaFoto.svelte";
   import CampoNumero from "./ventana-ficha/CampoNumero.svelte";
   import AdjuntosFicha from "./ventana-ficha/AdjuntosFicha.svelte";
@@ -147,20 +148,25 @@
             <option value="Jugador">Jugador</option>
           </select>
 
-          <label class="check" style="margin-left: 8px;">
-            <input type="checkbox" bind:checked={ficha.es_unico} />
-            <span title="Si es único solo existirá una instancia en el mundo">Único</span>
-          </label>
+          {#if !esJugador}
+            <label class="check" style="margin-left: 8px;">
+              <input type="checkbox" bind:checked={ficha.es_unico} />
+              <span title="Si es único solo existirá una instancia en el mundo">Único</span>
+            </label>
+          {/if}
         </div>
 
-        <div class="fila">
-          <label for="f-zona">Zona asociada:</label>
-          <select id="f-zona" class="select" bind:value={ficha.zona_id}>
-            {#each partida.zonasOrdenadas as z (z.id)}
-              <option value={z.id}>{z.nombre}</option>
-            {/each}
-          </select>
-        </div>
+        <!-- La zona, si es única y de quién es una ficha lo decide el host: el jugador no lo cambia -->
+        {#if !esJugador}
+          <div class="fila">
+            <label for="f-zona">Zona asociada:</label>
+            <select id="f-zona" class="select" bind:value={ficha.zona_id}>
+              {#each partida.zonasOrdenadas as z (z.id)}
+                <option value={z.id}>{z.nombre}</option>
+              {/each}
+            </select>
+          </div>
+        {/if}
       </div>
     </div>
 
@@ -171,7 +177,7 @@
     {/if}
 
     <div class="pie">
-      {#if !editor.esBorrador}
+      {#if !editor.esBorrador && !esJugador}
         <button type="button" class="btn-borrar" onclick={() => editor.borrar()} disabled={editor.guardando}>Borrar ficha</button>
       {/if}
       <div class="botones-derecha">

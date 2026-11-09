@@ -13,13 +13,14 @@
 //  * La identidad de la sala (enlace, contraseña, jugadores recordados) está en `sala.json`, que es solo del
 //    host: no pasa por el estado ni por los deltas.
 pub mod comandos;
+pub mod peticiones;
 pub mod protocolo;
 pub mod sala;
 pub mod servidor;
 pub mod tunel;
 pub mod vista;
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
@@ -28,6 +29,7 @@ use std::time::{Duration, Instant};
 use serde::Serialize;
 use tokio::sync::{mpsc, oneshot};
 
+use crate::red::peticiones::Peticion;
 use crate::red::protocolo::MensajeHost;
 use crate::red::sala::SalaGuardada;
 use crate::red::vista::{VistaJugador, diferencias, vista_para};
@@ -98,6 +100,9 @@ struct SalaAbierta {
     fallos: VecDeque<Instant>,
     apagar_servidor: Option<oneshot::Sender<()>>,
     proceso_tunel: Option<tokio::process::Child>,
+    /// Imágenes que ha subido cada jugador en esta sala (rutas relativas): solo él las puede ver y usar en
+    /// su ficha, y las puede descartar si no las usa. Con un tope por jugador.
+    subidas: HashMap<IdJugador, HashSet<String>>,
     /// Para que una apertura que se canceló (se cerró la sala a mitad) no pise a la siguiente.
     generacion: u64,
 }
@@ -125,7 +130,16 @@ pub struct Red {
     /// Orígenes desde los que se acepta el WebSocket (el del cliente web y, en desarrollo, localhost).
     pub(crate) origenes: Vec<String>,
     siguiente_id: AtomicU64,
+    /// Emite un evento al front del host (`partida-cambiada`, `aviso-tablero`). Lo pone lib.rs.
+    emisor: Mutex<Option<Box<dyn Fn(&str, serde_json::Value) + Send + Sync>>>,
+    /// Ejecuta lo que pide un jugador (peticiones::ejecutar con el `AppHandle`). Lo pone lib.rs.
+    ejecutor: Mutex<Option<Ejecutor>>,
 }
+
+type Ejecutor = Arc<dyn Fn(IdJugador, Peticion) -> Result<serde_json::Value, String> + Send + Sync>;
+
+/// Imágenes que puede subir un jugador en una sala.
+const MAX_SUBIDAS_POR_JUGADOR: usize = 20;
 
 /// La `Red` de la aplicación, para el enganche de `partida::registrar` (que no tiene el `AppState` a mano).
 /// En los tests no se instala: `tras_cambio` no hace nada.
@@ -166,7 +180,30 @@ impl Red {
             al_cambiar: Mutex::new(None),
             origenes,
             siguiente_id: AtomicU64::new(1),
+            emisor: Mutex::new(None),
+            ejecutor: Mutex::new(None),
         }
+    }
+
+    pub fn poner_emisor(&self, f: impl Fn(&str, serde_json::Value) + Send + Sync + 'static) {
+        *bloquear(&self.emisor) = Some(Box::new(f));
+    }
+
+    pub fn poner_ejecutor(&self, f: impl Fn(IdJugador, Peticion) -> Result<serde_json::Value, String> + Send + Sync + 'static) {
+        *bloquear(&self.ejecutor) = Some(Arc::new(f));
+    }
+
+    /// Un evento para la pantalla del host (relee o pinta lo que llega de un jugador).
+    pub(crate) fn emitir(&self, evento: &str, payload: serde_json::Value) {
+        if let Some(f) = bloquear(&self.emisor).as_ref() {
+            f(evento, payload);
+        }
+    }
+
+    /// Hace lo que pide un jugador (ya decodificado), o dice por qué no. Bloqueante: llamar desde `spawn_blocking`.
+    pub(crate) fn ejecutar_peticion(&self, jugador: IdJugador, p: Peticion) -> Result<serde_json::Value, String> {
+        let ejecutor = bloquear(&self.ejecutor).clone().ok_or("El host no está listo")?;
+        ejecutor(jugador, p)
     }
 
     pub fn al_cambiar(&self, f: impl Fn() + Send + Sync + 'static) {
@@ -239,6 +276,7 @@ impl Red {
                 tunel: None,
                 conexiones: HashMap::new(),
                 sesiones: HashMap::new(),
+                subidas: HashMap::new(),
                 fallos: VecDeque::new(),
                 apagar_servidor: None,
                 proceso_tunel: None,
@@ -357,6 +395,7 @@ impl Red {
         })?;
         if let Some(s) = self.dentro().as_mut() {
             s.sesiones.clear();
+            s.subidas.clear();
             for (_, c) in s.conexiones.drain() {
                 let _ = c.enviar.send(MensajeHost::Rechazado { motivo: "El host ha cambiado el enlace de la sala".into() });
             }
@@ -377,6 +416,7 @@ impl Red {
         })?;
         if let Some(c) = self.dentro().as_mut().and_then(|s| {
             s.sesiones.remove(&id);
+            s.subidas.remove(&id);
             s.conexiones.remove(&id)
         }) {
             let _ = c.enviar.send(MensajeHost::Rechazado { motivo: "El host te ha sacado de la sala".into() });
@@ -404,6 +444,33 @@ impl Red {
                 c.ultima = nueva;
             }
         }
+    }
+
+    /// Ping o recorrido de un jugador: lo ven el host y los demás jugadores (no él, que ya lo dibujó).
+    pub(crate) fn reenviar_aviso(&self, de: IdJugador, aviso: &AvisoTablero) {
+        if let Some(s) = self.dentro().as_ref() {
+            for (_, c) in s.conexiones.iter().filter(|(id, _)| **id != de) {
+                let _ = c.enviar.send(MensajeHost::Aviso { aviso: aviso.clone() });
+            }
+        }
+        self.emitir("aviso-tablero", serde_json::to_value(aviso).unwrap_or_default());
+    }
+
+    /// Lo que ha subido `jugador` en esta sala.
+    pub(crate) fn subidas_de(&self, jugador: IdJugador) -> HashSet<String> {
+        self.dentro().as_ref().and_then(|s| s.subidas.get(&jugador).cloned()).unwrap_or_default()
+    }
+
+    /// Anota una imagen subida. `Err` si ya subió demasiadas.
+    pub(crate) fn anotar_subida(&self, jugador: IdJugador, ruta: String) -> Result<(), String> {
+        let mut dentro = self.dentro();
+        let s = dentro.as_mut().ok_or("La sala se ha cerrado")?;
+        let suyas = s.subidas.entry(jugador).or_default();
+        if !suyas.contains(&ruta) && suyas.len() >= MAX_SUBIDAS_POR_JUGADOR {
+            return Err("Has subido demasiadas imágenes".into());
+        }
+        suyas.insert(ruta);
+        Ok(())
     }
 
     /// Ping y recorrido del host: a todos, si son de un mapa compartido.
@@ -507,6 +574,7 @@ impl Red {
             tunel: Some("prueba.local".into()),
             conexiones: HashMap::new(),
             sesiones: HashMap::new(),
+            subidas: HashMap::new(),
             fallos: VecDeque::new(),
             apagar_servidor: None,
             proceso_tunel: None,
@@ -527,6 +595,7 @@ impl Red {
             tunel: None,
             conexiones: HashMap::new(),
             sesiones: HashMap::new(),
+            subidas: HashMap::new(),
             fallos: VecDeque::new(),
             apagar_servidor: None,
             proceso_tunel: None,

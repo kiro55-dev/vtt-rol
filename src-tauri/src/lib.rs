@@ -81,6 +81,14 @@ pub fn run() {
             state.red.al_cambiar(move || {
                 let _ = avisador.emit("sala-cambiada", ());
             });
+            // Lo que el jugador pide al host se ejecuta con las mismas funciones que los comandos de Tauri, y la
+            // pantalla del host se entera (relee, o pinta el ping de un jugador)
+            let emisor = app.handle().clone();
+            state.red.poner_emisor(move |evento, payload| {
+                let _ = emisor.emit(evento, payload);
+            });
+            let (handle, red) = (app.handle().clone(), state.red.clone());
+            state.red.poner_ejecutor(move |jugador, peticion| red::peticiones::ejecutar(&handle, &red, jugador, peticion));
             red::instalar(state.red.clone());
             app.manage(state);
             iniciar_autoguardado(app.handle().clone());
