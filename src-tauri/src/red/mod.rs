@@ -48,8 +48,6 @@ pub const URL_CLIENTE: &str = match option_env!("OPENROLL_URL_CLIENTE") {
 /// Fallos de contraseña permitidos por conexión antes de echarla, y en total por minuto.
 const FALLOS_POR_CONEXION: u32 = 5;
 const FALLOS_POR_MINUTO: usize = 20;
-/// Jugadores nuevos por minuto (cada alta queda en la partida para siempre).
-const ALTAS_POR_MINUTO: usize = 5;
 /// Conexiones que pueden estar a la vez saludando o escribiendo su nombre (sin ser aún nadie).
 pub(crate) const MAX_SIN_IDENTIFICAR: usize = 16;
 
@@ -102,8 +100,6 @@ struct SalaAbierta {
     sesiones: HashMap<IdJugador, String>,
     /// Fallos de contraseña del último minuto, de cualquier conexión.
     fallos: VecDeque<Instant>,
-    /// Altas de jugadores nuevos del último minuto.
-    altas: VecDeque<Instant>,
     apagar_servidor: Option<oneshot::Sender<()>>,
     proceso_tunel: Option<tokio::process::Child>,
     /// Imágenes que ha subido cada jugador en esta sala (rutas relativas): solo él las puede ver y usar en
@@ -358,7 +354,6 @@ impl Red {
                 sesiones: HashMap::new(),
                 subidas: HashMap::new(),
                 fallos: VecDeque::new(),
-                altas: VecDeque::new(),
                 apagar_servidor: None,
                 proceso_tunel: None,
                 generacion,
@@ -607,21 +602,6 @@ impl Red {
         s.fallos.len() <= FALLOS_POR_MINUTO
     }
 
-    /// Anota un alta nueva si no se pasó del límite por minuto. `false`: ahora no se admiten más.
-    fn anotar_alta(&self) -> bool {
-        let mut dentro = self.dentro();
-        let Some(s) = dentro.as_mut() else { return false };
-        let ahora = Instant::now();
-        while s.altas.front().is_some_and(|t| ahora.duration_since(*t) > Duration::from_secs(60)) {
-            s.altas.pop_front();
-        }
-        if s.altas.len() >= ALTAS_POR_MINUTO {
-            return false;
-        }
-        s.altas.push_back(ahora);
-        true
-    }
-
     fn demasiados_fallos(&self) -> bool {
         let dentro = self.dentro();
         let Some(s) = dentro.as_ref() else { return true };
@@ -700,7 +680,6 @@ impl Red {
             sesiones: HashMap::new(),
             subidas: HashMap::new(),
             fallos: VecDeque::new(),
-            altas: VecDeque::new(),
             apagar_servidor: None,
             proceso_tunel: None,
             generacion: 0,
@@ -722,7 +701,6 @@ impl Red {
             sesiones: HashMap::new(),
             subidas: HashMap::new(),
             fallos: VecDeque::new(),
-            altas: VecDeque::new(),
             apagar_servidor: None,
             proceso_tunel: None,
             generacion: 0,

@@ -295,16 +295,10 @@ async fn identificar(red: &Arc<Red>, tx: &mut Emisor, rx: &mut Receptor, pide_co
             continue;
         }
 
-        // Alta en la partida (un delta normal, bajo el lock del estado). Con tope por minuto: solo cuenta la que
-        // se va a hacer de verdad (un nombre repetido no gasta el cupo). Estado → red.
+        // Alta en la partida (un delta normal, bajo el lock del estado)
         let alta = {
             let mut est = red.estado_partida();
-            jugadores::registrar(&est, &nombre).and_then(|delta| {
-                if !red.anotar_alta() {
-                    return Err("Están entrando demasiados jugadores nuevos: espera un minuto".to_string());
-                }
-                Ok(delta)
-            }).map(|delta| {
+            jugadores::registrar(&est, &nombre).map(|delta| {
                 let DeltaPartida::JugadorRegistrado(j) = &delta else { unreachable!("registrar da de alta") };
                 let j = j.clone();
                 partida::registrar(&mut est, &red.almacen, delta);

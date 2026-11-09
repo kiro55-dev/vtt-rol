@@ -69,8 +69,8 @@ https://kiro55-dev.github.io/vtt-rol/#t=…&s=…&k=…
   `parsear_comando` y el desglose lo forma Rust con números; además el front lo pinta con `desgloseSeguro`.
 - **Adjuntos de jugadores** (fase 2): solo `.txt` (`adjunto_permitido_a_jugador`). PDF prohibidos.
 - **Topes contra el abuso** (quien tenga el enlace no puede romper la partida ni llenar el disco del host):
-  - Altas: máximo `MAX_JUGADORES` (32) en la partida y `ALTAS_POR_MINUTO` (5); como mucho `MAX_SIN_IDENTIFICAR`
-    (16) conexiones a la vez sin ser nadie, con 180 s para escribir el nombre.
+  - Altas: máximo `MAX_JUGADORES` (32) en la partida; como mucho `MAX_SIN_IDENTIFICAR` (16) conexiones a la
+    vez sin ser nadie, con 180 s para escribir el nombre.
   - Nombres: sin caracteres invisibles ni de control o de dirección (U+202E…), sin repetir el de otro jugador
     (da igual mayúsculas y espacios) y sin los reservados («rollmaster», «host», «máster»…), para que nadie se haga
     pasar por otro en el chat (`jugadores::registrar`). Los nombres de ficha tampoco admiten esos caracteres.
