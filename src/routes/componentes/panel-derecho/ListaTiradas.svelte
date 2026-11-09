@@ -16,7 +16,7 @@
       title={t.total === null ? undefined : "Arrastra sobre un valor de una ficha: botón izquierdo quita, derecho suma"}
       onpointerdown={(e) => t.total !== null && arrastreTirada.preparar(e, t.total)}
     >
-      {#if t.total !== null}<span class="hora">{t.autor || "rollmaster"}</span>{/if}
+      {#if t.total !== null}<span class="hora">{t.autor || "rollmaster"}{t.publica === false ? " · privada" : ""}</span>{/if}
       <!-- @html a propósito: Rust devuelve el desglose con <b> para resaltar el dado ganador. Lo genera
            solo Rust con números y palabras fijas (el comando escrito nunca llega aquí), y además
            `desgloseSeguro` escapa todo salvo <b> y </b>. -->

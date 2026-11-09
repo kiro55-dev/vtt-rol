@@ -15,6 +15,8 @@ export interface Tirada {
   total: number | null;
   /** Quién tiró (su nombre), para el chat compartido: «Ana: 1d20 (7) = 7». Vacío si fue el host. */
   autor?: string;
+  /** `false`: solo la ve el host (una tirada privada). */
+  publica?: boolean;
 }
 
 const MAX_TIRADAS = 20;
@@ -97,6 +99,8 @@ class Tiradas {
   historial = $state<Tirada[]>([]);
   /** Lo que hay escrito en la caja de comandos. */
   comando = $state("");
+  /** Solo el host: si las tiradas que hace las ven los jugadores (casilla de la barra de dados). */
+  publica = $state(true);
 
   // Navegación por los comandos anteriores con ↑ ↓, como en una terminal.
   #anteriores: string[] = [];
@@ -108,8 +112,8 @@ class Tiradas {
   /** Carga el historial guardado en Rust. */
   async cargar() {
     // El chat es de todos: cada tirada lleva el nombre de quien la hizo (`autor`, vacío si fue el host)
-    const guardadas = await invoke<{ hora: string; comando: string; total: number; autor?: string }[]>("obtener_historial_tiradas");
-    this.historial = guardadas.map((t) => ({ hora: t.hora, comando: t.comando, total: t.total, autor: t.autor ?? "" }));
+    const guardadas = await invoke<{ hora: string; comando: string; total: number; autor?: string; publica?: boolean }[]>("obtener_historial_tiradas");
+    this.historial = guardadas.map((t) => ({ hora: t.hora, comando: t.comando, total: t.total, autor: t.autor ?? "", publica: t.publica ?? true }));
     this.#salirDelHistorial(); // los comandos anteriores (↑ ↓) también son de la partida abierta
   }
 
@@ -176,7 +180,8 @@ class Tiradas {
     }
 
     try {
-      await invoke<string>("tirar_dado", { comando: cmd });
+      // Solo el host puede tirar en privado (las de los jugadores son siempre públicas)
+      await invoke<string>("tirar_dado", esJugador ? { comando: cmd } : { comando: cmd, publica: this.publica });
       // La tirada ya está en el chat de la partida (con el nombre de quien tira): se vuelve a leer, así sale
       // igual para todos y no se duplica cuando llega también como cambio
       await this.cargar();

@@ -88,6 +88,7 @@
         conexion.conectar();
         await conexion.lista;
         await partida.iniciar();
+        await tiradas.cargar(); // el chat de la partida ya está ahí al entrar
         return;
       }
       await partida.iniciar();

@@ -327,7 +327,7 @@ pub fn ejecutar_en(state: &AppState, red: &Red, jugador: IdJugador, p: Peticion)
         serde_json::json!({ "entidades": true })
     };
     let resultado = match p {
-        Peticion::TirarDado { comando } => json(tirar_dado_de(state, jugador, &comando)?),
+        Peticion::TirarDado { comando } => json(tirar_dado_de(state, jugador, &comando, true)?),
         Peticion::ObtenerHistorialPersonal => unreachable!("se contesta antes"),
         Peticion::MoverInstancia { id_instancia, destino } => json(partida::mover_instancia_en(id_instancia, destino, state)?),
         Peticion::MoverInstancias { ids, id_mapa, dx, dy } => json(partida::mover_instancias_en(ids, id_mapa, dx, dy, state)?),

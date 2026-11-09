@@ -476,6 +476,13 @@ pub struct Tiradas {
     /// El nombre del jugador al tirar, para escribirlo en el chat («Ana: 1d20 = 7»). Vacío si tiró el host.
     #[serde(default)]
     pub autor: String,
+    /// Si los jugadores la ven. Solo el host puede tirar en privado; las de los jugadores son siempre públicas.
+    #[serde(default = "tirada_publica")]
+    pub publica: bool,
+}
+
+fn tirada_publica() -> bool {
+    true
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]

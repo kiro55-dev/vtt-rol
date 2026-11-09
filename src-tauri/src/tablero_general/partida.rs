@@ -97,7 +97,7 @@ pub fn procesar_delta(state: &AppState, delta: DeltaPartida) {
 // Recibe el desglose y el total por separado: releer el total de un texto con `parse().unwrap_or(0)`
 // guardaba un 0 silencioso cuando el número no cabía.
 // `jugador` es quien tiró (`ID_HOST` o un jugador de la sala): su nombre se guarda en la tirada para el chat.
-pub fn registrar_tirada(state: &AppState, jugador: IdJugador, desglose: &str, total: i32) {
+pub fn registrar_tirada(state: &AppState, jugador: IdJugador, desglose: &str, total: i32, publica: bool) {
     let mut est = state.lock();
     let autor = est.jugadores.iter().find(|j| j.id == jugador).map(|j| j.nombre.clone()).unwrap_or_default();
     let tirada = Tiradas {
@@ -106,6 +106,7 @@ pub fn registrar_tirada(state: &AppState, jugador: IdJugador, desglose: &str, to
         hora: chrono::Local::now().format("%H:%M").to_string(),
         jugador,
         autor,
+        publica,
     };
 
     registrar(&mut est, &state.almacen, DeltaPartida::TiradaRealizada(tirada));

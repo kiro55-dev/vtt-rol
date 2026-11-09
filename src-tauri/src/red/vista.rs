@@ -13,7 +13,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::tablero_general::estado::EstadoPartida;
-use crate::tablero_general::modelos::{DefinicionParametro, Entidad, IdJugador, Instancia, Mapa, Tiradas, Zona};
+use crate::tablero_general::modelos::{DefinicionParametro, Entidad, IdJugador, Instancia, Mapa, Tiradas, Zona, ID_HOST};
 use crate::tablero_general::visibilidad;
 
 #[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq)]
@@ -91,7 +91,8 @@ pub fn vista_para(jugador: IdJugador, est: &EstadoPartida) -> VistaJugador {
     let definiciones = est.definiciones_parametros.iter().filter(|d| usadas.contains(&d.id)).cloned().collect();
     VistaJugador {
         zonas, mapas, instancias, entidades, definiciones,
-        historial_tiradas: est.historial_tiradas.clone(),
+        // Las tiradas privadas del host no salen (las de los jugadores son siempre públicas)
+        historial_tiradas: est.historial_tiradas.iter().filter(|t| t.publica || jugador == ID_HOST).cloned().collect(),
         mapa_visible: visibilidad::mapa_visible(est),
     }
 }
@@ -322,7 +323,7 @@ mod tests {
         let antes = vista_para(7, &e);
         assert!(antes.historial_tiradas.is_empty());
 
-        let tirada = |jugador, autor: &str| Tiradas { total: 9, comando: "1d10 (9)".into(), hora: "10:00".into(), jugador, autor: autor.into() };
+        let tirada = |jugador, autor: &str| Tiradas { total: 9, comando: "1d10 (9)".into(), hora: "10:00".into(), jugador, autor: autor.into(), publica: true };
         e.aplicar_delta(&DeltaPartida::TiradaRealizada(tirada(1, "Ana")));
         let despues = vista_para(7, &e);
         assert_eq!(despues.historial_tiradas[0].autor, "Ana", "un jugador ve lo que tira otro");
@@ -338,6 +339,19 @@ mod tests {
         assert_eq!(vista_para(1, &e).historial_tiradas.len(), 2);
         e.aplicar_delta(&DeltaPartida::HistorialTiradasLimpiado);
         assert!(diferencias(&despues, &vista_para(7, &e)).unwrap().historial_tiradas.unwrap().is_empty());
+    }
+
+    #[test]
+    fn las_tiradas_privadas_del_host_no_llegan_a_los_jugadores() {
+        let mut e = estado();
+        let tirada = |publica| Tiradas { total: 9, comando: "1d10 (9)".into(), hora: "10:00".into(), jugador: 0, autor: String::new(), publica };
+        e.aplicar_delta(&DeltaPartida::TiradaRealizada(tirada(true)));
+        let antes = vista_para(7, &e);
+        e.aplicar_delta(&DeltaPartida::TiradaRealizada(tirada(false)));
+        let despues = vista_para(7, &e);
+        assert_eq!(despues.historial_tiradas.len(), 1, "solo la pública");
+        assert_eq!(diferencias(&antes, &despues), None, "y ni se entera de la privada");
+        assert_eq!(vista_para(ID_HOST, &e).historial_tiradas.len(), 2, "el host las ve todas");
     }
 
     #[test]

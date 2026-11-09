@@ -138,7 +138,7 @@ su pantalla relee. Las peticiones de un jugador se ejecutan **en orden**, una a 
 - **Chat compartido.** `tirar_dado_de(estado, jugador, comando)` lo procesa el Rust del host y lo registra en el
   chat con el nombre de quien tira (`Tiradas.autor`, vacío si es el host). El chat entero va en la vista de cada
   jugador (`historial_tiradas`) y en los `Cambios`: todos ven las tiradas de todos, como «Ana: 1d20 (7) = 7».
-  `clean`/`c` solo lo puede usar el host. El historial personal (↑ ↓) de cada jugador se guarda en el disco del host (`historial_jugador_<id>.txt`, máx. 100) y lo recupera al reconectar (`obtener_historial_personal`); se borra al quitarlo de la partida.
+  `clean`/`c` solo lo puede usar el host, y solo el host puede tirar en privado (casilla «Pública» de la barra de dados: desmarcada, la tirada no llega a los jugadores). El historial personal (↑ ↓) de cada jugador se guarda en el disco del host (`historial_jugador_<id>.txt`, máx. 100) y lo recupera al reconectar (`obtener_historial_personal`); se borra al quitarlo de la partida.
 - **Pantalla del host.** Tras una acción de un jugador el host emite `partida-cambiada` (`tiradas` o `entidades`)
   y su store relee (`partida.alCambiarPartida`); el ping y el recorrido de un jugador llegan al host como el
   evento `aviso-tablero` y a los demás jugadores como `Aviso`.
