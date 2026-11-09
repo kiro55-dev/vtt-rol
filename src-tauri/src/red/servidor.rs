@@ -417,9 +417,6 @@ async fn subir(State(red): State<Arc<Red>>, cabeceras: HeaderMap, Query(p): Quer
     let Some(dir) = red.dir_sala() else {
         return StatusCode::NOT_FOUND.into_response();
     };
-    if !red.estado_partida().banco_entidades.iter().any(|e| e.propietarios.contains(&jugador)) {
-        return (StatusCode::FORBIDDEN, "No tienes ninguna ficha").into_response();
-    }
     let guardada = tokio::task::spawn_blocking(move || crate::tablero_general::imagenes::importar_bytes(&dir, &cuerpo, &p.ext)).await;
     let ruta = match guardada {
         Ok(Ok(ruta)) => ruta,
@@ -916,7 +913,6 @@ mod tests {
 
         assert_eq!(subir(&sesion, "png", png(), false).await.unwrap().status(), 403, "sin origen de la página");
         assert_eq!(subir("otra", "png", png(), true).await.unwrap().status(), 403, "sin sesión");
-        assert_eq!(subir(&sesion_luis, "png", png(), true).await.unwrap().status(), 403, "Luis no tiene ficha");
         assert_eq!(subir(&sesion, "png", b"esto no es una imagen".to_vec(), true).await.unwrap().status(), 400);
         assert_eq!(subir(&sesion, "svg", png(), true).await.unwrap().status(), 400, "SVG no");
         assert_eq!(subir(&sesion, "jpg", png(), true).await.unwrap().status(), 400, "no es del tipo que dice");

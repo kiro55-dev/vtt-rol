@@ -8,6 +8,7 @@
   import { alSoltarArchivos } from "$lib/soltarArchivos";
   import { arrastre } from "$lib/arrastreFicha.svelte";
   import { arrastreJugador } from "$lib/arrastreJugador.svelte";
+  import { esJugador } from "$lib/modo";
 
   // Soltar aquí una instancia la elimina: se marca el banco mientras pasa por encima
   const recibeInstancia = $derived(arrastre.actual?.zona === "banco" && "instancia" in arrastre.actual.origen);
@@ -98,9 +99,35 @@
       }
     })
   );
+
+  // Un jugador arrastra la imagen desde su navegador (no hay rutas del disco): se sube al host y se abre la ficha nueva
+  function alSoltarEnElNavegador(e: DragEvent) {
+    if (!esJugador) return;
+    e.preventDefault();
+    const archivo = e.dataTransfer?.files?.[0];
+    if (archivo) void ficharDesdeArchivo(archivo);
+  }
+
+  async function ficharDesdeArchivo(archivo: File) {
+    try {
+      const fotoUrl = await importarImagen(archivo, "ficha");
+      if (!(await partida.abrirEditorEntidad(null, fotoUrl))) {
+        invoke("descartar_archivos_borrador", { rutas: [fotoUrl] }).catch(() => {});
+      }
+    } catch (err) {
+      partida.avisar(`No se pudo usar la imagen: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
 </script>
 
-<div class="banco" data-destino="banco" class:destino={recibeInstancia}>
+<!-- svelte-ignore a11y_no_static_element_interactions -->
+<div
+  class="banco"
+  data-destino="banco"
+  class:destino={recibeInstancia}
+  ondragover={(e) => esJugador && e.preventDefault()}
+  ondrop={alSoltarEnElNavegador}
+>
   <!-- Zona de búsqueda y filtros -->
   <div class="sub-busqueda">
     <div class="fila-cabecera">

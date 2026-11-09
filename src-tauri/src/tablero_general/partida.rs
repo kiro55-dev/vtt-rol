@@ -395,8 +395,8 @@ pub fn obtener_banco_entidades(state: State<'_, AppState>) -> Vec<Entidad> {
     state.lock().banco_entidades.clone()
 }
 
-/// Las instancias tal como las muestra la pantalla del máster. Por ahora sin lo privado (ver
-/// `visibilidad::OCULTAR_PRIVADOS_AL_MASTER`): la partida lo conserva todo, solo cambia lo que se envía.
+/// Las instancias tal como las muestra la pantalla del máster: enteras (ver
+/// `visibilidad::OCULTAR_PRIVADOS_AL_MASTER`); lo público solo decide lo que se envía a los jugadores.
 #[tauri::command]
 pub fn obtener_instancias_activas(state: State<'_, AppState>) -> Vec<Instancia> {
     let est = state.lock();

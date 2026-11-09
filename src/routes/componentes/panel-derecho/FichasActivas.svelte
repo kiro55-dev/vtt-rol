@@ -10,6 +10,7 @@
 <script lang="ts">
   import { partida, numeroDe, veParametro, type Instancia } from "$lib/partida.svelte";
   import { ajustesVista } from "$lib/ajustesVista.svelte";
+  import { esJugador } from "$lib/modo";
   import { arrastreJugador } from "$lib/arrastreJugador.svelte";
   import { arrastre, moverEnLista } from "$lib/arrastreFicha.svelte";
   import { arrastreTirada } from "$lib/arrastreTirada.svelte";
@@ -73,8 +74,11 @@
     class="filtro"
     class:activo={ajustesVista.soloMapaActual}
     aria-pressed={ajustesVista.soloMapaActual}
+    disabled={esJugador}
     data-conserva-foco
-    title={ajustesVista.soloMapaActual
+    title={esJugador
+      ? "Solo ves las fichas puestas en el mapa abierto"
+      : ajustesVista.soloMapaActual
       ? "Solo las fichas puestas en el mapa abierto. Pulsa para ver todas"
       : "Pulsa para ver solo las fichas puestas en el mapa abierto"}
     onclick={() => ajustesVista.alternarSoloMapaActual()}

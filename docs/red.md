@@ -156,8 +156,8 @@ su pantalla relee. Las peticiones de un jugador se ejecutan **en orden**, una a 
   `atenuada`, no su valor.
 - **Foco.** El foco es de cada uno: un jugador puede dar el foco a cualquier ficha que ve (para ver sus formas
   públicas), pero no se envía a nadie: el host no ve el foco de los jugadores ni ellos el suyo.
-- **Fotos.** Un jugador sube la foto de una ficha suya con `POST /subir?sesion=…&ext=…`: hasta 8 MiB, solo si tiene
-  alguna ficha, solo imágenes de verdad (png, jpg, webp, gif o bmp; **nada de SVG**; el contenido debe ser del tipo
+- **Fotos.** Un jugador sube la foto de una ficha suya con `POST /subir?sesion=…&ext=…`: hasta 8 MiB (también sin tener aún
+  ninguna ficha: así puede arrastrar una imagen al banco y crear la suya), solo imágenes de verdad (png, jpg, webp, gif o bmp; **nada de SVG**; el contenido debe ser del tipo
   que dice la extensión) y hasta 20 por sesión. Solo él la ve (`/imagen`) hasta que la usa una ficha. Como la página
   está en otra dirección que el túnel, `/imagen` y `/subir` llevan **CORS** para el origen de la página (el mismo
   que acepta el WebSocket), y `/subir` contesta al `OPTIONS`; así el editor puede recortar la miniatura en un canvas.

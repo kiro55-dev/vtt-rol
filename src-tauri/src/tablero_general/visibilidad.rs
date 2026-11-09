@@ -16,11 +16,10 @@ use crate::tablero_general::estado::EstadoPartida;
 use crate::tablero_general::jugadores::es_propietario;
 use crate::tablero_general::modelos::{DefinicionParametro, Entidad, IdJugador, Instancia, Mapa, Zona, ID_HOST};
 
-/// Primera etapa: el máster transmite su pantalla por Discord, así que a él también se le oculta
-/// lo privado (en «Fichas activas», en la caja de parámetros y en el tablero). Para que el máster
-/// lo vea todo otra vez basta con ponerlo a `false`: sus datos completos siguen en la partida, y la
-/// ventana de la ficha, donde se decide qué es público, siempre lo muestra todo.
-pub const OCULTAR_PRIVADOS_AL_MASTER: bool = true;
+/// El host ve TODOS sus parámetros (en «Fichas activas», en la caja de parámetros y en el tablero): que un
+/// parámetro sea público solo decide si se ENVÍA a los jugadores (`vista_para`). Poner este interruptor a `true`
+/// vuelve a ocultarle lo privado a su propia pantalla (por si algún día emite por streaming).
+pub const OCULTAR_PRIVADOS_AL_MASTER: bool = false;
 
 /// ¿Está gris la instancia? Algún parámetro con `atenuar_si_negativo` (y máximo) tiene su valor actual a 0 o menos.
 /// Es la misma regla que `partida.estaCaida` en el front.
@@ -222,6 +221,15 @@ mod tests {
         let v = vista_jugador(&i, &parametros_por_defecto());
         assert_eq!(v.base.parametros.len(), 3);
         assert_eq!(v.valores_actuales, vec![ValorActual { id_definicion: ID_VIDA, valor: 7 }]);
+    }
+
+    #[test]
+    fn el_host_ve_por_defecto_todo_lo_suyo() {
+        assert!(!OCULTAR_PRIVADOS_AL_MASTER, "lo público solo decide lo que se envía a los jugadores");
+        let i = instancia(); // la vida es privada
+        let v = instancias_para_el_master(std::slice::from_ref(&i), OCULTAR_PRIVADOS_AL_MASTER, &parametros_por_defecto());
+        assert_eq!(v[0].base.parametros.len(), 3);
+        assert_eq!(v[0].valores_actuales.len(), 1);
     }
 
     #[test]
