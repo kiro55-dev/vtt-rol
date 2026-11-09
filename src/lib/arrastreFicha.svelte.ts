@@ -8,7 +8,7 @@
 // las tarjetas de «Fichas activas» llevan `data-indice` para reordenarlas.
 // Qué hacer en cada caso lo decide `accionAlSoltar` (pura, con tests); las reglas finas (ficha
 // única, casilla encajada...) las aplica Rust.
-import { partida, type Destino, type Entidad, type Instancia } from "$lib/partida.svelte";
+import { partida, reordenarConOcultas, type Destino, type Entidad, type Instancia } from "$lib/partida.svelte";
 import { ladosInstancia, tamanoCuerpo, type Lados } from "$lib/tablero";
 
 /**
@@ -239,37 +239,14 @@ class ArrastreFicha {
     setTimeout(() => (this.#ignorarClic = false), 0);
 
     const casilla = a.zona === "tablero" ? (this.#resolverCasilla?.(a.x, a.y, a.lados, a.agarre) ?? null) : null;
-    const orden = partida.instanciasOrdenadas.map((i) => i.id_instancia);
+    // `indice` es la posición en la lista que se VE (con el filtro de mapa puede faltar alguna): se reordena
+    // ahí y luego se pasa al orden completo, que es el que guarda Rust
+    const orden = partida.instanciasVisibles.map((i) => i.id_instancia);
     const accion = accionAlSoltar(origen, a.zona, casilla, orden, a.indice);
+    if (accion?.tipo === "reordenar") {
+      accion.ids = reordenarConOcultas(partida.instanciasOrdenadas.map((i) => i.id_instancia), accion.ids);
+    }
     if (accion) void ejecutarAccion(accion);
-  }
-
-  // BANCO EXTERNO: arrastre que empezó en otra ventana (la del banco de fichas). La ventana del banco
-  // manda la posición del cursor ya convertida a px de ESTA ventana (ver $lib/bancoExterno).
-  #externo: { origen: OrigenArrastre; foto: string | null; lados: Lados } | null = null;
-
-  externoInicio(entidades: Entidad[]) {
-    if (entidades.length === 0) return;
-    const origen: OrigenArrastre = entidades.length === 1 ? { entidad: entidades[0] } : { entidades };
-    this.#externo = { origen, foto: entidades[0].foto_url, lados: ladosDe(origen) };
-  }
-
-  externoMover(x: number, y: number) {
-    const e = this.#externo;
-    if (e) this.#actualizar(e.origen, e.foto, e.lados, null, x, y);
-  }
-
-  externoFin(x: number, y: number) {
-    const e = this.#externo;
-    this.#externo = null;
-    if (!e) return;
-    this.#actualizar(e.origen, e.foto, e.lados, null, x, y);
-    this.#completar(e.origen);
-  }
-
-  externoCancelar() {
-    this.#externo = null;
-    this.actual = null;
   }
 
   /** Para el `onclick` de lo que se arrastra: true si ese clic es el final de un arrastre y hay que ignorarlo. */
@@ -303,11 +280,11 @@ function zonaEn(x: number, y: number): ZonaDestino | null {
   return zona === "tablero" || zona === "activas" || zona === "banco" ? zona : null;
 }
 
-/** Posición en «Fichas activas» bajo el cursor: la de la tarjeta que hay debajo, o el final. */
+/** Posición en «Fichas activas» (en la lista que se ve) bajo el cursor: la de la tarjeta que hay debajo, o el final. */
 function indiceEn(x: number, y: number): number {
   const tarjeta = document.elementFromPoint(x, y)?.closest<HTMLElement>("[data-indice]");
   if (tarjeta?.dataset.indice !== undefined) return Number(tarjeta.dataset.indice);
-  return partida.instancias.length;
+  return partida.instanciasVisibles.length;
 }
 
 export const arrastre = new ArrastreFicha();

@@ -325,7 +325,7 @@ mod tests {
         Entidad {
             id, nombre: format!("F{id}"), tipo: TipoEntidad::Enemigo, parametros: vec![], cuerpo: Cuerpo::Pequenio,
             zona_id: zona, foto_url: None, miniatura_url: None, foto_encuadre: Default::default(),
-            archivos_adjuntos: vec![], es_unico: unica,
+            archivos_adjuntos: vec![], es_unico: unica, propietarios: vec![],
         }
     }
     fn instancia(id: u16, base: &Entidad, mapa: Option<u16>) -> Instancia {
@@ -337,6 +337,7 @@ mod tests {
             coordenadas: mapa.map_or(Coordenada::NoPuesto, |_| Coordenada::Casilla(Casilla { x: 3, y: 4 })),
             activo: true,
             rotacion: 0,
+            espejo: false,
             orden: id,
             capa: 0,
         }

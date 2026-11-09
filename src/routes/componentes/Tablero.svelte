@@ -77,9 +77,9 @@
   const MOVIMIENTO_MAX_CLIC_PX = 5;
 
   // Clic derecho que empezó sobre una ficha: si se suelta sin salir de su casilla ni mover el ratón,
-  // la ficha gira 90° a la derecha. La flecha de recorrido (y su casilla amarilla) solo aparece
-  // cuando el cursor sale de la casilla de salida.
-  /** @type {{ x: number, y: number, idInstancia: number, salida: import("$lib/partida.svelte").Casilla } | null} */
+  // la ficha gira 90° a la derecha (con Ctrl pulsado, `espejo`, se pone en espejo). La flecha de recorrido
+  // (y su casilla amarilla) solo aparece cuando el cursor sale de la casilla de salida.
+  /** @type {{ x: number, y: number, idInstancia: number, salida: import("$lib/partida.svelte").Casilla, espejo: boolean } | null} */
   let derechoSobreFicha = null;
   // Pulsación izquierda en el fondo: si se suelta sin arrastrar, las fichas pierden el foco.
   /** @type {{ x: number, y: number } | null} */
@@ -265,7 +265,7 @@
       midiendo = true;
       if (ficha) {
         // Sobre una ficha aún no se marca nada: puede ser un giro
-        derechoSobreFicha = { x: e.clientX, y: e.clientY, idInstancia: ficha.id_instancia, salida };
+        derechoSobreFicha = { x: e.clientX, y: e.clientY, idInstancia: ficha.id_instancia, salida, espejo: ctrl };
       } else {
         derechoSobreFicha = null;
         cambiarRecorrido([salida]);
@@ -332,10 +332,10 @@
     }
     if (midiendo && e.button === 2) {
       midiendo = false; // el recorrido se queda dibujado hasta el siguiente clic
-      // Clic derecho sin arrastrar sobre una ficha: gira 90° a la derecha
+      // Clic derecho sin arrastrar sobre una ficha: gira 90° a la derecha; con Ctrl, la pone en espejo
       const d = derechoSobreFicha;
       if (d && recorrido.length === 0 && Math.hypot(e.clientX - d.x, e.clientY - d.y) <= MOVIMIENTO_MAX_CLIC_PX) {
-        void partida.rotarInstancia(d.idInstancia);
+        void (d.espejo ? partida.espejarInstancia(d.idInstancia) : partida.rotarInstancia(d.idInstancia));
       }
       derechoSobreFicha = null;
     }

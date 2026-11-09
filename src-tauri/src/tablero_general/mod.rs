@@ -1,10 +1,12 @@
 // Dar de alta a los archivos
 pub mod almacen;
 pub mod archivos;
+pub mod cambios_entidad;
 pub mod dados;
 pub mod estado;
 pub mod imagenes;
 pub mod instancias;
+pub mod jugadores;
 pub mod miniaturas;
 pub mod partidas;
 pub mod modelos;

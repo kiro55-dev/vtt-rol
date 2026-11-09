@@ -14,6 +14,7 @@ use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
 use crate::tablero_general::almacen::Almacen;
+use crate::tablero_general::cambios_entidad::{self, CambioEntidad};
 use crate::tablero_general::modelos::*;
 use crate::tablero_general::papelera::{self, GrupoPapelera};
 use crate::tablero_general::tablero;
@@ -36,7 +37,11 @@ pub enum DeltaPartida {
     MapaBorrado(Mapa),
     EntidadCreada(Entidad),
     EntidadBorrada(Entidad),
+    /// La ficha entera. Solo queda para reproducir logs antiguos: los cambios nuevos van en `EntidadCambiada`.
     EntidadModificada(Entidad),
+    /// Cambios de la ficha `id`, solo los campos que cambiaron (ver cambios_entidad.rs). Llegan también a
+    /// la copia de la ficha de cada instancia suya.
+    EntidadCambiada { id: u16, cambios: Vec<CambioEntidad> },
     /// La ficha `id` tiene una miniatura propia nueva (o `None`: vuelve a la automática de su foto).
     /// El archivo ya está escrito en `miniaturas/ficha/`; la anterior se libera sola (recursos.rs).
     MiniaturaFichaCambiada { id: u16, ruta: Option<String> },
@@ -63,6 +68,10 @@ pub enum DeltaPartida {
     RestauradoDePapelera(u64),
     /// Se vacía la papelera (al cerrar la aplicación o cambiar de partida); sus archivos se liberan.
     PapeleraVaciada,
+    /// Alta de un jugador en la partida (o reemplazo del de ese id). Ver jugadores.rs.
+    JugadorRegistrado(Jugador),
+    /// El mapa que ven los jugadores (`None` = ninguno). Lo elige el host aparte del que tiene abierto.
+    MapaPublicoCambiado(Option<u16>),
 }
 
 /// Línea de deltas.jsonl al LEER.
@@ -103,6 +112,12 @@ pub struct EstadoPartida {
     /// Lo borrado que aún se puede restaurar con Ctrl+Z, del más antiguo al más reciente.
     #[serde(default)]
     pub papelera: Vec<GrupoPapelera>,
+    /// Jugadores registrados (sin el host). Sus ids son los de `Entidad.propietarios`.
+    #[serde(default)]
+    pub jugadores: Vec<Jugador>,
+    /// El único mapa que reciben los jugadores. Se vuelve `None` si ese mapa desaparece (ver `aplicar_delta`).
+    #[serde(default)]
+    pub mapa_publico: Option<u16>,
 }
 
 // A mano y no con derive: una partida nueva también nace con los parámetros de serie.
@@ -117,6 +132,8 @@ impl Default for EstadoPartida {
             instancias_activas: Vec::new(),
             historial_tiradas: Vec::new(),
             papelera: Vec::new(),
+            jugadores: Vec::new(),
+            mapa_publico: None,
         }
     }
 }
@@ -273,6 +290,20 @@ impl EstadoPartida {
                 // 3. Si el cuerpo creció, puede salirse del mapa: se reencaja
                 self.reencajar_instancias(|i| i.base.id == entidad.id);
             }
+            DeltaPartida::EntidadCambiada { id, cambios } => {
+                // Plantilla del banco y copia de cada instancia activa de esa ficha
+                let bases = self
+                    .banco_entidades
+                    .iter_mut()
+                    .chain(self.instancias_activas.iter_mut().map(|i| &mut i.base));
+                for base in bases.filter(|b| b.id == *id) {
+                    cambios_entidad::aplicar(base, cambios);
+                }
+                // Si el cuerpo creció, puede salirse del mapa: se reencaja
+                if cambios.iter().any(|c| matches!(c, CambioEntidad::Cuerpo(_))) {
+                    self.reencajar_instancias(|i| i.base.id == *id);
+                }
+            }
             DeltaPartida::MiniaturaFichaCambiada { id, ruta } => {
                 // Plantilla del banco y copia de cada instancia activa de esa ficha
                 let bases = self
@@ -327,6 +358,16 @@ impl EstadoPartida {
             DeltaPartida::EnviadoAPapelera(grupo) => papelera::aplicar_envio(self, grupo),
             DeltaPartida::RestauradoDePapelera(id) => papelera::aplicar_restauracion(self, *id),
             DeltaPartida::PapeleraVaciada => self.papelera.clear(),
+            DeltaPartida::JugadorRegistrado(jugador) => match self.jugadores.iter().position(|j| j.id == jugador.id) {
+                Some(pos) => self.jugadores[pos] = jugador.clone(),
+                None => self.jugadores.push(jugador.clone()),
+            },
+            DeltaPartida::MapaPublicoCambiado(id) => self.mapa_publico = *id,
+        }
+        // Si el mapa público desaparece (borrado, zona eliminada...) los jugadores dejan de verlo. Hay que
+        // quitarlo ya: cuando se vacíe la papelera, un mapa nuevo podría reutilizar su id y salir a los jugadores.
+        if self.mapa_publico.is_some_and(|id| !self.mapas.iter().any(|m| m.id == id)) {
+            self.mapa_publico = None;
         }
     }
 
@@ -496,11 +537,13 @@ mod tests {
                 foto_encuadre: Default::default(),
                 archivos_adjuntos: vec![],
                 es_unico: false,
+                propietarios: vec![],
             },
             valores_actuales: vec![ValorActual { id_definicion: ID_VIDA, valor: vida }],
             coordenadas: Coordenada::NoPuesto,
             activo: true,
             rotacion: 0,
+            espejo: false,
             orden: id,
             capa: 0,
         }
@@ -731,6 +774,104 @@ mod tests {
         grande.cuerpo = Cuerpo::Grande(vec![3, 3]);
         e.aplicar_delta(&DeltaPartida::EntidadModificada(grande));
         assert_eq!(e.instancias_activas[0].coordenadas, Coordenada::Casilla(Casilla { x: 18, y: 1 }));
+
+        // Igual con el delta parcial
+        e.instancias_activas[0].coordenadas = Coordenada::Casilla(Casilla { x: 19, y: 0 });
+        e.instancias_activas[0].base.cuerpo = Cuerpo::Pequenio;
+        e.aplicar_delta(&DeltaPartida::EntidadCambiada { id: 1, cambios: vec![CambioEntidad::Cuerpo(Cuerpo::Grande(vec![3, 3]))] });
+        assert_eq!(e.instancias_activas[0].coordenadas, Coordenada::Casilla(Casilla { x: 18, y: 1 }));
+    }
+
+    #[test]
+    fn un_cambio_parcial_llega_al_banco_y_a_las_instancias_y_se_reproduce_desde_el_log() {
+        let dir = dir_temporal("entidad_cambiada");
+        {
+            let a = Almacen::abrir(&dir).unwrap();
+            let mut e = EstadoPartida::default();
+            let inst = instancia(1, 20);
+            e.registrar(&a, DeltaPartida::EntidadCreada(inst.base.clone())).unwrap();
+            e.registrar(&a, DeltaPartida::InstanciaCreada(inst)).unwrap();
+            let cambios = vec![
+                CambioEntidad::Nombre("Orco jefe".into()),
+                CambioEntidad::Parametro(Parametro { id_definicion: ID_VIDA, valor: ValorParametro::Numero(30), publico: false }),
+            ];
+            e.registrar(&a, DeltaPartida::EntidadCambiada { id: 1, cambios }).unwrap();
+            // De otra ficha: no le afecta
+            e.registrar(&a, DeltaPartida::EntidadCambiada { id: 2, cambios: vec![CambioEntidad::Nombre("Otra".into())] }).unwrap();
+
+            // En el log solo va lo cambiado, no la ficha entera
+            let linea = a.leer_deltas().unwrap()[2].clone();
+            assert!(linea.contains("EntidadCambiada") && !linea.contains("archivos_adjuntos"), "{linea}");
+        }
+        let (e, _) = cargar(&Almacen::abrir(&dir).unwrap()).unwrap();
+        for base in [&e.banco_entidades[0], &e.instancias_activas[0].base] {
+            assert_eq!(base.nombre, "Orco jefe");
+            assert_eq!(base.parametros[0], Parametro { id_definicion: ID_VIDA, valor: ValorParametro::Numero(30), publico: false });
+            assert_eq!(base.tipo, TipoEntidad::Enemigo, "lo que no cambia se conserva");
+        }
+        assert_eq!(e.instancias_activas[0].valores_actuales[0].valor, 20, "la vida actual no se toca");
+    }
+
+    #[test]
+    fn un_log_antiguo_con_la_ficha_entera_sigue_cargando() {
+        let dir = dir_temporal("entidad_modificada_antigua");
+        {
+            let a = Almacen::abrir(&dir).unwrap();
+            let mut e = EstadoPartida::default();
+            let base = instancia(1, 20).base;
+            e.registrar(&a, DeltaPartida::EntidadCreada(base.clone())).unwrap();
+            e.registrar(&a, DeltaPartida::EntidadModificada(Entidad { nombre: "Renombrado".into(), ..base })).unwrap();
+        }
+        let (e, informe) = cargar(&Almacen::abrir(&dir).unwrap()).unwrap();
+        assert_eq!(informe.deltas_aplicados, 2);
+        assert_eq!(e.banco_entidades[0].nombre, "Renombrado");
+    }
+
+    #[test]
+    fn el_mapa_publico_se_guarda_y_se_quita_cuando_el_mapa_desaparece() {
+        let dir = dir_temporal("mapa_publico");
+        {
+            let a = Almacen::abrir(&dir).unwrap();
+            let mut e = EstadoPartida::default();
+            e.registrar(&a, DeltaPartida::ZonaCreada(zona(1))).unwrap();
+            e.registrar(&a, DeltaPartida::MapaCreado(zona(1), mapa(1, 1))).unwrap();
+            e.registrar(&a, DeltaPartida::MapaPublicoCambiado(Some(1))).unwrap();
+        }
+        let (mut e, _) = cargar(&Almacen::abrir(&dir).unwrap()).unwrap();
+        assert_eq!(e.mapa_publico, Some(1), "se reproduce desde el log");
+
+        // A la papelera: los jugadores dejan de verlo y, al reutilizarse el id, no vuelve solo
+        let d = crate::tablero_general::papelera::borrar_mapa(&e, 1).unwrap();
+        e.aplicar_delta(&d);
+        assert_eq!(e.mapa_publico, None);
+        e.aplicar_delta(&DeltaPartida::PapeleraVaciada);
+        e.aplicar_delta(&DeltaPartida::MapaCreado(zona(1), mapa(1, 1)));
+        assert_eq!(e.mapa_publico, None, "otro mapa con el mismo id no hereda el permiso");
+
+        // Una partida antigua no tiene mapa público
+        let antigua: EstadoPartida = serde_json::from_str(r#"{"ultimo_seq":3}"#).unwrap();
+        assert_eq!(antigua.mapa_publico, None);
+    }
+
+    #[test]
+    fn los_jugadores_registrados_se_guardan_y_las_partidas_antiguas_no_tienen() {
+        let dir = dir_temporal("jugadores");
+        {
+            let a = Almacen::abrir(&dir).unwrap();
+            let mut e = EstadoPartida::default();
+            e.registrar(&a, DeltaPartida::JugadorRegistrado(Jugador { id: 1, nombre: "Ana".into() })).unwrap();
+            e.registrar(&a, DeltaPartida::JugadorRegistrado(Jugador { id: 2, nombre: "Luis".into() })).unwrap();
+            // El mismo id lo reemplaza
+            e.registrar(&a, DeltaPartida::JugadorRegistrado(Jugador { id: 1, nombre: "Ana María".into() })).unwrap();
+        }
+        let (e, _) = cargar(&Almacen::abrir(&dir).unwrap()).unwrap();
+        assert_eq!(
+            e.jugadores,
+            vec![Jugador { id: 1, nombre: "Ana María".into() }, Jugador { id: 2, nombre: "Luis".into() }]
+        );
+
+        let antigua: EstadoPartida = serde_json::from_str(r#"{"ultimo_seq":3}"#).unwrap();
+        assert!(antigua.jugadores.is_empty());
     }
 
     #[test]

@@ -7,10 +7,6 @@
   import { esImagen, importarImagen } from "$lib/imagenes";
   import { alSoltarArchivos } from "$lib/soltarArchivos";
   import { arrastre } from "$lib/arrastreFicha.svelte";
-  import { bancoExterno } from "$lib/bancoExterno.svelte"; // BANCO EXTERNO
-
-  // BANCO EXTERNO: true cuando este banco se dibuja en la ventana aparte (ver $lib/bancoExterno)
-  let { externo = false }: { externo?: boolean } = $props();
 
   // Soltar aquí una instancia la elimina: se marca el banco mientras pasa por encima
   const recibeInstancia = $derived(arrastre.actual?.zona === "banco" && "instancia" in arrastre.actual.origen);
@@ -79,76 +75,38 @@
   function alPulsarFila(e: PointerEvent, item: Entidad) {
     if (e.ctrlKey || e.metaKey) return; // Ctrl+clic solo selecciona (lo hace el clic)
     const grupo = grupoDe(item);
-    if (externo) {
-      // BANCO EXTERNO
-      bancoExterno.prepararArrastre(e, grupo, () => bancoExterno.pedirAbrirFicha(item.id));
-    } else {
-      arrastre.preparar(e, grupo.length > 1 ? { entidades: grupo } : { entidad: item });
-    }
+    arrastre.preparar(e, grupo.length > 1 ? { entidades: grupo } : { entidad: item });
   }
 
+  // Con otra ficha abierta en el editor, esa se guarda y la ventana pasa a esta (ver `abrirEditorEntidad`)
   function alHacerClicFila(e: MouseEvent, item: Entidad) {
     if (arrastre.esClicDeArrastre()) return;
     if (e.ctrlKey || e.metaKey) return partida.alternarSeleccionBanco(item.id);
     partida.limpiarSeleccionBanco();
-    if (!externo) void partida.abrirEditorEntidad(item);
+    void partida.abrirEditorEntidad(item);
   }
 
-  // BANCO EXTERNO: en la ventana del banco, Supr y Ctrl+Z los hace la principal (ver +page.svelte)
-  function alPulsarTeclaExterno(e: KeyboardEvent) {
-    if ((e.target as HTMLElement | null)?.closest?.("input, textarea, select")) return;
-    if (e.key === "Escape") partida.limpiarSeleccionBanco();
-    else if (e.key === "Delete" && seleccion.length > 0) {
-      e.preventDefault();
-      bancoExterno.pedirTecla({ tecla: "suprimir", ids: [...seleccion] });
-    } else if ((e.ctrlKey || e.metaKey) && !e.shiftKey && e.key.toLowerCase() === "z") {
-      e.preventDefault();
-      bancoExterno.pedirTecla({ tecla: "deshacer" });
-    }
-  }
-
-  // Drag & drop de imagen desde el explorador del SO
+  // Drag & drop de imagen desde el explorador del SO: ficha nueva con esa foto (la abierta, si hay, se guarda)
   onMount(() =>
     alSoltarArchivos(async ([ruta], el) => {
-      // BANCO EXTERNO: en la ventana aparte no hay editor de fichas, así que no se admiten archivos soltados
-      if (externo || !esImagen(ruta, "ficha") || !el?.closest(".banco")) return;
-      // Con una ficha ya abierta se ignora el drop (no se importa nada que quede huérfano)
-      if (partida.entidadEnEdicion) return;
+      if (!esImagen(ruta, "ficha") || !el?.closest(".banco")) return;
       const fotoUrl = await importarImagen(ruta, "ficha");
-      await partida.abrirEditorEntidad(null, fotoUrl);
-      if (!partida.entidadEnEdicion) {
-        // No se pudo abrir el borrador: la imagen recién importada no la usa nadie
+      if (!(await partida.abrirEditorEntidad(null, fotoUrl))) {
+        // No se abrió el borrador (no se pudo guardar la abierta, o crearlo falló): la imagen no la usa nadie
         invoke("descartar_archivos_borrador", { rutas: [fotoUrl] }).catch(() => {});
       }
     })
   );
 </script>
 
-<svelte:window onkeydown={(e) => externo && alPulsarTeclaExterno(e)} />
-
 <div class="banco" data-destino="banco" class:destino={recibeInstancia}>
   <!-- Zona de búsqueda y filtros -->
   <div class="sub-busqueda">
     <div class="fila-cabecera">
       <span class="titulo-mini">BANCO DE FICHAS</span>
-      <div class="acciones-cabecera">
-        <button
-          type="button"
-          class="btn-anadir"
-          onclick={() => (externo ? bancoExterno.pedirAbrirFicha(null) : partida.abrirEditorEntidad(null))}
-        >
-          + Añadir Ficha
-        </button>
-        <!-- BANCO EXTERNO: sacar el banco a otra ventana (o traerlo de vuelta) -->
-        <button
-          type="button"
-          class="btn-ventana"
-          title={externo ? "Traer el banco de vuelta a la ventana principal" : "Sacar el banco a otra ventana (no se verá al compartir la aplicación)"}
-          onclick={() => (externo ? void bancoExterno.cerrar() : void bancoExterno.abrir())}
-        >
-          {externo ? "⤶" : "↗"}
-        </button>
-      </div>
+      <button type="button" class="btn-anadir" onclick={() => void partida.abrirEditorEntidad(null)}>
+        + Añadir Ficha
+      </button>
     </div>
 
     <input type="text" placeholder="Buscar ficha..." bind:value={busqueda} class="input-buscar" />
@@ -276,20 +234,6 @@
     cursor: pointer;
   }
   .btn-anadir:hover { background: #3f3f46; color: white; }
-  .acciones-cabecera { display: flex; gap: 3px; align-items: center; }
-  .btn-ventana {
-    background: #27272a;
-    border: 1px solid #3f3f46;
-    color: #a1a1aa;
-    border-radius: 3px;
-    font-size: 11px;
-    line-height: 1;
-    width: 20px;
-    height: 20px;
-    padding: 0;
-    cursor: pointer;
-  }
-  .btn-ventana:hover { background: #3f3f46; color: white; }
 
   .input-buscar {
     background: #09090b;

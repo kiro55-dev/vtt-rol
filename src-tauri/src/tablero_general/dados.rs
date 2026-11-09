@@ -24,7 +24,16 @@ fn formatear_num(valor: i32, caras: i32) -> String {
     }
 }
 
+/// Longitud máxima de un comando de dados. Cualquier tirada razonable cabe de sobra; cuando haya red, un
+/// jugador no podrá mandar al host textos enormes que parsear.
+pub const MAX_LONGITUD_COMANDO: usize = 200;
+
+/// Solo acepta tiradas: números, `d`, `+`, `-`, `*` y `adv`/`desv`/`dis`. Cualquier otro texto es un error,
+/// así que nada de lo escrito llega al desglose (que lo forma `ejecutar_tiradas` con números y palabras fijas).
 fn parsear_comando(comando: &str) -> Result<Vec<Tirada>, String> {
+    if comando.chars().count() > MAX_LONGITUD_COMANDO {
+        return Err(format!("El comando no puede pasar de {MAX_LONGITUD_COMANDO} caracteres"));
+    }
     let mut tiradas: Vec<Tirada> = Vec::new();
     let mut signo_actual = 1;
     let mut buffer = String::new();
@@ -282,10 +291,34 @@ mod tests {
         }
 
         let mut e = crate::tablero_general::estado::EstadoPartida::default();
-        let t = crate::tablero_general::modelos::Tiradas { total: 3, comando: "1d6 (3)".into(), hora: "10:00".into() };
+        let t = crate::tablero_general::modelos::Tiradas { total: 3, comando: "1d6 (3)".into(), hora: "10:00".into(), jugador: 0 };
         e.aplicar_delta(&DeltaPartida::TiradaRealizada(t));
         e.aplicar_delta(&DeltaPartida::HistorialTiradasLimpiado);
         assert!(e.historial_tiradas.is_empty());
+    }
+
+    #[test]
+    fn solo_se_aceptan_tiradas_y_nada_de_lo_escrito_llega_al_desglose() {
+        for malo in [
+            "<script>alert(1)</script>",
+            "1d20 <img src=x onerror=alert(1)>",
+            "1d6<b>",
+            "hola que tal",
+            "1d20adv\"'",
+            "2*hola",
+        ] {
+            assert!(tirar(malo).is_err(), "{malo}");
+        }
+        // El desglose solo lleva números, palabras fijas y <b>
+        let (desglose, _) = tirar("2*3d20adv + 1d4 - 2").unwrap();
+        let sin_negritas = desglose.replace("<b>", "").replace("</b>", "");
+        assert!(!sin_negritas.contains('<') && !sin_negritas.contains('>'), "{desglose}");
+
+        // Un comando demasiado largo ni se parsea
+        let largo = vec!["1"; MAX_LONGITUD_COMANDO / 2 + 1].join("+");
+        assert!(largo.len() > MAX_LONGITUD_COMANDO);
+        assert!(tirar(&largo).unwrap_err().contains("no puede pasar"));
+        assert!(tirar(&vec!["1"; 50].join("+")).is_ok());
     }
 
     #[test]

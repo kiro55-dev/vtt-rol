@@ -5,7 +5,6 @@
   import { tiradas } from "$lib/tiradas.svelte";
   import { ajustesVista } from "$lib/ajustesVista.svelte";
   import { alRecibirAviso } from "$lib/avisosTablero";
-  import { bancoExterno } from "$lib/bancoExterno.svelte"; // BANCO EXTERNO
 
   import PanelIzquierdo from "./componentes/PanelIzquierdo.svelte";
   import PanelDerecho from "./componentes/PanelDerecho.svelte";
@@ -72,13 +71,6 @@
     })
   );
 
-  // BANCO EXTERNO: atiende a la ventana del banco y le avisa cuando cambian las fichas, las instancias o la zona
-  onMount(() => bancoExterno.escuchar());
-  $effect(() => {
-    void [partida.banco, partida.instancias, partida.zonaId, bancoExterno.abierto];
-    void bancoExterno.avisarCambio();
-  });
-
   onMount(async () => {
     try {
       await partida.iniciar();
@@ -119,7 +111,10 @@
 
   <!-- Ventana flotante no bloqueante -->
   {#if partida.entidadEnEdicion}
-    <VentanaFicha entidad={partida.entidadEnEdicion} />
+    <!-- Una ventana nueva por cada ficha abierta, también al pasar de una a otra sin cerrar -->
+    {#key partida.sesionEditor}
+      <VentanaFicha entidad={partida.entidadEnEdicion} />
+    {/key}
   {/if}
 
   <!-- La ficha que se arrastra entre el banco, el tablero y «Fichas activas» -->

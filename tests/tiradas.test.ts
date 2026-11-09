@@ -79,6 +79,21 @@ async function nuevoStore() {
   return await import("$lib/tiradas.svelte");
 }
 
+describe("desgloseSeguro (lo que se pinta con {@html})", () => {
+  it("conserva las negritas de Rust", async () => {
+    const { desgloseSeguro } = await nuevoStore();
+    expect(desgloseSeguro("2d20adv ([<b>20</b>, 3], [7, <b>1</b>]) + 3")).toBe("2d20adv ([<b>20</b>, 3], [7, <b>1</b>]) + 3");
+  });
+
+  it("escapa cualquier otra etiqueta, atributo o comilla", async () => {
+    const { desgloseSeguro } = await nuevoStore();
+    expect(desgloseSeguro("<script>alert(1)</script>")).toBe("&lt;script&gt;alert(1)&lt;/script&gt;");
+    expect(desgloseSeguro('<img src=x onerror="alert(1)">')).toBe("&lt;img src=x onerror=&quot;alert(1)&quot;&gt;");
+    expect(desgloseSeguro("<b onclick='x'>5</b>")).toBe("&lt;b onclick=&#39;x&#39;&gt;5</b>");
+    expect(desgloseSeguro("<B>5</B> & <bold>")).toBe("&lt;B&gt;5&lt;/B&gt; &amp; &lt;bold&gt;");
+  });
+});
+
 describe("aplicarDadoAlComando (barra de dados -> texto del chat)", () => {
   it("agrupa los dados iguales, suma, resta y los quita al llegar a cero", async () => {
     const { aplicarDadoAlComando: f } = await nuevoStore();

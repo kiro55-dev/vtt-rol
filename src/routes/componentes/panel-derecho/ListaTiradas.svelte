@@ -1,6 +1,6 @@
 <!-- src/routes/componentes/panel-derecho/ListaTiradas.svelte -->
 <script lang="ts">
-  import { tiradas } from "$lib/tiradas.svelte";
+  import { tiradas, desgloseSeguro } from "$lib/tiradas.svelte";
   import { arrastreTirada } from "$lib/arrastreTirada.svelte";
 </script>
 
@@ -17,10 +17,10 @@
       onpointerdown={(e) => t.total !== null && arrastreTirada.preparar(e, t.total)}
     >
       <span class="hora">{t.hora}</span>
-      <!-- @html a propósito: Rust devuelve el desglose con <b> para resaltar el dado ganador.
-           Es seguro mientras el texto lo genere solo Rust; si algún día llegan tiradas de otros
-           jugadores por red, habrá que enviar los datos estructurados y no HTML. -->
-      <span class="cmd">{@html t.comando}</span>
+      <!-- @html a propósito: Rust devuelve el desglose con <b> para resaltar el dado ganador. Lo genera
+           solo Rust con números y palabras fijas (el comando escrito nunca llega aquí), y además
+           `desgloseSeguro` escapa todo salvo <b> y </b>. -->
+      <span class="cmd">{@html desgloseSeguro(t.comando)}</span>
       {#if t.total !== null}
         <strong class="total">= {t.total}</strong>
       {/if}

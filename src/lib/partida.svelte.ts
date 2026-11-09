@@ -12,6 +12,7 @@ import { iniciarImagenes, importarImagen } from "$lib/imagenes";
 import { miniaturas } from "$lib/miniaturas.svelte";
 import { enviarAviso, avisoFoco } from "$lib/avisosTablero";
 import { desplazarGrupo, encajar, ladosInstancia, rejillaDe } from "$lib/tablero";
+import { ajustesVista } from "$lib/ajustesVista.svelte";
 
 export interface Zona {
   id: number;
@@ -112,6 +113,8 @@ export interface Entidad {
   foto_encuadre: Encuadre;
   archivos_adjuntos: (string | null)[];
   es_unico: boolean;
+  /** Ids de los jugadores que controlan la ficha (`IdJugador` en Rust), sin el host, que lo puede todo. Vacío = solo el host. */
+  propietarios: number[];
 }
 
 // Casilla del tablero: (0,0) arriba a la izquierda. La lógica está en $lib/tablero.ts (y en tablero.rs).
@@ -138,6 +141,8 @@ export interface Instancia {
   activo?: boolean;
   /** Cuartos de vuelta en el sentido del reloj (0..3); con uno impar, ancho y alto se intercambian */
   rotacion: number;
+  /** La imagen se dibuja en espejo (izquierda-derecha, en el eje de la propia ficha, antes de girar). Solo aspecto. */
+  espejo?: boolean;
   /** Posición en «Fichas activas» */
   orden: number;
   /** Altura en el tablero (la mayor, encima). La pone Rust al poner o mover la ficha. */
@@ -177,6 +182,22 @@ export function hexARgba(hex: string, opacidad: number): number[] {
 export const rgbAHex = (r: number, g: number, b: number) =>
   "#" + [r, g, b].map((v) => Number(v).toString(16).padStart(2, "0")).join("");
 
+/** ¿Está la instancia puesta en el tablero del mapa `idMapa`? (las activas sin colocar no lo están) */
+export function estaEnMapa(instancia: Instancia, idMapa: number | null | undefined): boolean {
+  return idMapa != null && instancia.id_mapa === idMapa && typeof instancia.coordenadas === "object";
+}
+
+/**
+ * Orden completo de «Fichas activas» tras reordenar solo las que se ven (con el filtro de mapa puesto):
+ * las visibles se reparten, en su orden nuevo, por los huecos que ya ocupaban, y las ocultas no se mueven.
+ * `visibles` es la lista nueva de las que se ven (las mismas que había, en otro orden).
+ */
+export function reordenarConOcultas(todos: readonly number[], visibles: readonly number[]): number[] {
+  const esVisible = new Set(visibles);
+  let k = 0;
+  return todos.map((id) => (esVisible.has(id) ? visibles[k++] : id));
+}
+
 /** Elemento que queda al borrar `id` de una lista ordenada: el siguiente, o si no el anterior. */
 function vecinoTrasBorrar<T extends { id: number }>(ordenada: T[], id: number): T | null {
   const i = ordenada.findIndex((x) => x.id === id);
@@ -195,6 +216,13 @@ class Partida {
 
   /** «Fichas activas» de arriba abajo. */
   instanciasOrdenadas = $derived([...this.instancias].sort((a, b) => a.orden - b.orden || a.id_instancia - b.id_instancia));
+  /** Las que enseña «Fichas activas»: todas, o con el filtro «Este mapa» (ver `ajustesVista`) solo las puestas
+   *  en el tablero del mapa abierto. A un jugador solo le llega lo que puede ver, así que el filtro es el mismo. */
+  instanciasVisibles = $derived(
+    ajustesVista.soloMapaActual
+      ? this.instanciasOrdenadas.filter((i) => estaEnMapa(i, this.mapaActual?.id))
+      : this.instanciasOrdenadas
+  );
 
   /** Fichas con el foco (varias con Ctrl, como en el banco). Solo se guardan los ids: se actualizan solas al recargar
    *  las instancias y desaparecen si Rust las elimina (p. ej. al borrar su zona). */
@@ -478,15 +506,21 @@ class Partida {
   }
 
   /**
-   * Con una sola ficha con foco, lo pasa a la anterior (-1) o la siguiente (+1) de «Fichas activas».
-   * Es circular: tras la última va la primera y antes de la primera, la última.
+   * Con una sola ficha con foco, lo pasa a la anterior (-1) o la siguiente (+1) de «Fichas activas» (de las
+   * que se ven, con el filtro de mapa puesto). Es circular: tras la última va la primera y antes de la
+   * primera, la última. Si la que tiene el foco está oculta por el filtro, empieza por los extremos.
    */
   seleccionarVecina(paso: -1 | 1): boolean {
     const actual = this.instanciaSeleccionada;
     if (!actual || this.idsSeleccionados.length !== 1) return false;
-    const lista = this.instanciasOrdenadas;
-    if (lista.length < 2) return false;
+    const lista = this.instanciasVisibles;
     const i = lista.findIndex((x) => x.id_instancia === actual.id_instancia);
+    if (i === -1) {
+      if (lista.length === 0) return false;
+      this.seleccionarInstancia(lista[paso === 1 ? 0 : lista.length - 1]);
+      return true;
+    }
+    if (lista.length < 2) return false;
     this.seleccionarInstancia(lista[(i + paso + lista.length) % lista.length]);
     return true;
   }
@@ -565,6 +599,13 @@ class Partida {
   /** Gira la ficha un cuarto de vuelta en el sentido del reloj (Rust la mete en el mapa si no cabe). */
   async rotarInstancia(idInstancia: number) {
     await this.#cambiarInstancias("rotar_instancia", { idInstancia });
+  }
+
+  /** Pone o quita el espejo de la imagen de la ficha (Ctrl + clic derecho en el tablero). */
+  async espejarInstancia(idInstancia: number) {
+    // Se ve al momento; Rust lo confirma al releer
+    this.instancias = this.instancias.map((i) => (i.id_instancia === idInstancia ? { ...i, espejo: !i.espejo } : i));
+    await this.#cambiarInstancias("espejar_instancia", { idInstancia });
   }
 
   /** Nuevo orden de «Fichas activas» (todos los ids, de arriba abajo). */
@@ -889,20 +930,43 @@ class Partida {
   /** Mensaje de error de la última operación del editor (se muestra en la ventana) */
   errorEditor = $state("");
 
+  /** Sube en cada apertura del editor: la vista lo usa de `{#key}` para crear una ventana nueva aunque pase
+   *  directamente de una ficha a otra. */
+  sesionEditor = $state(0);
+
+  /** Cómo guardar la ventana abierta (la registra VentanaFicha): devuelve true si se guardó y se cerró. */
+  #guardarEditor: (() => Promise<boolean>) | null = null;
+
+  /** La ventana de la ficha dice cómo guardarla. Devuelve cómo dejar de hacerlo. */
+  registrarEditor(guardar: () => Promise<boolean>) {
+    this.#guardarEditor = guardar;
+    return () => {
+      if (this.#guardarEditor === guardar) this.#guardarEditor = null;
+    };
+  }
+
   /**
    * Abre la ventana de una ficha. Con `entidad` edita una existente (sobre una copia);
    * sin ella crea un borrador: Rust reserva el id real en ese instante, así los archivos
    * que se adjunten ya viven en su carpeta definitiva (archivos/entidad_<id>).
-   * Si ya hay una ventana abierta se ignora la petición (hay que guardar o cancelar antes).
+   *
+   * Si ya hay otra ficha abierta, primero se GUARDA (como al pulsar Guardar) y la ventana pasa a la nueva.
+   * Si no se puede guardar (falta el nombre, Rust la rechaza...) la abierta se queda con el motivo a la vista
+   * y no se abre nada. Pedir la que ya está abierta no hace nada. Devuelve true si se abrió la pedida.
    */
-  async abrirEditorEntidad(entidad?: Entidad | null, fotoUrl: string | null = null) {
-    if (this.entidadEnEdicion || this.#abriendo) return;
+  async abrirEditorEntidad(entidad?: Entidad | null, fotoUrl: string | null = null): Promise<boolean> {
+    if (this.#abriendo) return false;
+    const abierta = this.entidadEnEdicion;
+    if (abierta && entidad && !this.editorEsBorrador && abierta.id === entidad.id) return false;
     this.#abriendo = true;
-    this.errorEditor = "";
     try {
+      if (abierta && !(await this.#guardarEditor?.())) return false;
+      this.errorEditor = "";
       if (entidad) {
-        // Clonamos para no mutar el estado en vivo hasta pulsar Guardar
-        this.entidadEnEdicion = structuredClone($state.snapshot(entidad));
+        // Clonamos para no mutar el estado en vivo hasta pulsar Guardar. Se parte de la del banco por si
+        // es la ficha que se acaba de guardar
+        const actual = this.banco.find((e) => e.id === entidad.id) ?? entidad;
+        this.entidadEnEdicion = structuredClone($state.snapshot(actual));
         this.editorEsBorrador = false;
       } else {
         const zonaDefecto = this.zonaId ?? this.zonasOrdenadas[0]?.id ?? 1;
@@ -913,8 +977,11 @@ class Partida {
         this.entidadEnEdicion = borrador;
         this.editorEsBorrador = true;
       }
+      this.sesionEditor++;
+      return true;
     } catch (err) {
       console.error("No se pudo abrir la ficha:", err);
+      return false;
     } finally {
       this.#abriendo = false;
     }

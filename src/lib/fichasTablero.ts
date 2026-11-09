@@ -157,6 +157,8 @@ export function dibujarFicha(
   ctx.clip();
   ctx.translate(x + w / 2, y + h / 2);
   ctx.rotate(giro);
+  // Espejo en el eje de la propia ficha (ya girada): la foto se ve de derecha a izquierda
+  if (ficha.instancia.espejo) ctx.scale(-1, 1);
   if (img) {
     const escala = Math.max(ancho / img.naturalWidth, alto / img.naturalHeight);
     const sw = ancho / escala;

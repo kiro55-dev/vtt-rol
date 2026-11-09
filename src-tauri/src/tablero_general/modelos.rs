@@ -8,7 +8,7 @@ pub enum TipoEntidad {
     Jugador,
 }
 
-#[derive(Serialize, Deserialize, Clone, Debug)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub enum Cuerpo {
     Grande(Vec<u8>),
     Pequenio,
@@ -231,6 +231,25 @@ pub fn normalizar_parametros(defs: &[DefinicionParametro], parametros: &mut Vec<
 }
 
 // ========================================================
+// JUGADORES
+// ========================================================
+
+/// Identifica a un jugador de la partida. Lo asigna el host al registrarlo (`jugadores::registrar`) y se
+/// guarda en la partida, así quien vuelve otro día conserva sus fichas.
+pub type IdJugador = u16;
+
+/// El host (el máster). En el fondo es un jugador más, pero tiene acceso a todo: nunca hace falta
+/// ponerlo en `Entidad.propietarios`.
+pub const ID_HOST: IdJugador = 0;
+
+/// Un jugador registrado en la partida (ver `EstadoPartida.jugadores`).
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+pub struct Jugador {
+    pub id: IdJugador,
+    pub nombre: String,
+}
+
+// ========================================================
 // ENTIDADES E INSTANCIAS
 // ========================================================
 
@@ -290,6 +309,10 @@ pub struct Entidad {
     pub archivos_adjuntos: Vec<Option<String>>,
 
     pub es_unico: bool,
+
+    /// Jugadores que controlan la ficha (la ven entera, la editan, mueven sus instancias...), sin el host,
+    /// que siempre puede todo. Vacío = solo el host. Ver `jugadores.rs` y `visibilidad.rs`.
+    pub propietarios: Vec<IdJugador>,
 }
 
 /// Forma en que se LEE una `Entidad`: la actual más los campos fijos de versiones anteriores
@@ -315,6 +338,8 @@ struct EntidadGuardada {
     archivos_adjuntos: Vec<Option<String>>,
     #[serde(default)]
     es_unico: bool,
+    #[serde(default)]
+    propietarios: Vec<IdJugador>,
 
     // Formato antiguo
     vida_max: Option<i16>,
@@ -357,6 +382,7 @@ impl From<EntidadGuardada> for Entidad {
             foto_encuadre: g.foto_encuadre,
             archivos_adjuntos: g.archivos_adjuntos,
             es_unico: g.es_unico,
+            propietarios: g.propietarios,
         }
     }
 }
@@ -381,6 +407,11 @@ pub struct Instancia {
     /// intercambian (ver `tablero::lados_instancia`); el centro no se mueve.
     #[serde(default)]
     pub rotacion: u8,
+
+    /// La imagen se dibuja en espejo (de izquierda a derecha, en el eje de la propia ficha, antes de girar).
+    /// Solo es de aspecto: no cambia los lados ni la posición.
+    #[serde(default)]
+    pub espejo: bool,
 
     /// Posición en «Fichas activas» (de arriba abajo). Ver `DeltaPartida::InstanciasReordenadas`.
     #[serde(default)]
@@ -429,6 +460,9 @@ pub struct Tiradas {
     pub total: i32,
     pub comando: String,
     pub hora: String,
+    /// Quién tiró. Por ahora siempre el host; las tiradas guardadas antes del campo también son suyas.
+    #[serde(default)]
+    pub jugador: IdJugador,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -487,6 +521,22 @@ mod tests {
         assert!(!EncuadreFoto { x: 101, y: 0, zoom: 100 }.es_valido());
         assert!(!EncuadreFoto { x: 0, y: 0, zoom: 99 }.es_valido());
         assert!(!EncuadreFoto { x: 0, y: 0, zoom: 401 }.es_valido());
+    }
+
+    #[test]
+    fn una_ficha_sin_propietarios_es_solo_del_host_y_los_conserva_al_guardar() {
+        let antigua = r#"{"id":3,"nombre":"Orco","tipo":"Enemigo","parametros":[],"cuerpo":"Pequenio",
+            "zona_id":1,"foto_url":null,"archivos_adjuntos":[],"es_unico":false}"#;
+        let mut e: Entidad = serde_json::from_str(antigua).unwrap();
+        assert!(e.propietarios.is_empty());
+
+        e.propietarios = vec![2, 5];
+        let releida: Entidad = serde_json::from_str(&serde_json::to_string(&e).unwrap()).unwrap();
+        assert_eq!(releida.propietarios, vec![2, 5]);
+
+        // Las tiradas guardadas antes de saber quién tiraba son del host
+        let t: Tiradas = serde_json::from_str(r#"{"total":3,"comando":"1d6 (3)","hora":"10:00"}"#).unwrap();
+        assert_eq!(t.jugador, ID_HOST);
     }
 
     #[test]

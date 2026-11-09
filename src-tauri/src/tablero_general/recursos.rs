@@ -14,6 +14,7 @@ use std::collections::HashSet;
 use std::path::Path;
 
 use crate::tablero_general::archivos;
+use crate::tablero_general::cambios_entidad::CambioEntidad;
 use crate::tablero_general::estado::{DeltaPartida, EstadoPartida};
 use crate::tablero_general::miniaturas;
 use crate::tablero_general::modelos::Entidad;
@@ -92,6 +93,10 @@ pub fn esta_referenciada(estado: &EstadoPartida, ruta: &str) -> bool {
 
 /// ¿Puede este cambio dejar sin uso alguna imagen o archivo?
 pub fn afecta_a_recursos(delta: &DeltaPartida) -> bool {
+    // Un cambio parcial solo si toca la foto (y con ella la miniatura propia) o los adjuntos
+    if let DeltaPartida::EntidadCambiada { cambios, .. } = delta {
+        return cambios.iter().any(|c| matches!(c, CambioEntidad::Foto(_) | CambioEntidad::Adjuntos(_)));
+    }
     matches!(
         delta,
         DeltaPartida::ZonaEliminada(_)
@@ -197,6 +202,7 @@ mod tests {
         Entidad {
             id, nombre: format!("F{id}"), tipo: TipoEntidad::Enemigo, parametros: vec![], cuerpo: Cuerpo::Pequenio, zona_id: zona,
             foto_url: foto.map(String::from), miniatura_url: None, foto_encuadre: Default::default(), archivos_adjuntos: adj.iter().map(|s| Some(s.to_string())).collect(), es_unico: unica,
+            propietarios: vec![],
         }
     }
     fn zona(id: u16) -> Zona {
@@ -319,6 +325,32 @@ mod tests {
         assert!(!existe(&d, "archivos/entidad_1/a.txt") && existe(&d, "archivos/entidad_1/b.txt"));
         aplicar(&d, &mut est, DeltaPartida::EntidadModificada(ficha(1, 1, None, &[], false)));
         assert!(!existe(&d, "archivos/entidad_1"));
+    }
+
+    #[test]
+    fn un_cambio_parcial_de_adjuntos_o_foto_libera_lo_que_sobra() {
+        let d = dir();
+        crear(&d, "archivos/entidad_1/a.txt");
+        crear(&d, "archivos/entidad_1/b.txt");
+        con_miniaturas(&d, "imagenes/vieja.png");
+        crear(&d, "miniaturas/ficha/entidad_1_1.webp");
+        let mut est = EstadoPartida::default();
+        let mut f = ficha(1, 1, Some("imagenes/vieja.png"), &["archivos/entidad_1/a.txt", "archivos/entidad_1/b.txt"], false);
+        f.miniatura_url = Some("miniaturas/ficha/entidad_1_1.webp".into());
+        est.banco_entidades = vec![f];
+
+        let adjuntos = DeltaPartida::EntidadCambiada {
+            id: 1,
+            cambios: vec![CambioEntidad::Adjuntos(vec![Some("archivos/entidad_1/b.txt".into())])],
+        };
+        assert!(afecta_a_recursos(&adjuntos));
+        assert_eq!(aplicar(&d, &mut est, adjuntos), vec!["archivos/entidad_1/a.txt"]);
+        assert!(existe(&d, "archivos/entidad_1/b.txt"));
+
+        // Otra foto: se van la anterior y la miniatura propia, que era un recorte suyo
+        let mut borradas = aplicar(&d, &mut est, DeltaPartida::EntidadCambiada { id: 1, cambios: vec![CambioEntidad::Foto(None)] });
+        borradas.sort();
+        assert_eq!(borradas, vec!["imagenes/vieja.png", "miniaturas/ficha/entidad_1_1.webp"]);
     }
 
     #[test]
@@ -456,5 +488,8 @@ mod tests {
         assert!(afecta_a_recursos(&DeltaPartida::EntidadModificada(ficha(1, 1, None, &[], false))));
         assert!(!afecta_a_recursos(&DeltaPartida::ValorActualModificado { id_instancia: 1, id_definicion: 1, delta: 1 }));
         assert!(!afecta_a_recursos(&DeltaPartida::ZonaCreada(zona(1))));
+        // Un cambio parcial que no toca ni la foto ni los adjuntos no puede liberar nada
+        let nombre = DeltaPartida::EntidadCambiada { id: 1, cambios: vec![CambioEntidad::Nombre("X".into())] };
+        assert!(!afecta_a_recursos(&nombre));
     }
 }

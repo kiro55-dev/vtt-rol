@@ -145,6 +145,22 @@ function crearBackend() {
           return { zonas: g.zonas.map((z: any) => z.id), mapas: [], entidades: g.banco.map((e: any) => e.id) };
         }
         case "avisar_tablero": return;
+        // Editor de fichas: imita lo justo de Rust (validar_entidad de verdad está en partida.rs)
+        case "iniciar_borrador_entidad":
+          return { id: 100 + llamadasDe("iniciar_borrador_entidad"), nombre: "Nueva Ficha", tipo: "Enemigo", parametros: [], cuerpo: "Pequenio",
+            zona_id: args.zonaId, foto_url: args.fotoUrl, miniatura_url: null, foto_encuadre: { x: 50, y: 50, zoom: 100 },
+            archivos_adjuntos: [], es_unico: false, propietarios: [] };
+        case "crear_entidad": case "modificar_entidad": {
+          if (!args.entidad.nombre?.trim()) throw "La ficha necesita un nombre";
+          b.banco = [...b.banco.filter((e) => e.id !== args.entidad.id), clon(args.entidad)];
+          return clon(args.entidad);
+        }
+        case "espejar_instancia": {
+          const i: any = b.instancias.find((x) => x.id_instancia === args.idInstancia);
+          if (!i) throw "Esa instancia no existe";
+          i.espejo = !i.espejo;
+          return;
+        }
         case "rotar_instancia": {
           const i = b.instancias.find((x) => x.id_instancia === args.idInstancia)!;
           i.rotacion = (i.rotacion + 1) % 4;
@@ -163,6 +179,7 @@ function crearBackend() {
       }
     }
   };
+  const llamadasDe = (cmd: string) => b.llamadas.filter((l) => l.cmd === cmd).length;
   return b;
 }
 
@@ -736,5 +753,132 @@ describe("selección múltiple y grupos en el tablero", () => {
     await partida.borrarInstancias([1, 2]);
     expect(partida.instancias).toEqual([]);
     expect(partida.idsSeleccionados).toEqual([]);
+  });
+});
+
+describe("espejo de una ficha", () => {
+  it("espejarInstancia lo pone y lo quita, solo en esa ficha", async () => {
+    const partida = await nuevoStore();
+    await partida.espejarInstancia(1);
+    expect(llamadas("espejar_instancia")).toEqual([{ cmd: "espejar_instancia", args: { idInstancia: 1 } }]);
+    expect(partida.instancias.map((i) => !!i.espejo)).toEqual([true, false]);
+    await partida.espejarInstancia(1);
+    expect(partida.instancias.map((i) => !!i.espejo)).toEqual([false, false]);
+  });
+});
+
+describe("tarea 28: abrir otra ficha con una abierta la guarda y la sustituye", () => {
+  /** Lo que hace VentanaFicha: registra cómo guardar (aquí, sin la parte de .txt y miniatura). */
+  function conVentana(partida: Awaited<ReturnType<typeof nuevoStore>>) {
+    return partida.registrarEditor(() => partida.guardarEntidad(partida.entidadEnEdicion!));
+  }
+
+  it("guarda la abierta, abre la nueva y crea una ventana nueva", async () => {
+    const partida = await nuevoStore();
+    conVentana(partida);
+    expect(await partida.abrirEditorEntidad(partida.banco[0])).toBe(true);
+    const sesion = partida.sesionEditor;
+    partida.entidadEnEdicion!.nombre = "Orco jefe";
+
+    expect(await partida.abrirEditorEntidad(partida.banco[1])).toBe(true);
+    expect(llamadas("modificar_entidad")[0].args.entidad.nombre).toBe("Orco jefe");
+    expect(partida.banco.find((e) => e.id === 1)?.nombre).toBe("Orco jefe");
+    expect(partida.entidadEnEdicion?.id).toBe(2);
+    expect(partida.sesionEditor).toBe(sesion + 1);
+  });
+
+  it("también con «Añadir ficha» (un borrador nuevo), y un borrador abierto se crea al cambiar", async () => {
+    const partida = await nuevoStore();
+    conVentana(partida);
+    await partida.abrirEditorEntidad(partida.banco[0]);
+    expect(await partida.abrirEditorEntidad(null, "imagenes/foto.png")).toBe(true);
+    expect(partida.editorEsBorrador).toBe(true);
+    expect(partida.entidadEnEdicion?.foto_url).toBe("imagenes/foto.png");
+    expect(llamadas("modificar_entidad")).toHaveLength(1);
+
+    // El borrador abierto se guarda (crear_entidad) al abrir otra
+    await partida.abrirEditorEntidad(partida.banco[1]);
+    expect(llamadas("crear_entidad")).toHaveLength(1);
+    expect(partida.editorEsBorrador).toBe(false);
+  });
+
+  it("si la abierta no se puede guardar, se queda abierta con el error y no se abre la otra", async () => {
+    const partida = await nuevoStore();
+    conVentana(partida);
+    await partida.abrirEditorEntidad(partida.banco[0]);
+    partida.entidadEnEdicion!.nombre = "  ";
+    const sesion = partida.sesionEditor;
+
+    expect(await partida.abrirEditorEntidad(partida.banco[1])).toBe(false);
+    expect(partida.entidadEnEdicion?.id).toBe(1);
+    expect(partida.errorEditor).toContain("nombre");
+    expect(partida.sesionEditor).toBe(sesion);
+  });
+
+  it("pedir la misma ficha que está abierta no hace nada", async () => {
+    const partida = await nuevoStore();
+    conVentana(partida);
+    await partida.abrirEditorEntidad(partida.banco[0]);
+    expect(await partida.abrirEditorEntidad(partida.banco[0])).toBe(false);
+    expect(llamadas("modificar_entidad")).toHaveLength(0);
+  });
+});
+
+describe("tarea 29: «Fichas activas» solo del mapa abierto", () => {
+  async function conFiltro() {
+    const partida = await nuevoStore();
+    const { ajustesVista } = await import("$lib/ajustesVista.svelte");
+    return { partida, ajustesVista };
+  }
+
+  it("estaEnMapa: solo las puestas en el tablero de ese mapa", async () => {
+    const { estaEnMapa } = await import("$lib/partida.svelte");
+    const i = (id_mapa: number | null, coordenadas: any) => ({ id_mapa, coordenadas }) as any;
+    expect(estaEnMapa(i(1, { Casilla: { x: 0, y: 0 } }), 1)).toBe(true);
+    expect(estaEnMapa(i(2, { Casilla: { x: 0, y: 0 } }), 1)).toBe(false);
+    expect(estaEnMapa(i(null, "NoPuesto"), 1)).toBe(false);
+    expect(estaEnMapa(i(1, "NoPuesto"), 1)).toBe(false);
+    expect(estaEnMapa(i(1, { Casilla: { x: 0, y: 0 } }), null)).toBe(false);
+  });
+
+  it("reordenarConOcultas: las visibles cambian de orden en sus huecos y las ocultas no se mueven", async () => {
+    const { reordenarConOcultas: r } = await import("$lib/partida.svelte");
+    // Ocultas: 1 al principio, 3 en medio, 6 al final; visibles 2, 4, 5
+    expect(r([1, 2, 3, 4, 5, 6], [5, 2, 4])).toEqual([1, 5, 3, 2, 4, 6]);
+    expect(r([1, 2, 3], [1, 2, 3])).toEqual([1, 2, 3]);
+    expect(r([1, 2, 3], [3, 1, 2])).toEqual([3, 1, 2]); // sin ocultas es el orden pedido
+  });
+
+  it("con el filtro solo se ven las del mapa abierto, y cambia con el mapa", async () => {
+    const { partida, ajustesVista } = await conFiltro();
+    await partida.moverInstancia(1, { id_mapa: 1, casilla: { x: 1, y: 1 } });
+    await partida.moverInstancia(2, { id_mapa: 2, casilla: { x: 1, y: 1 } });
+    expect(partida.instanciasVisibles.map((i) => i.id_instancia)).toEqual([1, 2]); // sin filtro, todas
+
+    ajustesVista.alternarSoloMapaActual();
+    expect(partida.mapaActual?.id).toBe(1);
+    expect(partida.instanciasVisibles.map((i) => i.id_instancia)).toEqual([1]);
+    await partida.seleccionarMapa(partida.mapas.find((m) => m.id === 2)!);
+    expect(partida.instanciasVisibles.map((i) => i.id_instancia)).toEqual([2]);
+
+    await partida.quitarDelTablero(2);
+    expect(partida.instanciasVisibles).toEqual([]); // las activas sin colocar no están en ningún mapa
+    ajustesVista.alternarSoloMapaActual();
+  });
+
+  it("↑/↓ recorren solo las que se ven", async () => {
+    const { partida, ajustesVista } = await conFiltro();
+    await partida.moverInstancia(1, { id_mapa: 1, casilla: { x: 1, y: 1 } });
+    await partida.moverInstancia(2, { id_mapa: 2, casilla: { x: 1, y: 1 } });
+    ajustesVista.alternarSoloMapaActual();
+
+    partida.seleccionarInstancia(partida.instancias.find((i) => i.id_instancia === 1)!);
+    expect(partida.seleccionarVecina(1)).toBe(false); // solo hay una visible
+
+    // Con el foco en una oculta, las flechas saltan a las visibles
+    partida.seleccionarInstancia(partida.instancias.find((i) => i.id_instancia === 2)!);
+    expect(partida.seleccionarVecina(1)).toBe(true);
+    expect(partida.idsSeleccionados).toEqual([1]);
+    ajustesVista.alternarSoloMapaActual();
   });
 });

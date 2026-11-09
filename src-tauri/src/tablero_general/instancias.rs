@@ -51,6 +51,7 @@ pub fn instanciar(est: &EstadoPartida, id_entidad: u16, destino: Option<Destino>
         coordenadas,
         activo: true,
         rotacion: 0,
+        espejo: false,
         // La última de «Fichas activas»
         orden: est.instancias_activas.iter().map(|i| i.orden.saturating_add(1)).max().unwrap_or(0),
         // En el tablero, encima de todas; sin colocar no importa
@@ -125,6 +126,12 @@ pub fn rotar(est: &EstadoPartida, id_instancia: u16) -> Result<DeltaPartida, Str
     };
     let (id_mapa, coordenadas) = colocar(est, tablero::lados_instancia(&girada), destino)?;
     Ok(DeltaPartida::InstanciaModificada(Instancia { id_mapa, coordenadas, ..girada }))
+}
+
+/// Pone o quita el espejo de la imagen de la instancia. Solo cambia el aspecto: ni lados ni casilla.
+pub fn espejar(est: &EstadoPartida, id_instancia: u16) -> Result<DeltaPartida, String> {
+    let inst = buscar(est, id_instancia)?;
+    Ok(DeltaPartida::InstanciaModificada(Instancia { espejo: !inst.espejo, ..inst.clone() }))
 }
 
 /// Nuevo orden de «Fichas activas». Deben venir todas las instancias, cada una una vez.
@@ -231,6 +238,7 @@ mod tests {
             foto_encuadre: Default::default(),
             archivos_adjuntos: vec![],
             es_unico,
+            propietarios: vec![],
         }
     }
 
@@ -366,6 +374,36 @@ mod tests {
         hacer(&mut e, |e| mover(e, 1, None));
         hacer(&mut e, |e| rotar(e, 1));
         assert_eq!(e.instancias_activas[0].coordenadas, Coordenada::NoPuesto);
+    }
+
+    #[test]
+    fn espejar_solo_cambia_el_aspecto_y_se_puede_deshacer_con_otro_espejo() {
+        let mut e = estado();
+        hacer(&mut e, |e| instanciar(e, 3, en(1, 5, 5)));
+        let antes = e.instancias_activas[0].clone();
+        assert!(!antes.espejo);
+
+        hacer(&mut e, |e| espejar(e, 1));
+        let i = &e.instancias_activas[0];
+        assert!(i.espejo);
+        assert_eq!((i.coordenadas, i.rotacion, i.capa), (antes.coordenadas, antes.rotacion, antes.capa));
+        assert_eq!(tablero::lados_instancia(i), tablero::lados_instancia(&antes));
+
+        // Gira y sigue en espejo; otro espejo lo quita
+        hacer(&mut e, |e| rotar(e, 1));
+        assert!(e.instancias_activas[0].espejo);
+        hacer(&mut e, |e| espejar(e, 1));
+        assert!(!e.instancias_activas[0].espejo);
+        assert!(espejar(&e, 99).is_err());
+
+        // Una partida antigua no lo trae: sin espejo
+        let vieja: Instancia = serde_json::from_value({
+            let mut v = serde_json::to_value(&e.instancias_activas[0]).unwrap();
+            v.as_object_mut().unwrap().remove("espejo");
+            v
+        })
+        .unwrap();
+        assert!(!vieja.espejo);
     }
 
     #[test]

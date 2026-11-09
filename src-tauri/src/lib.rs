@@ -10,7 +10,7 @@ use tablero_general::partidas;
 use tablero_general::partida::{
     corregir_tamanos_mapas,
     AppState, abrir_archivo_en_sistema, avisar_tablero, borrar_entidad, borrar_mapa, cancelar_borrador_entidad,
-    compactar_partida, borrar_definicion_parametro, modificar_definicion_parametro, crear_definicion_parametro, reordenar_definiciones_parametros,
+    borrar_definicion_parametro, modificar_definicion_parametro, crear_definicion_parametro, reordenar_definiciones_parametros,
     crear_documento_texto, crear_entidad, crear_mapa, crear_zona,
     descartar_archivos_borrador, eliminar_zona, guardar_archivo_texto, importar_archivo,
     importar_imagen, iniciar_autoguardado, iniciar_borrador_entidad, leer_archivo_texto,
@@ -18,8 +18,8 @@ use tablero_general::partida::{
     modificar_entidad, modificar_mapa, modificar_zona, obtener_banco_entidades, obtener_definiciones_parametros,
     obtener_dir_datos,
     obtener_historial_personal, obtener_historial_tiradas, obtener_instancias_activas,
-    instanciar_entidad, instanciar_entidades, borrar_entidades, restaurar_papelera, cerrar_partida, mover_instancia, mover_instancias, borrar_instancia, modificar_valor_actual, rotar_instancia,
-    reordenar_instancias,
+    instanciar_entidad, instanciar_entidades, borrar_entidades, restaurar_papelera, cerrar_partida, mover_instancia, mover_instancias, borrar_instancia, modificar_valor_actual, rotar_instancia, espejar_instancia,
+    reordenar_instancias, elegir_mapa_publico, obtener_mapa_publico,
     obtener_mapas_zona, obtener_miniatura, guardar_miniatura_ficha, obtener_zonas, renombrar_archivo_adjunto,
 };
 
@@ -74,15 +74,9 @@ pub fn run() {
             Ok(())
         })
         .on_window_event(|window, event| {
+            // Cerrar la ventana (la única) cierra la aplicación: se vacía la papelera y se guarda.
             if let tauri::WindowEvent::CloseRequested { .. } = event {
-                let state = window.state::<AppState>();
-                // Solo la ventana principal cierra la aplicación: vacía la papelera y guarda. Cerrar la del
-                // banco (BANCO EXTERNO) no puede vaciarla; solo guarda.
-                if window.label() == "main" {
-                    cerrar_partida(&state);
-                } else {
-                    compactar_partida(&state);
-                }
+                cerrar_partida(&window.state::<AppState>());
             }
         })
         .invoke_handler(tauri::generate_handler![
@@ -107,7 +101,10 @@ pub fn run() {
             borrar_instancia,
             modificar_valor_actual,
             rotar_instancia,
+            espejar_instancia,
             reordenar_instancias,
+            elegir_mapa_publico,
+            obtener_mapa_publico,
             obtener_historial_tiradas,
             obtener_historial_personal,
             crear_zona,

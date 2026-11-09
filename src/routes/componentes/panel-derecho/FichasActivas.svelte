@@ -9,6 +9,7 @@
      Soltar aquí una ficha del banco la activa sin colocar; una del tablero, la quita de él. -->
 <script lang="ts">
   import { partida, numeroDe, veParametro, type Instancia } from "$lib/partida.svelte";
+  import { ajustesVista } from "$lib/ajustesVista.svelte";
   import { arrastre, moverEnLista } from "$lib/arrastreFicha.svelte";
   import { arrastreTirada } from "$lib/arrastreTirada.svelte";
   import { miniaturas } from "$lib/miniaturas.svelte";
@@ -17,7 +18,7 @@
 
   // La miniatura de cada ficha activa (la misma que usan el banco, el arrastre y el tablero)
   $effect(() => {
-    for (const i of partida.instanciasOrdenadas) miniaturas.asegurarFicha(i.base);
+    for (const i of partida.instanciasVisibles) miniaturas.asegurarFicha(i.base);
   });
 
   const FORMA_TIPO = { Enemigo: "cuadrado", NPC: "rombo", Jugador: "circulo" } as const;
@@ -36,8 +37,9 @@
     const a = arrastre.actual;
     return a && "instancia" in a.origen && a.origen.desde === "activas" && a.zona === "activas" ? a.origen.instancia.id_instancia : null;
   });
+  // Con «Este mapa» solo las puestas en el tablero del mapa abierto (`data-indice` es la posición en ESTA lista)
   const visuales = $derived.by(() => {
-    const lista = partida.instanciasOrdenadas;
+    const lista = partida.instanciasVisibles;
     if (idArrastrada === null || arrastre.actual?.indice == null) return lista;
     const ids = moverEnLista(lista.map((i) => i.id_instancia), idArrastrada, arrastre.actual.indice);
     return ids.map((id) => lista.find((i) => i.id_instancia === id)!);
@@ -63,7 +65,22 @@
   }
 </script>
 
-<span class="titulo-mini">FICHAS ACTIVAS</span>
+<div class="cabecera">
+  <span class="titulo-mini">INSTANCIAS</span>
+  <button
+    type="button"
+    class="filtro"
+    class:activo={ajustesVista.soloMapaActual}
+    aria-pressed={ajustesVista.soloMapaActual}
+    data-conserva-foco
+    title={ajustesVista.soloMapaActual
+      ? "Solo las fichas puestas en el mapa abierto. Pulsa para ver todas"
+      : "Pulsa para ver solo las fichas puestas en el mapa abierto"}
+    onclick={() => ajustesVista.alternarSoloMapaActual()}
+  >
+    Este mapa
+  </button>
+</div>
 <div
   class="scroll-fichas"
   data-destino="activas"
@@ -125,6 +142,8 @@
 
   {#if partida.instancias.length === 0}
     <span class="vacio">Arrastra aquí o al tablero una ficha del banco</span>
+  {:else if visuales.length === 0}
+    <span class="vacio">Ninguna ficha puesta en este mapa</span>
   {/if}
 </div>
 
@@ -141,7 +160,21 @@
 {/if}
 
 <style>
-  .titulo-mini { font-size: 10px; font-weight: bold; color: #71717a; margin-bottom: 3px; display: block; }
+  .cabecera { display: flex; justify-content: space-between; align-items: center; margin-bottom: 3px; }
+  .titulo-mini { font-size: 10px; font-weight: bold; color: #71717a; display: block; }
+  /* Mismo aspecto que los filtros rápidos del banco */
+  .filtro {
+    background: #1c1c1f;
+    border: 1px solid #27272a;
+    color: #a1a1aa;
+    font-size: 10px;
+    padding: 1px 6px;
+    border-radius: 3px;
+    cursor: pointer;
+    line-height: normal;
+  }
+  .filtro:hover { background: #27272a; color: #f4f4f5; }
+  .filtro.activo { background: #27272a; color: #ffffff; border-color: #3f3f46; font-weight: bold; }
   .scroll-fichas {
     flex: 1;
     overflow-y: auto;

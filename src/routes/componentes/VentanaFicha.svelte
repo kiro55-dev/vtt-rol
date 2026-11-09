@@ -1,6 +1,11 @@
 <!-- src/routes/componentes/VentanaFicha.svelte -->
 <!-- Ventana flotante (no modal) para crear o editar una ficha. Aquí solo está la vista: la lógica
      (archivos de la sesión, textos, validación, guardar/cancelar/borrar) vive en $lib/editorFicha. -->
+<script lang="ts" module>
+  // Dónde estaba la última ventana: la que la sustituye (al abrir otra ficha) aparece en el mismo sitio
+  let ultimaPosicion = { x: 260, y: 70 };
+</script>
+
 <script lang="ts">
   import { onMount } from "svelte";
   import { partida, type Entidad } from "$lib/partida.svelte";
@@ -14,7 +19,7 @@
 
   let { entidad }: { entidad: Entidad } = $props();
 
-  // +page monta la ventana de nuevo para cada ficha ({#if}), así que basta con crearlo una vez.
+  // +page monta la ventana de nuevo para cada ficha ({#key partida.sesionEditor}), así que basta con crearlo una vez.
   // svelte-ignore state_referenced_locally
   const editor = new EditorFicha(entidad, partida.editorEsBorrador);
   const ficha = editor.entidad;
@@ -22,7 +27,10 @@
   const campos = editor.campos;
 
   let ventana = $state<HTMLDivElement | null>(null);
-  let pos = $state({ x: 260, y: 70 });
+  let pos = $state({ ...ultimaPosicion });
+  $effect(() => {
+    ultimaPosicion = { x: pos.x, y: pos.y };
+  });
 
   function alTeclear(e: KeyboardEvent) {
     if (e.key === "Enter") {
@@ -39,7 +47,9 @@
     ventana?.focus(); // para que Enter/Escape funcionen sin tocar la ventana con el ratón
     editor.abrirPestana(0);
 
-    return alSoltarArchivos((rutas, el) => {
+    // Abrir otra ficha con esta abierta la guarda primero (ver `partida.abrirEditorEntidad`)
+    const dejarDeGuardar = partida.registrarEditor(() => editor.guardar());
+    const dejarDeSoltar = alSoltarArchivos((rutas, el) => {
       if (el?.closest(".caja-foto")) {
         const imagen = rutas.find((r) => esImagen(r, "ficha"));
         if (imagen) return editor.ponerFoto(imagen);
@@ -47,6 +57,10 @@
         return editor.importarArchivos(rutas);
       }
     });
+    return () => {
+      dejarDeGuardar();
+      dejarDeSoltar();
+    };
   });
 </script>
 

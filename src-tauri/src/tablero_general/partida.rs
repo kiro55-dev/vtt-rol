@@ -11,9 +11,11 @@ use tauri_plugin_opener::OpenerExt;
 
 use crate::tablero_general::almacen::{bloquear, Almacen};
 use crate::tablero_general::archivos;
+use crate::tablero_general::cambios_entidad;
 use crate::tablero_general::estado::{self, DeltaPartida, EstadoPartida};
 use crate::tablero_general::imagenes;
 use crate::tablero_general::instancias;
+use crate::tablero_general::jugadores;
 use crate::tablero_general::miniaturas::{self, Tipo};
 use crate::tablero_general::modelos::*;
 use crate::tablero_general::papelera;
@@ -88,6 +90,7 @@ pub fn registrar_tirada(state: &AppState, desglose: &str, total: i32) {
         total,
         comando: desglose.to_string(),
         hora: chrono::Local::now().format("%H:%M").to_string(),
+        jugador: ID_HOST, // FUTURA RED: el jugador que mandó el comando
     };
 
     procesar_delta(state, DeltaPartida::TiradaRealizada(tirada));
@@ -467,6 +470,15 @@ pub fn rotar_instancia(id_instancia: u16, state: State<'_, AppState>) -> Result<
     Ok(())
 }
 
+/// Pone o quita el espejo de la imagen de la instancia (solo aspecto).
+#[tauri::command]
+pub fn espejar_instancia(id_instancia: u16, state: State<'_, AppState>) -> Result<(), String> {
+    let mut est = state.lock();
+    let delta = instancias::espejar(&est, id_instancia)?;
+    registrar(&mut est, &state.almacen, delta);
+    Ok(())
+}
+
 /// Nuevo orden de «Fichas activas» (todas las instancias, de arriba abajo).
 #[tauri::command]
 pub fn reordenar_instancias(ids: Vec<u16>, state: State<'_, AppState>) -> Result<(), String> {
@@ -636,6 +648,25 @@ pub fn corregir_tamanos_mapas(est: &mut EstadoPartida, almacen: &Almacen) {
     }
 }
 
+/// El mapa que ven los jugadores (`None` = ninguno). Lo elige el host aparte del que tiene abierto, así
+/// puede preparar otros mapas sin que se filtre nada. Hoy solo se guarda; lo usará la red (visibilidad.rs).
+#[tauri::command]
+pub fn elegir_mapa_publico(id: Option<u16>, state: State<'_, AppState>) -> Result<(), String> {
+    let mut est = state.lock();
+    if id.is_some_and(|id| !est.mapas.iter().any(|m| m.id == id)) {
+        return Err("Ese mapa no existe".into());
+    }
+    if est.mapa_publico != id {
+        registrar(&mut est, &state.almacen, DeltaPartida::MapaPublicoCambiado(id));
+    }
+    Ok(())
+}
+
+#[tauri::command]
+pub fn obtener_mapa_publico(state: State<'_, AppState>) -> Option<u16> {
+    state.lock().mapa_publico
+}
+
 /// Manda el mapa a la papelera con las instancias que tenía (se puede restaurar con Ctrl+Z).
 #[tauri::command]
 pub fn borrar_mapa(mapa: Mapa, state: State<'_, AppState>) -> Result<(), String> {
@@ -745,6 +776,7 @@ pub fn iniciar_borrador_entidad(
         foto_encuadre: Default::default(),
         archivos_adjuntos: vec![],
         es_unico: false,
+        propietarios: vec![],
     })
 }
 
@@ -807,6 +839,7 @@ fn validar_entidad(est: &EstadoPartida, dir: &Path, e: &Entidad) -> Result<(), S
     for a in e.archivos_adjuntos.iter().flatten() {
         archivos::ruta_segura(dir, a, &["archivos"])?;
     }
+    jugadores::validar_propietarios(est, &e.propietarios)?;
     Ok(())
 }
 
@@ -831,7 +864,9 @@ pub fn crear_entidad(mut entidad: Entidad, state: State<'_, AppState>) -> Result
     Ok(entidad)
 }
 
-/// Guarda los cambios de una ficha. Los adjuntos que ya no están en la lista se borran solos (recursos.rs).
+/// Guarda los cambios de una ficha. El front manda la ficha entera, pero el delta (`EntidadCambiada`) solo
+/// lleva los campos que cambiaron; sin cambios no se registra nada. Los adjuntos que ya no están en la
+/// lista se borran solos (recursos.rs).
 #[tauri::command]
 pub fn modificar_entidad(mut entidad: Entidad, state: State<'_, AppState>) -> Result<(), String> {
     let mut est = state.lock();
@@ -850,8 +885,17 @@ pub fn modificar_entidad(mut entidad: Entidad, state: State<'_, AppState>) -> Re
     normalizar_parametros(&est.definiciones_parametros, &mut entidad.parametros);
     validar_entidad(&est, &state.almacen.dir(), &entidad)?;
 
-    registrar(&mut est, &state.almacen, DeltaPartida::EntidadModificada(entidad));
+    let Some(delta) = delta_de_cambios(&est, &entidad) else { return Ok(()) };
+    registrar(&mut est, &state.almacen, delta);
     Ok(())
+}
+
+/// El delta que deja la ficha guardada como `entidad` (ya normalizada y validada): solo los campos que
+/// cambian. `None` si no cambia nada o la ficha ya no existe.
+fn delta_de_cambios(est: &EstadoPartida, entidad: &Entidad) -> Option<DeltaPartida> {
+    let guardada = est.banco_entidades.iter().find(|e| e.id == entidad.id)?;
+    let cambios = cambios_entidad::entre(guardada, entidad);
+    (!cambios.is_empty()).then(|| DeltaPartida::EntidadCambiada { id: entidad.id, cambios })
 }
 
 /// Manda una ficha a la papelera con sus instancias (se usa la guardada, no la que manda el front).
@@ -1050,6 +1094,61 @@ mod tests {
             validar_parametros(&defs, &con_valores([Numero(10), Numero(1), Numero(-1), Numero(1)])),
             Err("Velocidad: no puede ser negativo".into())
         );
+    }
+
+    fn ficha_valida(propietarios: Vec<IdJugador>) -> Entidad {
+        let mut parametros = Vec::new();
+        normalizar_parametros(&parametros_por_defecto(), &mut parametros);
+        Entidad {
+            id: 1,
+            nombre: "Orco".into(),
+            tipo: TipoEntidad::Enemigo,
+            parametros,
+            cuerpo: Cuerpo::Pequenio,
+            zona_id: 1,
+            foto_url: None,
+            miniatura_url: None,
+            foto_encuadre: Default::default(),
+            archivos_adjuntos: vec![],
+            es_unico: false,
+            propietarios,
+        }
+    }
+
+    fn estado_con_jugadores() -> EstadoPartida {
+        let mut est = EstadoPartida::default();
+        est.zonas = vec![Zona { id: 1, nombre: "Z".into(), orden: 0 }];
+        est.jugadores = vec![Jugador { id: 1, nombre: "Ana".into() }];
+        est
+    }
+
+    #[test]
+    fn una_ficha_solo_puede_ser_de_jugadores_registrados() {
+        let est = estado_con_jugadores();
+        let dir = Path::new("datos");
+        assert!(validar_entidad(&est, dir, &ficha_valida(vec![])).is_ok());
+        assert!(validar_entidad(&est, dir, &ficha_valida(vec![1])).is_ok());
+        for malos in [vec![7], vec![1, 1], vec![ID_HOST]] {
+            assert!(validar_entidad(&est, dir, &ficha_valida(malos.clone())).is_err(), "{malos:?}");
+        }
+    }
+
+    #[test]
+    fn guardar_una_ficha_solo_registra_lo_que_cambia() {
+        let mut est = estado_con_jugadores();
+        est.banco_entidades = vec![ficha_valida(vec![])];
+
+        assert!(delta_de_cambios(&est, &ficha_valida(vec![])).is_none(), "sin cambios no hay delta");
+
+        let mut nueva = ficha_valida(vec![1]);
+        nueva.nombre = "Orco jefe".into();
+        let Some(DeltaPartida::EntidadCambiada { id, cambios }) = delta_de_cambios(&est, &nueva) else { panic!() };
+        assert_eq!(id, 1);
+        assert_eq!(
+            cambios,
+            vec![cambios_entidad::CambioEntidad::Nombre("Orco jefe".into()), cambios_entidad::CambioEntidad::Propietarios(vec![1])]
+        );
+        assert!(delta_de_cambios(&est, &Entidad { id: 9, ..nueva }).is_none(), "una ficha que ya no existe");
     }
 
     #[test]

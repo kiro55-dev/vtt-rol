@@ -67,6 +67,21 @@ export function aplicarDadoAlComando(comando: string, fragmento: string, esSuma:
 }
 
 /**
+ * El desglose listo para `{@html}`: escapa TODO y solo vuelve a permitir `<b>` y `</b>` (las negritas que
+ * pone Rust en el 1 y en la cara máxima). Rust ya solo genera números y palabras fijas, así que es una
+ * defensa de más: aunque algún día llegara por red un desglose manipulado, no se ejecutaría nada.
+ */
+export function desgloseSeguro(desglose: string): string {
+  return desglose
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;")
+    .replace(/&lt;(\/?)b&gt;/g, "<$1b>");
+}
+
+/**
  * `clean` o `c` (solos, da igual mayúsculas) vacían el chat. Mezclados con otra cosas (`c + 1d6`) no
  * lo son: van a Rust como tirada y no es válida. Igual que `es_comando_limpiar` de Rust.
  */
@@ -89,7 +104,8 @@ class Tiradas {
 
   /** Carga el historial guardado en Rust. */
   async cargar() {
-    const guardadas = await invoke<{ hora: string; comando: string; total: number }[]>("obtener_historial_tiradas");
+    // `jugador`: quién tiró (`IdJugador` en Rust; por ahora siempre el host, 0). Aún no se muestra.
+    const guardadas = await invoke<{ hora: string; comando: string; total: number; jugador: number }[]>("obtener_historial_tiradas");
     this.historial = guardadas.map((t) => ({ hora: t.hora, comando: t.comando, total: t.total }));
     this.#salirDelHistorial(); // los comandos anteriores (↑ ↓) también son de la partida abierta
   }
