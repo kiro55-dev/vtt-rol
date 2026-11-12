@@ -139,7 +139,7 @@ async fn atender(red: Arc<Red>, transporte: Transporte) {
         let dentro = red.dentro();
         match dentro.as_ref() {
             Some(s) => (
-                s.sala.coincide(&sala, &secreto),
+                s.sin_llave() || s.sala.coincide(&sala, &secreto),
                 // La prueba se calcula con la dirección por la que llegó el jugador, y solo valen las de ESTE host
                 // (su túnel, su dirección propia o sus IPs en red local): una hecha para otro servidor no vale aquí
                 prueba.as_deref().and_then(|p| s.direcciones().iter().find_map(|d| s.sala.jugador_de_prueba(&reto, d, p))),
@@ -1297,5 +1297,35 @@ mod tests {
         assert_eq!(reqwest::get(url("/../../Cargo.toml")).await.unwrap().status(), 404, "nada fuera de la página");
         // `/ws` y `/imagen` siguen siendo lo que eran
         assert_eq!(reqwest::get(url("/imagen?ruta=imagenes%2Fx.png&sesion=nada")).await.unwrap().status(), 403);
+    }
+
+    #[tokio::test]
+    async fn en_red_local_se_entra_sin_llave_y_en_los_demas_modos_no() {
+        let (red, puerto) = red_de_prueba("srv_sin_llave", None).await;
+        let sin_llave = MensajeCliente::Hola { version: VERSION_PROTOCOLO, sala: "".into(), secreto: "".into(), prueba: None };
+
+        // Modo normal (túnel o dirección propia): sin la llave del enlace, no se pasa del saludo
+        let (mut c, _) = conectar_con_reto(puerto, &origen(&red)).await;
+        mandar(&mut c, &sin_llave).await;
+        assert!(matches!(leer(&mut c).await, MensajeHost::Rechazado { .. }));
+
+        // En red local (como «abrir en LAN»): la confianza está en la red, basta con llegar y dar el nombre
+        red.poner_respaldo_para_tests(crate::red::config::Respaldo::Lan { puerto });
+        let (mut c, _) = conectar_con_reto(puerto, &format!("http://localhost:{puerto}")).await;
+        mandar(&mut c, &sin_llave).await;
+        assert!(matches!(leer(&mut c).await, MensajeHost::Identificate { .. }), "entra sin llave");
+        mandar(&mut c, &MensajeCliente::Unirse { nombre: "Ana".into(), contrasena: None }).await;
+        assert!(matches!(leer(&mut c).await, MensajeHost::Bienvenido { .. }));
+    }
+
+    #[tokio::test]
+    async fn en_red_local_la_contrasena_sigue_valiendo_si_se_pone() {
+        let (red, puerto) = red_de_prueba("srv_lan_contrasena", Some("dragón")).await;
+        red.poner_respaldo_para_tests(crate::red::config::Respaldo::Lan { puerto });
+        let (mut c, _) = conectar_con_reto(puerto, &format!("http://localhost:{puerto}")).await;
+        mandar(&mut c, &MensajeCliente::Hola { version: VERSION_PROTOCOLO, sala: "".into(), secreto: "".into(), prueba: None }).await;
+        assert_eq!(leer(&mut c).await, MensajeHost::Identificate { pide_contrasena: true, error: None });
+        mandar(&mut c, &MensajeCliente::Unirse { nombre: "Ana".into(), contrasena: Some("otra".into()) }).await;
+        assert!(matches!(leer(&mut c).await, MensajeHost::Identificate { error: Some(_), .. }), "sin la contraseña no entra");
     }
 }

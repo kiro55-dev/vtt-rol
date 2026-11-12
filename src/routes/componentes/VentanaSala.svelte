@@ -167,9 +167,10 @@
             <input class="input-texto input-puerto" type="number" min="1024" max="65535" title="Puerto de este equipo" bind:value={puertoPropio} />
           </div>
           <span class="nota aviso">
-            Los jugadores entran con <code>http://&lt;tu IP en esa red&gt;:{puertoPropio}</code> (al abrir verás un enlace por
-            cada red). Va <b>sin cifrar</b>: úsalo solo en redes de confianza y pon contraseña. La primera vez Windows te
-            pedirá permiso en el cortafuegos.
+            Como «abrir en LAN»: los jugadores entran con <code>http://&lt;tu IP en esa red&gt;:{puertoPropio}</code>, sin
+            más (al abrir verás un enlace por cada red). <b>Cualquiera que llegue a esa IP y puerto puede entrar</b>, y va
+            sin cifrar: úsalo en redes de confianza y, si no lo son, pon contraseña. La primera vez Windows te pedirá
+            permiso en el cortafuegos.
           </span>
         {/if}
         {#if modo !== "Cloudflare" && !sala.estado.pagina_incluida}
@@ -215,7 +216,9 @@
       {:else}
         <span class="nota">Abre la sala para obtenerlo.</span>
       {/if}
-      {#if confirmandoEnlace}
+      {#if sala.estado.respaldo.tipo === "Lan"}
+        <!-- En red local el enlace no lleva llave: no hay nada que cambiar -->
+      {:else if confirmandoEnlace}
         <div class="confirmar">
           <span>El enlace actual dejará de servir, los conectados saldrán y todos tendrán que volver a poner la contraseña.</span>
           <div class="fila">

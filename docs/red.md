@@ -47,9 +47,13 @@ https://kiro55-dev.github.io/vtt-rol/#t=…&s=…&k=…
     sala no abre y lo dice.
   - **Red local / VPN** («abrir en LAN»): la app escucha en **todas** las interfaces (`0.0.0.0:<puerto>`) y la
     ventana da un enlace por cada IPv4 del equipo con el nombre de su red (`config::direcciones_lan`, con
-    `if-addrs`; p. ej. «Radmin VPN — `http://26.x.x.x:8080/#s=…&k=…`») y otro de «Este equipo» (`localhost`).
-    **Sin cifrar**: la contraseña y el token viajan en claro dentro de esa red (Radmin, ZeroTier, Hamachi cifran
-    entre sus equipos; una LAN normal no). Windows pide permiso al cortafuegos la primera vez.
+    `if-addrs`; p. ej. «Radmin VPN — `http://26.x.x.x:8080/`») y otro de «Este equipo» (`localhost`). **El enlace va
+    sin llave** (sin `s` ni `k`), como en los juegos: la confianza está en la red, y `SalaAbierta::sin_llave` deja
+    pasar el saludo sin ella solo en este modo. Quien llegue a esa IP y puerto puede entrar (con el nombre, y la
+    contraseña si el host la puso: sigue siendo opcional, y los topes de jugadores y de conexiones siguen valiendo).
+    No hay «generar enlace nuevo» (no hay llave que cambiar). **Sin cifrar**: la contraseña y el token viajan en
+    claro dentro de esa red (Radmin, ZeroTier, Hamachi cifran entre sus equipos; una LAN normal no). Windows pide
+    permiso al cortafuegos la primera vez.
 - **La página de los jugadores va dentro de la app** (`build-jugador/`, `bun run web:build:app`, raíz `/`; la
   incluyen `beforeDevCommand`/`beforeBuildCommand`). El servidor de la sala la sirve en `/` (`red/pagina.rs`, con
   `rust-embed`: en desarrollo la lee del disco, en release va en el ejecutable). Con la dirección propia o en red

@@ -150,14 +150,15 @@ impl SalaAbierta {
                 .iter()
                 .map(|d| EnlaceSala { etiqueta: "Dirección propia".into(), url: format!("https://{d}/#{}", self.fragmento()) })
                 .collect(),
+            // Como «abrir en LAN» de un juego: el enlace es solo `http://<ip>:<puerto>/`, sin llave
             config::Respaldo::Lan { puerto } => {
                 let mut v: Vec<EnlaceSala> = self
                     .lan
                     .iter()
-                    .map(|d| EnlaceSala { etiqueta: d.interfaz.clone(), url: format!("http://{}:{puerto}/#{}", d.ip, self.fragmento()) })
+                    .map(|d| EnlaceSala { etiqueta: d.interfaz.clone(), url: format!("http://{}:{puerto}/", d.ip) })
                     .collect();
                 // Para probar desde este mismo equipo
-                v.push(EnlaceSala { etiqueta: "Este equipo".into(), url: format!("http://localhost:{puerto}/#{}", self.fragmento()) });
+                v.push(EnlaceSala { etiqueta: "Este equipo".into(), url: format!("http://localhost:{puerto}/") });
                 v
             }
         }
@@ -165,6 +166,13 @@ impl SalaAbierta {
 
     fn enlace(&self) -> Option<String> {
         self.enlaces().into_iter().next().map(|e| e.url)
+    }
+
+    /// Si entrar NO exige la llave del enlace (`s` y `k`). Solo en red local: ahí la confianza está en la red, como
+    /// en «abrir en LAN» de un juego (y la contraseña sigue siendo opcional). Con el túnel o la dirección propia, que
+    /// están en internet, el enlace sin llave no vale.
+    fn sin_llave(&self) -> bool {
+        matches!(self.respaldo, config::Respaldo::Lan { .. })
     }
 
     /// Las direcciones por las que los jugadores llegan a ESTA sala (`host` o `host:puerto`): a ellas va atada la
@@ -848,6 +856,11 @@ impl Red {
         });
     }
 
+    /// Cambia cómo está publicada la sala abierta (para probar lo que depende de ello).
+    pub(crate) fn poner_respaldo_para_tests(&self, r: config::Respaldo) {
+        self.dentro().as_mut().unwrap().respaldo = r;
+    }
+
     pub(crate) fn sala_para_tests(&self) -> SalaGuardada {
         self.dentro().as_ref().map(|s| s.sala.clone()).unwrap()
     }
@@ -904,9 +917,9 @@ mod tests {
         assert_eq!(e.enlaces.len(), lan.len() + 1, "una por IP y la de este equipo");
         for (d, enlace) in lan.iter().zip(&e.enlaces) {
             assert_eq!(enlace.etiqueta, d.interfaz);
-            assert!(enlace.url.starts_with(&format!("http://{}:{puerto}/#s=", d.ip)), "{}", enlace.url);
+            assert_eq!(enlace.url, format!("http://{}:{puerto}/", d.ip), "sin llave: solo ip y puerto");
         }
-        assert!(e.enlaces.last().unwrap().url.starts_with(&format!("http://localhost:{puerto}/#s=")));
+        assert_eq!(e.enlaces.last().unwrap().url, format!("http://localhost:{puerto}/"));
         // Escucha también fuera de 127.0.0.1 (en cualquier IP del equipo)
         if let Some(d) = lan.first() {
             assert!(tokio::net::TcpStream::connect((d.ip, puerto)).await.is_ok());

@@ -30,6 +30,11 @@ describe("enlace", () => {
     expect(lan).toMatchObject({ tunel: "26.1.2.3:8080", mismoOrigen: true, seguro: false });
     expect(urlWebSocket(lan)).toBe("ws://26.1.2.3:8080/ws");
 
+    // Red local, como «abrir en LAN»: el enlace es solo ip y puerto, sin llave
+    const sinLlave = leerEnlace("", { host: "26.1.2.3:8080", protocol: "http:" })!;
+    expect(sinLlave).toEqual({ tunel: "26.1.2.3:8080", sala: "lan:26.1.2.3:8080", secreto: "", mismoOrigen: true, seguro: false });
+    expect(leerEnlace("#s=corto", { host: "26.1.2.3:8080", protocol: "http:" }), "una llave a medias no vale").toBeNull();
+    expect(leerEnlace(""), "sin saber dónde está la página").toBeNull();
     expect(leerEnlace(`#s=${S}&k=${K}`), "sin saber dónde está la página").toBeNull();
     expect(leerEnlace(`#s=${S}&k=${K}`, { host: "x.es", protocol: "file:" })).toBeNull();
   });

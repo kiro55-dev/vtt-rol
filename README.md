@@ -37,6 +37,6 @@ disponible).
 Con tailscale instalado, habilitar https certificates dentro de https://console.tailscale.com/admin/dns, y en una terminal ejecutar tailscale funnel http://127.0.0.1:8080 (la primera vez pedira confirmación), poner la url que se obtiene en el programa, y compartir la url que se proporciona a los jugadores y listo.
 
 2 Red local
-La clásica, mediante hamachi o mi recomendación personal, radmin vpn, conectarses todo a una red local y poner ip del host más el puerto, como en minecraft.
+La clásica, mediante hamachi o mi recomendación personal, radmin vpn, conectarses todo a una red local y poner ip del host más el puerto, como en minecraft. Si pide permisos de cortafuegos de la aplicación dadle a permitir o no funcionará
 
 En una tercera etapa muy lejana se pensarán cosas como "Dungeon creator", muros que tapen visibilidad, pero no tengo claro que termine de encargar con la visión del programa, ya se verá.

@@ -2,9 +2,11 @@
 //
 // El enlace que pasa el host. Todo va tras el `#`, que el navegador nunca envía a ningún servidor:
 //  * Con el túnel de Cloudflare: `<página de GitHub Pages>#t=<túnel>&s=<sala>&k=<secreto>`.
-//  * Con la dirección propia o en red local, la página la sirve la propia app del host y el enlace es su dirección:
-//    `https://mi.dominio.es/#s=…&k=…` o `http://26.1.2.3:8080/#s=…&k=…`. Sin `t`: el host es el de la página
-//    («mismo origen»), con su esquema (en red local, `http`/`ws` sin cifrar).
+//  * Con la dirección propia, la página la sirve la propia app del host y el enlace es su dirección:
+//    `https://mi.dominio.es/#s=…&k=…`. Sin `t`: el host es el de la página («mismo origen»).
+//  * En red local (como «abrir en LAN»): `http://26.1.2.3:8080/`, sin nada más. Sin llave: la confianza está en la
+//    red. El host solo la deja pasar en ese modo (`SalaAbierta::sin_llave`); en los demás, un enlace sin `s`/`k` no
+//    entra. Va por `http`/`ws`, sin cifrar.
 // Funciones puras, con tests.
 
 export interface Enlace {
@@ -38,8 +40,14 @@ export function leerEnlace(hash: string, ubicacion?: Ubicacion): Enlace | null {
   const p = new URLSearchParams(hash.replace(/^#/, ""));
   const sala = p.get("s") ?? "";
   const secreto = p.get("k") ?? "";
-  if (!RE_CLAVE.test(sala) || !RE_CLAVE.test(secreto)) return null;
   const t = p.get("t");
+  // Sin llave (red local): solo con la página del propio host. Se recuerda al jugador por esa dirección
+  if (t === null && !sala && !secreto && ubicacion) {
+    const tunel = ubicacion.host.toLowerCase();
+    if (!RE_TUNEL.test(tunel) || !/^https?:$/.test(ubicacion.protocol)) return null;
+    return { tunel, sala: `lan:${tunel}`, secreto: "", mismoOrigen: true, seguro: ubicacion.protocol === "https:" };
+  }
+  if (!RE_CLAVE.test(sala) || !RE_CLAVE.test(secreto)) return null;
   if (t !== null) {
     const tunel = t.toLowerCase();
     if (!RE_TUNEL.test(tunel)) return null;
