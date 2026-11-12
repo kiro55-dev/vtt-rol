@@ -1,0 +1,44 @@
+[package]
+name = "fase0-webrtc"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "Prueba de concepto (fase 0): elegir la librería WebRTC de Rust para el host de OpenRoll"
+license = "GPL-3.0-or-later"
+
+[lib]
+path = "src/lib.rs"
+
+[[bin]]
+name = "servidor-webrtcrs"
+path = "src/bin/servidor_webrtcrs.rs"
+
+[[bin]]
+name = "servidor-str0m"
+path = "src/bin/servidor_str0m.rs"
+
+[[bin]]
+name = "base"
+path = "src/bin/base.rs"
+
+[dependencies]
+tokio = { version = "1", features = ["full"] }
+axum = "0.8.9"
+# Candidata 1: webrtc-rs (cripto `ring`, la de serie)
+webrtc = "0.21.1"
+rtc = "0.21.1"             # el núcleo de webrtc-rs: para crear y cargar el certificado DTLS
+async-trait = "0.1"
+bytes = "1"
+# Candidata 2: str0m con cripto 100 % Rust (sin OpenSSL/CMake/NASM)
+str0m = { version = "0.25.0", default-features = false, features = ["rust-crypto"] }
+sha2 = "0.10"
+base64 = "0.22"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[profile.release]
+codegen-units = 1
+lto = true
+opt-level = 3
+panic = "abort"
+strip = true

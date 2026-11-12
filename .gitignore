@@ -13,3 +13,5 @@ partida.json
 historial_personal.txt
 # La app para los jugadores (bun run web:build): se publica en GitHub Pages desde la acción, no se sube
 /build-web
+/experimentos/**/target
+/experimentos/**/cert-*
