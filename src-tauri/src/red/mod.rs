@@ -13,10 +13,12 @@
 //  * La identidad de la sala (enlace, contraseña, jugadores recordados) está en `sala.json`, que es solo del
 //    host: no pasa por el estado ni por los deltas.
 pub mod comandos;
+pub mod imagenes;
 pub mod peticiones;
 pub mod protocolo;
 pub mod sala;
 pub mod servidor;
+pub mod transporte;
 pub mod tunel;
 pub mod vista;
 

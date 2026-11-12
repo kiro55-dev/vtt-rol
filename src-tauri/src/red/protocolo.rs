@@ -14,6 +14,13 @@
 //     host:  Bienvenido { token }   (el navegador guarda el token: la próxima vez no se pregunta nada)
 //            Identificate { error } (contraseña mal; tras varios intentos, Rechazado)
 // Después: Vista (entera) y Cambios (solo lo que cambia), Aviso (ping, recorrido) y SalaCerrada.
+//
+// Imágenes (por la misma conexión, ver red/imagenes.rs):
+//   cliente: PedirImagen { id, ruta, mini? }      host: ImagenCabecera { id, mime, tam } + trozos binarios
+//            CancelarImagen { id }                       ImagenError { id, error }
+//   cliente: SubirImagen { id, ext, tam } + trozos binarios   host: SubidaOk { id, ruta } / SubidaError
+// Trozo binario: 1 byte de tipo (TROZO_BAJADA / TROZO_SUBIDA) + id (u32, big endian) + hasta 16 KiB de datos.
+// Una imagen termina cuando han llegado `tam` bytes.
 use serde::{Deserialize, Serialize};
 
 use crate::red::vista::{Cambios, VistaJugador};
@@ -21,7 +28,11 @@ use crate::tablero_general::modelos::Jugador;
 use crate::tablero_general::tablero::AvisoTablero;
 
 /// Súbelo cuando cambie cualquier mensaje.
-pub const VERSION_PROTOCOLO: u32 = 5;
+pub const VERSION_PROTOCOLO: u32 = 6;
+
+/// Primer byte de un trozo binario: de una imagen que baja (host → jugador) o que sube (jugador → host).
+pub const TROZO_BAJADA: u8 = 1;
+pub const TROZO_SUBIDA: u8 = 3;
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 #[serde(tag = "tipo")]
@@ -42,6 +53,17 @@ pub enum MensajeCliente {
     /// Una acción del jugador (ver peticiones.rs): `peticion` es `{ cmd, ...args }`, un comando de la lista
     /// blanca. El host contesta con `Respuesta` del mismo `id`.
     Pedir { id: u32, peticion: serde_json::Value },
+    /// Una imagen de la partida (`mini`: "ficha"/"mapa" para su miniatura). Llega con `ImagenCabecera` y trozos.
+    PedirImagen {
+        id: u32,
+        ruta: String,
+        #[serde(default)]
+        mini: Option<String>,
+    },
+    /// Ya no hace falta (p. ej. la imagen dejó de verse).
+    CancelarImagen { id: u32 },
+    /// Va a subir una imagen de `tam` bytes en trozos binarios.
+    SubirImagen { id: u32, ext: String, tam: usize },
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
@@ -89,6 +111,13 @@ pub enum MensajeHost {
     },
     /// El host cerró la sala (o la aplicación).
     SalaCerrada,
+    /// Empieza a llegar la imagen `id`: tipo y tamaño. Detrás, los trozos.
+    ImagenCabecera { id: u32, mime: String, tam: u64 },
+    /// No se puede dar la imagen `id` (no la ve, no existe, o el host está ocupado: `error` = "ocupado").
+    ImagenError { id: u32, error: String },
+    /// La subida `id` se guardó: su ruta ("imagenes/…") para ponerla en la ficha.
+    SubidaOk { id: u32, ruta: String },
+    SubidaError { id: u32, error: String },
 }
 
 #[cfg(test)]

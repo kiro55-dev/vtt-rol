@@ -12,7 +12,8 @@ Navegador del jugador                                  App del host (Tauri)
 https://kiro55-dev.github.io/vtt-rol/#t=…&s=…&k=…
   │  la misma app (src/), compilada para la web; el # nunca sale del navegador
   ├─ wss://xxxx.trycloudflare.com/ws ──► cloudflared ──► 127.0.0.1:<puerto>  (src-tauri/src/red/servidor.rs)
-  └─ https://xxxx.trycloudflare.com/imagen?…                    │
+  │    (juego e imágenes por la misma conexión)                 │
+  └─ https://xxxx.trycloudflare.com/imagen?…  (solo respaldo, sin Service Worker)
                                                          EstadoPartida (Rust, la fuente de verdad)
 ```
 
@@ -131,10 +132,12 @@ imágenes) y `bunx vitest run` (enlace, réplica, respuesta al reto con el mismo
 |---|---|
 | `src-tauri/src/red/mod.rs` | `Red`: la sala abierta, conexiones, `tras_cambio` (enganche de `partida::registrar`), `URL_CLIENTE` |
 | `red/sala.rs` | `sala.json`: identidad del enlace, contraseña, claves de los jugadores recordados |
-| `red/servidor.rs` | axum en 127.0.0.1: `/ws` (saludo y envíos) y `/imagen` |
+| `red/servidor.rs` | axum en 127.0.0.1: `/ws` y el respaldo `/imagen`; `atender`, que atiende a un jugador de principio a fin |
+| `red/transporte.rs` | la conexión con un jugador como dos colas de `Trama` (texto/binario), con contrapresión; adaptador del WebSocket |
+| `red/imagenes.rs` | imágenes de los jugadores: qué puede ver cada uno, bajadas y subidas en trozos de 16 KiB |
 | `red/tunel.rs` | descarga verificada de cloudflared y arranque del túnel |
 | `red/vista.rs` | qué ve cada jugador y la diferencia con lo último enviado |
-| `red/protocolo.rs` | los mensajes (espejo: `src/lib/red/protocolo.ts`); versión 5 |
+| `red/protocolo.rs` | los mensajes (espejo: `src/lib/red/protocolo.ts`); versión 6 |
 | `red/peticiones.rs` | lo que un jugador puede pedir: lista blanca, permisos y ejecución |
 | `red/comandos.rs` | comandos de la ventana «Configuración de sala» |
 | `src/lib/modo.ts`, `src/lib/backend.ts` | host o jugador; la puerta única de datos |
@@ -181,11 +184,26 @@ su pantalla relee. Las peticiones de un jugador se ejecutan **en orden**, una a 
   `atenuada`, no su valor.
 - **Foco.** El foco es de cada uno: un jugador puede dar el foco a cualquier ficha que ve (para ver sus formas
   públicas), pero no se envía a nadie: el host no ve el foco de los jugadores ni ellos el suyo.
-- **Fotos.** Un jugador sube la foto de una ficha suya con `POST /subir?sesion=…&ext=…`: hasta 8 MiB (también sin tener aún
-  ninguna ficha: así puede arrastrar una imagen al banco y crear la suya), solo imágenes de verdad (png, jpg, webp, gif o bmp; **nada de SVG**; el contenido debe ser del tipo
-  que dice la extensión) y hasta 20 por sesión. Solo él la ve (`/imagen`) hasta que la usa una ficha. Como la página
-  está en otra dirección que el túnel, `/imagen` y `/subir` llevan **CORS** para el origen de la página (el mismo
-  que acepta el WebSocket), y `/subir` contesta al `OPTIONS`; así el editor puede recortar la miniatura en un canvas.
+- **Imágenes (protocolo 6).** Van por la **misma conexión** que el juego, no por HTTP (así funcionarán igual cuando la
+  conexión sea WebRTC):
+  - El jugador pide `PedirImagen { id, ruta, mini? }`; el host contesta `ImagenCabecera { id, mime, tam }` y la manda en
+    trozos binarios de 16 KiB (1 byte de tipo + id en 4 bytes + datos), leyéndola del disco trozo a trozo, o
+    `ImagenError` si no la ve (`imagenes::localizar`, la misma regla de siempre: `recurso_visible_para` o subida por
+    él). Como mucho 4 a la vez por jugador y 64 en cola; más → `ImagenError("ocupado")` y el navegador reintenta.
+  - La salida de cada conexión está acotada (`transporte.rs`): una imagen grande va al ritmo del jugador, se intercala
+    con los mensajes del juego y no acumula memoria en el host. A un jugador que no lee en 30 s se le corta.
+  - En el navegador, `src/lib/red/imagenesRed.ts` pide (6 a la vez), junta los trozos y guarda lo bajado en la Cache
+    API (el nombre es el hash del contenido: nunca se queda viejo; se vacía al salir de la sala). Los `<img>` siguen
+    usando una URL normal, `<base>/__imagen?ruta=…`, que contesta el **Service Worker** (`src/service-worker.ts`)
+    pidiéndosela a la página. El SW solo hace eso: no guarda la app en caché. Lo registra a mano la conexión del
+    jugador (`kit.serviceWorker.register: false`; en la app del host nunca se registra).
+  - **Respaldo:** sin Service Worker (p. ej. Firefox en ventana privada), las imágenes se piden por
+    `GET /imagen?ruta=…&sesion=…` del túnel, con la misma regla, CORS para el origen de la página y `Vary: Origin`.
+- **Fotos.** Un jugador sube la foto de una ficha suya por la conexión: `SubirImagen { id, ext, tam }` y trozos
+  binarios → `SubidaOk { id, ruta }` o `SubidaError`. Hasta 8 MiB (también sin tener aún ninguna ficha: así puede
+  arrastrar una imagen al banco y crear la suya), solo imágenes de verdad (png, jpg, webp, gif o bmp; **nada de
+  SVG**; el contenido debe ser del tipo que dice la extensión), 2 a la vez, y hasta 20 por sesión
+  (`imagenes::guardar_subida`). Solo él la ve hasta que la usa una ficha. Ya no hay `POST /subir`.
 - **Fichas propias.** Un jugador crea su ficha como el host (borrador con id reservado → guardar / cancelar), pasando por
   el host: `iniciar_borrador_entidad`, `crear_entidad` y `cancelar_borrador_entidad` están en la lista blanca. El host
   elige la zona (la que pide si la ve, o la primera con un mapa compartido), y al guardar **fuerza** `propietarios =

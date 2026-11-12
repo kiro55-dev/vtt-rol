@@ -5,7 +5,7 @@
 import type { AvisoTablero } from "$lib/avisosTablero";
 import type { DefinicionParametro, Entidad, Instancia, Mapa, Zona } from "$lib/partida.svelte";
 
-export const VERSION_PROTOCOLO = 5;
+export const VERSION_PROTOCOLO = 6;
 
 export interface Jugador {
   id: number;
@@ -55,7 +55,12 @@ export type MensajeCliente =
   | { tipo: "Hola"; version: number; sala: string; secreto: string; prueba?: string }
   | { tipo: "Unirse"; nombre: string; contrasena?: string }
   /** Una acción del jugador: `peticion` es `{ cmd, ...args }` (un comando de la lista blanca del host). */
-  | { tipo: "Pedir"; id: number; peticion: Record<string, unknown> };
+  | { tipo: "Pedir"; id: number; peticion: Record<string, unknown> }
+  /** Una imagen de la partida por esta misma conexión (ver imagenesRed.ts). `mini`: "ficha"/"mapa". */
+  | { tipo: "PedirImagen"; id: number; ruta: string; mini?: string }
+  | { tipo: "CancelarImagen"; id: number }
+  /** Va a subir `tam` bytes en trozos binarios. */
+  | { tipo: "SubirImagen"; id: number; ext: string; tam: number };
 
 export type MensajeHost =
   | { tipo: "Reto"; reto: string }
@@ -67,4 +72,8 @@ export type MensajeHost =
   | { tipo: "Aviso"; aviso: AvisoTablero }
   /** La respuesta a un `Pedir`, después de los `Cambios` que provocó. */
   | { tipo: "Respuesta"; id: number; ok?: unknown; error?: string }
-  | { tipo: "SalaCerrada" };
+  | { tipo: "SalaCerrada" }
+  | { tipo: "ImagenCabecera"; id: number; mime: string; tam: number }
+  | { tipo: "ImagenError"; id: number; error: string }
+  | { tipo: "SubidaOk"; id: number; ruta: string }
+  | { tipo: "SubidaError"; id: number; error: string };

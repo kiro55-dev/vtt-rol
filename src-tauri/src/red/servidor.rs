@@ -1,12 +1,13 @@
 // src-tauri/src/red/servidor.rs
 //
 // El servidor propio del host, en 127.0.0.1 (desde fuera solo se llega por el túnel):
-//  * GET /ws       el WebSocket de cada jugador: saludo (ver protocolo.rs) y luego su vista y sus cambios.
-//  * GET /imagen   fondos de mapa, fotos y miniaturas, solo si el jugador de esa sesión las ve
-//                  (`visibilidad::recurso_visible_para`) o las ha subido él.
-//  * POST /subir   la foto de una ficha suya, subida desde su navegador (solo imágenes de verdad, con tope).
-//  Como el navegador está en otra dirección (GitHub Pages), /imagen y /subir llevan CORS para el origen de la
-//  página (el mismo que acepta el WebSocket) y /subir contesta al OPTIONS.
+//  * GET /ws       el WebSocket de cada jugador: saludo (ver protocolo.rs) y luego su vista, sus cambios y las
+//                  imágenes (pedirlas y subirlas, en trozos: red/imagenes.rs). `atender` no sabe que es un
+//                  WebSocket: trabaja sobre un `Transporte` (red/transporte.rs), igual que hará con WebRTC.
+//  * GET /imagen   respaldo para navegadores sin Service Worker: la misma imagen que `PedirImagen`, con la misma
+//                  regla (`imagenes::localizar`), pidiéndola con la sesión de imágenes del jugador.
+//  Como el navegador está en otra dirección (GitHub Pages), /imagen lleva CORS para el origen de la página (el
+//  mismo que acepta el WebSocket) y el servidor contesta al OPTIONS.
 //
 // Seguridad del saludo:
 //  * Solo se acepta el WebSocket desde el origen del cliente web (`Red::origenes`).
@@ -17,25 +18,24 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use axum::body::Bytes;
-use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
-use axum::extract::{DefaultBodyLimit, Query, State};
+use axum::extract::ws::WebSocketUpgrade;
+use axum::extract::{Query, State};
 use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
-use axum::routing::{get, post};
+use axum::routing::get;
 use axum::Router;
-use futures_util::stream::{SplitSink, SplitStream};
-use futures_util::{SinkExt, StreamExt};
 use serde::Deserialize;
 use tokio::sync::{mpsc, oneshot};
 use tokio::time::timeout;
 
 use crate::red::Red;
+use crate::red::imagenes;
+use crate::red::transporte::{self, Trama, Transporte};
 use crate::red::peticiones;
 use crate::red::protocolo::{MensajeCliente, MensajeHost, VERSION_PROTOCOLO};
 use crate::tablero_general::estado::DeltaPartida;
 use crate::tablero_general::modelos::Jugador;
-use crate::tablero_general::{archivos, jugadores, miniaturas, partida, visibilidad};
+use crate::tablero_general::{jugadores, partida};
 
 const MAX_MENSAJE: usize = 512 * 1024;
 /// Peticiones por segundo de un jugador (arrastrar, tirar, editar...). Con más, se contestan con un error.
@@ -43,15 +43,11 @@ const PETICIONES_POR_SEGUNDO: u32 = 30;
 const TIEMPO_SALUDO: Duration = Duration::from_secs(15);
 /// Tiempo para escribir nombre y contraseña.
 const TIEMPO_IDENTIFICARSE: Duration = Duration::from_secs(180);
-/// Cloudflare corta un WebSocket sin tráfico a los 100 s.
-const CADA_PING: Duration = Duration::from_secs(30);
 /// Peticiones de un jugador esperando a hacerse. Con la cola llena se contesta «vas demasiado rápido».
 const MAX_PETICIONES_EN_COLA: usize = 64;
 /// Mensajes para un jugador sin enviar todavía (su conexión no da abasto o no lee). Pasado esto se le corta: al
 /// reconectar recibe su vista entera, así que no pierde nada, y el host no acumula memoria por él.
 const MAX_MENSAJES_PENDIENTES: usize = 2000;
-/// Tiempo máximo para enviar un mensaje a un jugador.
-const TIEMPO_ENVIO: Duration = Duration::from_secs(30);
 
 /// Arranca el servidor en un puerto libre de 127.0.0.1. Devuelve el puerto y cómo apagarlo.
 pub async fn arrancar(red: Arc<Red>) -> Result<(u16, oneshot::Sender<()>), String> {
@@ -63,7 +59,6 @@ pub async fn arrancar(red: Arc<Red>) -> Result<(u16, oneshot::Sender<()>), Strin
         .route("/", get(|| async { "OpenRoll" }))
         .route("/ws", get(ws))
 .route("/imagen", get(imagen))
-        .route("/subir", post(subir).layer(DefaultBodyLimit::max(crate::tablero_general::imagenes::MAX_BYTES_SUBIDA + 1024)))
         .layer(axum::middleware::from_fn_with_state(red.clone(), cors))
         .with_state(red);
     let (apagar, al_apagar) = oneshot::channel::<()>();
@@ -87,50 +82,51 @@ async fn ws(State(red): State<Arc<Red>>, cabeceras: HeaderMap, ws: WebSocketUpgr
     if !red.origenes.iter().any(|o| o == origen) {
         return (StatusCode::FORBIDDEN, "Origen no permitido").into_response();
     }
-    ws.max_message_size(MAX_MENSAJE).on_upgrade(move |socket| atender(red, socket))
+    ws.max_message_size(MAX_MENSAJE).on_upgrade(move |socket| atender(red, transporte::desde_websocket(socket)))
 }
 
-type Emisor = SplitSink<WebSocket, Message>;
-type Receptor = SplitStream<WebSocket>;
+type Emisor = mpsc::Sender<Trama>;
+type Receptor = mpsc::Receiver<Trama>;
 
-async fn enviar(tx: &mut Emisor, m: &MensajeHost) -> Result<(), ()> {
+async fn enviar(tx: &Emisor, m: &MensajeHost) -> Result<(), ()> {
     let json = serde_json::to_string(m).map_err(|_| ())?;
-    tx.send(Message::Text(json.into())).await.map_err(|_| ())
+    transporte::enviar_trama(tx, Trama::Texto(json)).await
 }
 
-/// El siguiente mensaje del cliente (los pings se saltan). `None` si se cerró o mandó algo que no se entiende.
+/// El siguiente mensaje del cliente (los trozos binarios se saltan). `None` si se cerró o mandó algo que no se
+/// entiende.
 async fn recibir(rx: &mut Receptor) -> Option<MensajeCliente> {
     loop {
-        match rx.next().await? {
-            Ok(Message::Text(t)) => return serde_json::from_str(t.as_str()).ok(),
-            Ok(Message::Ping(_) | Message::Pong(_)) => continue,
-            _ => return None,
+        match rx.recv().await? {
+            Trama::Texto(t) => return serde_json::from_str(&t).ok(),
+            Trama::Binario(_) => continue,
         }
     }
 }
 
-async fn rechazar(tx: &mut Emisor, motivo: &str) {
+/// Avisa del motivo. La conexión se cierra al soltar el transporte (al salir de `atender`).
+async fn rechazar(tx: &Emisor, motivo: &str) {
     let _ = enviar(tx, &MensajeHost::Rechazado { motivo: motivo.into() }).await;
-    let _ = tx.close().await;
 }
 
-async fn atender(red: Arc<Red>, socket: WebSocket) {
-    let (mut tx, mut rx) = socket.split();
+/// Atiende a un jugador de principio a fin, venga por donde venga (`Transporte`).
+async fn atender(red: Arc<Red>, transporte: Transporte) {
+    let Transporte { tx, mut rx } = transporte;
     // Mientras no es nadie ocupa una plaza: así no se pueden abrir cientos de conexiones que se quedan esperando
     let Some(plaza) = red.plaza_saludo() else {
-        return rechazar(&mut tx, "Hay demasiada gente entrando a la vez: prueba en un momento").await;
+        return rechazar(&tx, "Hay demasiada gente entrando a la vez: prueba en un momento").await;
     };
 
     // 1. Reto y Hola: el enlace (y la prueba, si el navegador ya entró antes)
     let reto = crate::red::sala::reto();
-    if enviar(&mut tx, &MensajeHost::Reto { reto: reto.clone() }).await.is_err() {
+    if enviar(&tx, &MensajeHost::Reto { reto: reto.clone() }).await.is_err() {
         return;
     }
     let Ok(Some(MensajeCliente::Hola { version, sala, secreto, prueba })) = timeout(TIEMPO_SALUDO, recibir(&mut rx)).await else {
-        return rechazar(&mut tx, "Saludo no válido").await;
+        return rechazar(&tx, "Saludo no válido").await;
     };
     if version != VERSION_PROTOCOLO {
-        return rechazar(&mut tx, "Versión distinta de la del host: recarga la página").await;
+        return rechazar(&tx, "Versión distinta de la del host: recarga la página").await;
     }
     let (valido, recordado, pide_contrasena) = {
         let dentro = red.dentro();
@@ -148,7 +144,7 @@ async fn atender(red: Arc<Red>, socket: WebSocket) {
         }
     };
     if !valido {
-        return rechazar(&mut tx, "Este enlace ya no vale: pide uno nuevo al host").await;
+        return rechazar(&tx, "Este enlace ya no vale: pide uno nuevo al host").await;
     }
     // La clave debe ser de un jugador que sigue en la partida
     let recordado = recordado.and_then(|id| red.estado_partida().jugadores.iter().find(|j| j.id == id).cloned());
@@ -156,7 +152,7 @@ async fn atender(red: Arc<Red>, socket: WebSocket) {
     // 2. Si no se le recuerda: nombre y contraseña
     let (yo, token_nuevo) = match recordado {
         Some(j) => (j, None),
-        None => match identificar(&red, &mut tx, &mut rx, pide_contrasena).await {
+        None => match identificar(&red, &tx, &mut rx, pide_contrasena).await {
             Some(r) => r,
             None => return,
         },
@@ -166,10 +162,10 @@ async fn atender(red: Arc<Red>, socket: WebSocket) {
 
     // 3. Bienvenida y vista inicial. A partir de aquí, todo lo que se le envía pasa por su canal.
     let Some(sesion) = red.sesion_de(yo.id) else {
-        return rechazar(&mut tx, "La sala se ha cerrado").await;
+        return rechazar(&tx, "La sala se ha cerrado").await;
     };
     let bienvenida = MensajeHost::Bienvenido { yo: yo.clone(), token: token_nuevo, sesion: sesion.clone() };
-    if enviar(&mut tx, &bienvenida).await.is_err() {
+    if enviar(&tx, &bienvenida).await.is_err() {
         return;
     }
     let (canal, mut salida) = mpsc::unbounded_channel();
@@ -180,7 +176,7 @@ async fn atender(red: Arc<Red>, socket: WebSocket) {
         red.conectar(&est, yo.id, canal)
     };
     let Some(id_conexion) = id_conexion else {
-        return rechazar(&mut tx, "La sala se ha cerrado").await;
+        return rechazar(&tx, "La sala se ha cerrado").await;
     };
     red.avisar();
 
@@ -203,41 +199,70 @@ async fn atender(red: Arc<Red>, socket: WebSocket) {
         }
     });
     let mut limite = LimitePeticiones::nuevo();
+    // Imágenes por esta misma conexión (ver red/imagenes.rs). Al salir se cancelan las que estén a medias.
+    let bajadas = imagenes::Bajadas::default();
+    let mut subidas = imagenes::Subidas::default();
+    let mut repaso = tokio::time::interval(Duration::from_secs(10));
 
-    let mut ping = tokio::time::interval(CADA_PING);
-    ping.tick().await;
     loop {
         tokio::select! {
             m = salida.recv() => {
                 let Some(m) = m else { break };
                 let fin = matches!(m, MensajeHost::Rechazado { .. } | MensajeHost::SalaCerrada);
-                let enviado = matches!(timeout(TIEMPO_ENVIO, enviar(&mut tx, &m)).await, Ok(Ok(())));
-                if !enviado || fin || salida.len() > MAX_MENSAJES_PENDIENTES {
+                // `enviar` espera si el jugador no lee al ritmo (contrapresión) y se rinde a los `TIEMPO_ENVIO`
+                if enviar(&tx, &m).await.is_err() || fin || salida.len() > MAX_MENSAJES_PENDIENTES {
                     break;
                 }
             }
-            entrante = rx.next() => match entrante {
-                Some(Ok(Message::Text(t))) => {
-                    // Lo que no se entiende se ignora; una acción pasa por el límite y por la cola
-                    if let Ok(MensajeCliente::Pedir { id, peticion }) = serde_json::from_str(t.as_str()) {
+            entrante = rx.recv() => match entrante {
+                // Lo que no se entiende se ignora
+                Some(Trama::Texto(t)) => match serde_json::from_str::<MensajeCliente>(&t) {
+                    // Una acción pasa por el límite y por la cola
+                    Ok(MensajeCliente::Pedir { id, peticion }) => {
                         let aceptada = limite.permite() && pedidas.try_send((id, peticion)).is_ok();
                         if !aceptada {
                             let _ = avisos.send(MensajeHost::Respuesta { id, ok: None, error: Some("Vas demasiado rápido".into()) });
                         }
                     }
-                }
-                Some(Ok(Message::Ping(_) | Message::Pong(_) | Message::Binary(_))) => {}
-                _ => break,
+                    // Las imágenes tienen su propio tope (en marcha y en cola): un banco lleno de miniaturas las
+                    // pide todas de golpe
+                    Ok(MensajeCliente::PedirImagen { id, ruta, mini }) => bajadas.pedir(red.clone(), yo.id, id, ruta, mini, tx.clone()),
+                    Ok(MensajeCliente::CancelarImagen { id }) => bajadas.cancelar(id),
+                    Ok(MensajeCliente::SubirImagen { id, ext, tam }) => {
+                        let empezada = if limite.permite() { subidas.empezar(id, ext, tam) } else { Err("Vas demasiado rápido".into()) };
+                        if let Err(error) = empezada {
+                            let _ = avisos.send(MensajeHost::SubidaError { id, error });
+                        }
+                    }
+                    _ => {}
+                },
+                Some(Trama::Binario(b)) => match subidas.trozo(&b) {
+                    Some(imagenes::FinSubida::Completa(id, datos, ext)) => {
+                        let (r, aviso, jugador) = (red.clone(), avisos.clone(), yo.id);
+                        tokio::spawn(async move {
+                            let guardada = tokio::task::spawn_blocking(move || imagenes::guardar_subida(&r, jugador, &datos, &ext)).await;
+                            let _ = aviso.send(match guardada {
+                                Ok(Ok(ruta)) => MensajeHost::SubidaOk { id, ruta },
+                                Ok(Err(error)) => MensajeHost::SubidaError { id, error },
+                                Err(_) => MensajeHost::SubidaError { id, error: "No se pudo guardar la imagen".into() },
+                            });
+                        });
+                    }
+                    Some(imagenes::FinSubida::Mal(id, error)) => {
+                        let _ = avisos.send(MensajeHost::SubidaError { id, error });
+                    }
+                    None => {}
+                },
+                None => break,
             },
-            _ = ping.tick() => {
-                if tx.send(Message::Ping(Bytes::new())).await.is_err() {
-                    break;
+            _ = repaso.tick() => {
+                for id in subidas.caducar() {
+                    let _ = avisos.send(MensajeHost::SubidaError { id, error: "La subida se ha cortado".into() });
                 }
             }
         }
     }
     red.desconectar(yo.id, id_conexion);
-    let _ = tx.close().await;
 }
 
 /// Cuenta las peticiones de la última ventana de un segundo.
@@ -262,7 +287,7 @@ impl LimitePeticiones {
 
 /// Pide nombre y contraseña hasta que valgan. Registra al jugador en la partida (delta `JugadorRegistrado`) y
 /// le da un token para que su navegador entre solo la próxima vez. `None` si hay que cortar.
-async fn identificar(red: &Arc<Red>, tx: &mut Emisor, rx: &mut Receptor, pide_contrasena: bool) -> Option<(Jugador, Option<String>)> {
+async fn identificar(red: &Arc<Red>, tx: &Emisor, rx: &mut Receptor, pide_contrasena: bool) -> Option<(Jugador, Option<String>)> {
     let mut fallos = 0;
     let mut error = None;
     loop {
@@ -329,45 +354,18 @@ struct PedidoImagen {
     sesion: String,
 }
 
-fn tipo_mime(ruta: &str) -> &'static str {
-    match ruta.rsplit('.').next().map(|e| e.to_ascii_lowercase()).as_deref() {
-        Some("png") => "image/png",
-        Some("jpg" | "jpeg") => "image/jpeg",
-        Some("gif") => "image/gif",
-        Some("webp") => "image/webp",
-        Some("bmp") => "image/bmp",
-        Some("svg") => "image/svg+xml",
-        Some("avif") => "image/avif",
-        _ => "application/octet-stream",
-    }
-}
-
 async fn imagen(State(red): State<Arc<Red>>, Query(p): Query<PedidoImagen>) -> Response {
     let Some(jugador) = red.jugador_de_sesion(&p.sesion) else {
         return StatusCode::FORBIDDEN.into_response();
     };
-    let Some(dir) = red.dir_sala() else {
-        return StatusCode::NOT_FOUND.into_response();
-    };
-    let visible = visibilidad::recurso_visible_para(jugador, &red.estado_partida(), &p.ruta)
-        || red.subidas_de(jugador).contains(&p.ruta); // lo que acaba de subir, aunque aún no lo use ninguna ficha
-    if !visible {
-        return StatusCode::NOT_FOUND.into_response();
-    }
-    let tipo = p.mini.as_deref().and_then(miniaturas::Tipo::desde_texto);
-    let ruta = p.ruta;
-    let leido = tokio::task::spawn_blocking(move || -> Result<(Vec<u8>, &'static str), String> {
-        let final_ = match tipo {
-            Some(t) => miniaturas::asegurar(&dir, &ruta, t)?.unwrap_or(ruta),
-            None => ruta,
-        };
-        let camino = archivos::ruta_segura(&dir, &final_, &["imagenes", "miniaturas"])?;
-        let datos = std::fs::read(camino).map_err(|e| e.to_string())?;
-        Ok((datos, tipo_mime(&final_)))
+    let r = red.clone();
+    let leido = tokio::task::spawn_blocking(move || {
+        let (camino, mime) = imagenes::localizar(&r, jugador, &p.ruta, p.mini.as_deref())?;
+        std::fs::read(camino).ok().map(|datos| (datos, mime))
     })
     .await;
     match leido {
-        Ok(Ok((datos, mime))) => {
+        Ok(Some((datos, mime))) => {
             let mut r = datos.into_response();
             let c = r.headers_mut();
             c.insert(header::CONTENT_TYPE, HeaderValue::from_static(mime));
@@ -403,7 +401,7 @@ async fn cors(State(red): State<Arc<Red>>, peticion: axum::extract::Request, sig
         let c = r.headers_mut();
         c.insert(header::ACCESS_CONTROL_ALLOW_ORIGIN, o);
         if preflight {
-            c.insert(header::ACCESS_CONTROL_ALLOW_METHODS, HeaderValue::from_static("GET, POST, OPTIONS"));
+            c.insert(header::ACCESS_CONTROL_ALLOW_METHODS, HeaderValue::from_static("GET, OPTIONS"));
             c.insert(header::ACCESS_CONTROL_ALLOW_HEADERS, HeaderValue::from_static("content-type"));
             c.insert(header::ACCESS_CONTROL_MAX_AGE, HeaderValue::from_static("600"));
         }
@@ -411,40 +409,10 @@ async fn cors(State(red): State<Arc<Red>>, peticion: axum::extract::Request, sig
     r
 }
 
-#[derive(Deserialize)]
-struct PedidoSubida {
-    sesion: String,
-    /// Extensión del archivo (png, jpg...). El contenido se comprueba de todos modos.
-    ext: String,
-}
-
-/// Un jugador sube la foto de una de sus fichas. Solo si tiene alguna, solo imágenes de verdad y con tope. Se
-/// guarda como cualquier imagen (por su hash) y se anota como suya: solo ella podrá verla y usarla en su ficha.
-async fn subir(State(red): State<Arc<Red>>, cabeceras: HeaderMap, Query(p): Query<PedidoSubida>, cuerpo: Bytes) -> Response {
-    if origen_permitido(&red, &cabeceras).is_none() {
-        return (StatusCode::FORBIDDEN, "Origen no permitido").into_response();
-    }
-    let Some(jugador) = red.jugador_de_sesion(&p.sesion) else {
-        return (StatusCode::FORBIDDEN, "Sesión no válida").into_response();
-    };
-    let Some(dir) = red.dir_sala() else {
-        return StatusCode::NOT_FOUND.into_response();
-    };
-    let guardada = tokio::task::spawn_blocking(move || crate::tablero_general::imagenes::importar_bytes(&dir, &cuerpo, &p.ext)).await;
-    let ruta = match guardada {
-        Ok(Ok(ruta)) => ruta,
-        Ok(Err(e)) => return (StatusCode::BAD_REQUEST, e).into_response(),
-        Err(_) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
-    };
-    if let Err(e) = red.anotar_subida(jugador, ruta.clone()) {
-        return (StatusCode::TOO_MANY_REQUESTS, e).into_response();
-    }
-    axum::Json(serde_json::json!({ "ruta": ruta })).into_response()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::HashMap;
     use crate::red::vista::VistaJugador;
     use crate::tablero_general::almacen::Almacen;
     use crate::tablero_general::almacen::pruebas::dir_temporal;
@@ -928,15 +896,8 @@ mod tests {
     #[tokio::test]
     async fn una_foto_subida_que_no_usa_nadie_se_borra_al_cerrar_la_sala() {
         let sala = sala_con_app("srv_subida_huerfana").await;
-        let (_ana, _, sesion) = entrar(&sala, "Ana").await;
-        let r = reqwest::Client::new()
-            .post(format!("http://127.0.0.1:{}/subir?sesion={sesion}&ext=png", sala.puerto))
-            .header("origin", sala.red.origenes[0].clone())
-            .body(png())
-            .send()
-            .await
-            .unwrap();
-        let ruta = r.json::<Value>().await.unwrap()["ruta"].as_str().unwrap().to_string();
+        let (_ana, id, _) = entrar(&sala, "Ana").await;
+        let ruta = imagenes::guardar_subida(&sala.red, id, &png(), "png").unwrap();
         let archivo = sala.estado().almacen.dir().join(&ruta);
         assert!(archivo.is_file());
         sala.red.cerrar();
@@ -967,7 +928,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn un_jugador_sube_la_foto_de_su_ficha_con_cors_y_solo_ve_lo_que_sube() {
+    async fn la_foto_subida_solo_la_ve_quien_la_subio_y_el_respaldo_http_lleva_cors() {
         let sala = sala_con_app("srv_subida").await;
         let (_ana, id, sesion) = entrar(&sala, "Ana").await;
         let (_luis, _, sesion_luis) = entrar(&sala, "Luis").await;
@@ -975,25 +936,10 @@ mod tests {
         let origen = sala.red.origenes[0].clone();
         let url = |camino: &str| format!("http://127.0.0.1:{}{camino}", sala.puerto);
         let cliente = reqwest::Client::new();
-        let subir = |sesion: &str, ext: &str, cuerpo: Vec<u8>, con_origen: bool| {
-            let mut r = cliente.post(url(&format!("/subir?sesion={sesion}&ext={ext}"))).body(cuerpo);
-            if con_origen {
-                r = r.header("origin", origen.clone());
-            }
-            r.send()
-        };
-
-        assert_eq!(subir(&sesion, "png", png(), false).await.unwrap().status(), 403, "sin origen de la página");
-        assert_eq!(subir("otra", "png", png(), true).await.unwrap().status(), 403, "sin sesión");
-        assert_eq!(subir(&sesion, "png", b"esto no es una imagen".to_vec(), true).await.unwrap().status(), 400);
-        assert_eq!(subir(&sesion, "svg", png(), true).await.unwrap().status(), 400, "SVG no");
-        assert_eq!(subir(&sesion, "jpg", png(), true).await.unwrap().status(), 400, "no es del tipo que dice");
-
-        let r = subir(&sesion, "png", png(), true).await.unwrap();
-        assert_eq!(r.status(), 200);
-        assert_eq!(r.headers()["access-control-allow-origin"], origen.as_str());
-        let ruta = r.json::<Value>().await.unwrap()["ruta"].as_str().unwrap().to_string();
+        // Las comprobaciones de la subida (solo imágenes de verdad, tamaño...) están en la de por el protocolo
+        let ruta = imagenes::guardar_subida(&sala.red, id, &png(), "png").unwrap();
         assert!(ruta.starts_with("imagenes/") && ruta.ends_with(".png"));
+        assert!(imagenes::guardar_subida(&sala.red, id, &png(), "svg").is_err(), "SVG no");
 
         // La ve quien la subió (con CORS, para recortarla en un canvas) y nadie más: aún no la usa ninguna ficha
         let pedir_imagen = |sesion: &str| cliente.get(url(&format!("/imagen?ruta={ruta}&sesion={sesion}"))).header("origin", origen.clone()).send();
@@ -1009,29 +955,21 @@ mod tests {
         assert!(sin_origen.headers().get("access-control-allow-origin").is_none());
 
         // El pre-vuelo del navegador
-        let r = cliente.request(reqwest::Method::OPTIONS, url("/subir")).header("origin", origen.clone()).send().await.unwrap();
+        let r = cliente.request(reqwest::Method::OPTIONS, url("/imagen")).header("origin", origen.clone()).send().await.unwrap();
         assert_eq!(r.status(), 204);
         assert_eq!(r.headers()["access-control-allow-origin"], origen.as_str());
-        let r = cliente.request(reqwest::Method::OPTIONS, url("/subir")).header("origin", "https://malo.example").send().await.unwrap();
+        let r = cliente.request(reqwest::Method::OPTIONS, url("/imagen")).header("origin", "https://malo.example").send().await.unwrap();
         assert!(r.headers().get("access-control-allow-origin").is_none(), "otro origen, sin permiso");
     }
 
     #[tokio::test]
     async fn editar_su_ficha_con_la_foto_subida_llega_a_la_partida() {
         let sala = sala_con_app("srv_editar").await;
-        let (mut ana, id, sesion) = entrar(&sala, "Ana").await;
+        let (mut ana, id, _) = entrar(&sala, "Ana").await;
         poner_fichas(&sala, id);
         vaciar(&mut ana).await;
 
-        let origen = sala.red.origenes[0].clone();
-        let r = reqwest::Client::new()
-            .post(format!("http://127.0.0.1:{}/subir?sesion={sesion}&ext=png", sala.puerto))
-            .header("origin", origen)
-            .body(png())
-            .send()
-            .await
-            .unwrap();
-        let foto = r.json::<Value>().await.unwrap()["ruta"].as_str().unwrap().to_string();
+        let foto = imagenes::guardar_subida(&sala.red, id, &png(), "png").unwrap();
 
         let guardada = sala.estado().lock().banco_entidades.iter().find(|e| e.id == 10).unwrap().clone();
         let editar = |f: &dyn Fn(&mut Entidad)| {
@@ -1119,5 +1057,212 @@ mod tests {
         let mut anulados = anulados.lock().unwrap().clone();
         anulados.sort();
         assert_eq!(anulados, vec![ids[1], ids[2]]);
+    }
+
+    // ------------------------------------------------------------------
+    // `atender` sobre un transporte en memoria (sin WebSocket)
+    // ------------------------------------------------------------------
+
+    async fn leer_mem(t: &mut Transporte) -> MensajeHost {
+        loop {
+            match tokio::time::timeout(Duration::from_secs(10), t.rx.recv()).await.expect("no llegó a tiempo").expect("cerrado") {
+                Trama::Texto(s) => return serde_json::from_str(&s).unwrap(),
+                Trama::Binario(_) => continue,
+            }
+        }
+    }
+
+    async fn mandar_mem(t: &Transporte, m: &MensajeCliente) {
+        transporte::enviar_trama(&t.tx, Trama::Texto(serde_json::to_string(m).unwrap())).await.unwrap();
+    }
+
+    /// Entra un jugador por un transporte en memoria. Devuelve el extremo del jugador, ya con la vista leída.
+    async fn entrar_mem(red: &Arc<Red>, nombre: &str) -> Transporte {
+        let (host, mut j) = transporte::en_memoria();
+        tokio::spawn(atender(red.clone(), host));
+        let MensajeHost::Reto { reto } = leer_mem(&mut j).await else { panic!("primero va el reto") };
+        mandar_mem(&j, &hola(red, &reto, None)).await;
+        assert!(matches!(leer_mem(&mut j).await, MensajeHost::Identificate { .. }));
+        mandar_mem(&j, &MensajeCliente::Unirse { nombre: nombre.into(), contrasena: None }).await;
+        assert!(matches!(leer_mem(&mut j).await, MensajeHost::Bienvenido { .. }));
+        assert!(matches!(leer_mem(&mut j).await, MensajeHost::Vista { .. }));
+        j
+    }
+
+    #[tokio::test]
+    async fn atender_funciona_igual_sobre_un_transporte_en_memoria() {
+        let (red, _) = red_de_prueba("srv_memoria", None).await;
+        let mut j = entrar_mem(&red, "Ana").await;
+        assert_eq!(red.conectados(), vec![1]);
+        // Una acción recibe su respuesta por el mismo transporte
+        mandar_mem(&j, &MensajeCliente::Pedir { id: 1, peticion: serde_json::json!({ "cmd": "tirar_dado", "comando": "1d6" }) }).await;
+        assert!(matches!(leer_mem(&mut j).await, MensajeHost::Respuesta { id: 1, .. }));
+        // Al soltar el transporte del jugador, se le desconecta
+        drop(j);
+        for _ in 0..50 {
+            if red.conectados().is_empty() {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        panic!("seguía conectado");
+    }
+
+    #[tokio::test]
+    async fn a_un_jugador_que_no_lee_se_le_corta_sin_acumular_mensajes() {
+        let (red, _) = red_de_prueba("srv_no_lee", None).await;
+        let j = entrar_mem(&red, "Ana").await;
+        // Más respuestas de las que caben en su cola de salida, y no lee ninguna
+        for id in 0..(transporte::CAPACIDAD as u32 + 10) {
+            mandar_mem(&j, &MensajeCliente::Pedir { id, peticion: serde_json::json!({ "cmd": "tirar_dado", "comando": "1d6" }) }).await;
+        }
+        let t0 = std::time::Instant::now();
+        while !red.conectados().is_empty() {
+            assert!(t0.elapsed() < transporte::TIEMPO_ENVIO * 3, "debía cortarle al no poder enviarle nada");
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // Imágenes por el protocolo (PedirImagen / SubirImagen)
+    // ------------------------------------------------------------------
+
+    /// Una sala con el mapa 1 compartido (fondo `imagenes/fondo.png`, de `tam` bytes) y el 2 sin compartir.
+    async fn sala_con_fondo(nombre: &str, tam: usize) -> (Arc<Red>, Vec<u8>) {
+        let (red, _) = red_de_prueba(nombre, None).await;
+        let dir = red.dir_sala().unwrap();
+        std::fs::create_dir_all(dir.join("imagenes")).unwrap();
+        let fondo: Vec<u8> = (0..tam).map(|i| (i * 7 % 251) as u8).collect();
+        std::fs::write(dir.join("imagenes/fondo.png"), &fondo).unwrap();
+        std::fs::write(dir.join("imagenes/oculto.png"), b"PNG oculto").unwrap();
+        {
+            let mut est = red.estado_partida();
+            let mapa = |id, ruta: &str, compartido| crate::tablero_general::modelos::Mapa {
+                id, id_zona: 1, nombre: "M".into(), url_imagen_fondo: Some(ruta.into()), ancho: 1000, alto: 1000, rejilla: 50,
+                color_opacidad: vec![255, 255, 255, 76], grosor: 1, orden: 0, compartido,
+            };
+            est.mapas = vec![mapa(1, "imagenes/fondo.png", true), mapa(2, "imagenes/oculto.png", false)];
+        }
+        (red, fondo)
+    }
+
+    type Imagen = Result<(String, Vec<u8>), String>;
+
+    /// Recoge lo que llega para las imágenes `ids` (que pueden llegar intercaladas): bytes y tipo, o el error.
+    async fn recibir_imagenes(j: &mut Transporte, ids: &[u32]) -> HashMap<u32, Imagen> {
+        let mut listas: HashMap<u32, Imagen> = HashMap::new();
+        let mut a_medias: HashMap<u32, (String, u64, Vec<u8>)> = HashMap::new();
+        while listas.len() < ids.len() {
+            let t = tokio::time::timeout(Duration::from_secs(10), j.rx.recv()).await.expect("no llegó a tiempo").expect("cerrado");
+            match t {
+                Trama::Texto(s) => match serde_json::from_str::<MensajeHost>(&s).unwrap() {
+                    MensajeHost::ImagenCabecera { id, mime, tam } => {
+                        a_medias.insert(id, (mime, tam, Vec::new()));
+                    }
+                    MensajeHost::ImagenError { id, error } => {
+                        listas.insert(id, Err(error));
+                    }
+                    _ => {}
+                },
+                Trama::Binario(b) => {
+                    let (tipo, id, trozo) = imagenes::leer_trozo(&b).unwrap();
+                    assert_eq!(tipo, crate::red::protocolo::TROZO_BAJADA);
+                    assert!(trozo.len() <= imagenes::TROZO, "trozos de 16 KiB como mucho");
+                    let (_, _, datos) = a_medias.get_mut(&id).expect("los trozos llegan después de su cabecera");
+                    datos.extend_from_slice(trozo);
+                }
+            }
+            let terminadas: Vec<u32> = a_medias.iter().filter(|(_, (_, tam, d))| d.len() as u64 == *tam).map(|(id, _)| *id).collect();
+            for id in terminadas {
+                let (mime, _, datos) = a_medias.remove(&id).unwrap();
+                listas.insert(id, Ok((mime, datos)));
+            }
+        }
+        listas
+    }
+
+    async fn recibir_imagen(j: &mut Transporte, id: u32) -> Imagen {
+        recibir_imagenes(j, &[id]).await.remove(&id).unwrap()
+    }
+
+    #[tokio::test]
+    async fn una_imagen_llega_en_trozos_por_la_conexion_y_solo_si_la_ve() {
+        let (red, fondo) = sala_con_fondo("srv_img_proto", 100 * 1024 + 7).await;
+        let mut j = entrar_mem(&red, "Ana").await;
+        let pedir = |id, ruta: &str| MensajeCliente::PedirImagen { id, ruta: ruta.into(), mini: None };
+
+        mandar_mem(&j, &pedir(1, "imagenes/fondo.png")).await;
+        let (mime, datos) = recibir_imagen(&mut j, 1).await.unwrap();
+        assert_eq!(mime, "image/png");
+        assert_eq!(datos, fondo, "llega entera y en orden (7 trozos)");
+
+        mandar_mem(&j, &pedir(2, "imagenes/oculto.png")).await;
+        assert!(recibir_imagen(&mut j, 2).await.is_err(), "de un mapa sin compartir, no");
+        mandar_mem(&j, &pedir(3, "imagenes/no_existe.png")).await;
+        assert!(recibir_imagen(&mut j, 3).await.is_err());
+        mandar_mem(&j, &pedir(4, "../../fuera.png")).await;
+        assert!(recibir_imagen(&mut j, 4).await.is_err(), "ruta fuera de la partida");
+    }
+
+    #[tokio::test]
+    async fn con_demasiadas_imagenes_pedidas_el_host_contesta_ocupado() {
+        let (red, _) = sala_con_fondo("srv_img_ocupado", 100 * 1024).await;
+        let mut j = entrar_mem(&red, "Ana").await;
+        let total = (imagenes::MAX_BAJADAS_A_LA_VEZ + imagenes::MAX_BAJADAS_EN_COLA + 5) as u32;
+        // Se piden todas sin leer nada: las primeras llenan la salida y el resto espera turno
+        for id in 0..total {
+            mandar_mem(&j, &MensajeCliente::PedirImagen { id, ruta: "imagenes/fondo.png".into(), mini: None }).await;
+        }
+        let ids: Vec<u32> = (0..total).collect();
+        let mut ocupado = 0;
+        let mut completas = 0;
+        for (_, r) in recibir_imagenes(&mut j, &ids).await {
+            match r {
+                Ok(_) => completas += 1,
+                Err(e) if e == imagenes::OCUPADO => ocupado += 1,
+                Err(e) => panic!("{e}"),
+            }
+        }
+        assert_eq!(ocupado, 5, "las que no caben en la cola");
+        assert_eq!(completas, total - 5);
+    }
+
+    #[tokio::test]
+    async fn un_jugador_sube_una_imagen_por_la_conexion_y_luego_la_puede_ver() {
+        let (red, _) = sala_con_fondo("srv_img_subida", 10).await;
+        let mut j = entrar_mem(&red, "Ana").await;
+        let imagen = png();
+        let subir_trozos = |id: u32, datos: &[u8]| -> Vec<Trama> {
+            datos.chunks(7).map(|c| Trama::Binario(imagenes::trozo(crate::red::protocolo::TROZO_SUBIDA, id, c))).collect()
+        };
+        async fn esperar_subida(j: &mut Transporte, id: u32) -> Result<String, String> {
+            loop {
+                match leer_mem(j).await {
+                    MensajeHost::SubidaOk { id: i, ruta } if i == id => return Ok(ruta),
+                    MensajeHost::SubidaError { id: i, error } if i == id => return Err(error),
+                    _ => {}
+                }
+            }
+        }
+
+        mandar_mem(&j, &MensajeCliente::SubirImagen { id: 1, ext: "png".into(), tam: imagen.len() }).await;
+        for t in subir_trozos(1, &imagen) {
+            transporte::enviar_trama(&j.tx, t).await.unwrap();
+        }
+        let ruta = esperar_subida(&mut j, 1).await.expect("se guarda");
+        assert!(ruta.starts_with("imagenes/") && ruta.ends_with(".png"));
+        // La ve quien la subió, aunque aún no la use ninguna ficha
+        mandar_mem(&j, &MensajeCliente::PedirImagen { id: 9, ruta: ruta.clone(), mini: None }).await;
+        assert_eq!(recibir_imagen(&mut j, 9).await.unwrap().1, imagen);
+
+        // Más datos de los anunciados, o algo que no es una imagen: no
+        mandar_mem(&j, &MensajeCliente::SubirImagen { id: 2, ext: "png".into(), tam: 3 }).await;
+        transporte::enviar_trama(&j.tx, subir_trozos(2, b"demasiado")[0].clone()).await.unwrap();
+        assert!(esperar_subida(&mut j, 2).await.is_err());
+        mandar_mem(&j, &MensajeCliente::SubirImagen { id: 3, ext: "png".into(), tam: 9 }).await;
+        transporte::enviar_trama(&j.tx, Trama::Binario(imagenes::trozo(crate::red::protocolo::TROZO_SUBIDA, 3, b"no es png"))).await.unwrap();
+        assert!(esperar_subida(&mut j, 3).await.is_err());
+        mandar_mem(&j, &MensajeCliente::SubirImagen { id: 4, ext: "png".into(), tam: crate::tablero_general::imagenes::MAX_BYTES_SUBIDA + 1 }).await;
+        assert!(esperar_subida(&mut j, 4).await.is_err(), "demasiado grande: ni empieza");
     }
 }

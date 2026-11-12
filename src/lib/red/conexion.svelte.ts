@@ -9,12 +9,24 @@
 //  3. Después llega la vista entera y luego solo lo que cambia. Con ella se contestan los comandos de la app
 //     ($lib/backend), y cada cambio se avisa con el evento `partida-cambiada` para que los stores relean.
 // Si se corta, se reintenta durante un minuto (p. ej. el móvil cambia de red).
+//
+// Imágenes: van por esta misma conexión (`ImagenesRed`). Los `<img>` de la app piden `<base>/__imagen?ruta=…`,
+// que contesta el Service Worker (src/service-worker.ts) preguntándole a esta página. Sin Service Worker (p. ej.
+// Firefox en ventana privada) se usa el respaldo HTTP de siempre (`/imagen?sesion=…` del túnel).
 import { emitirLocal, EVENTO_PARTIDA_CAMBIADA, instalarJugador } from "$lib/backend";
 import { EVENTO_AVISO } from "$lib/avisosTablero";
 import { esJugador } from "$lib/modo";
 import { claveAlmacen, leerEnlace, urlImagen, urlWebSocket, type Enlace } from "./enlace";
+import { ImagenesRed, claveImagen } from "./imagenesRed";
 import { VERSION_PROTOCOLO, type Jugador, type MensajeCliente, type MensajeHost, type VistaJugador } from "./protocolo";
 import { aplicarCambios, partesCambiadas, PETICIONES, responder, separarMiniatura, vistaVacia } from "./replica";
+
+/** Carpeta de la página (`/vtt-rol` en GitHub Pages, vacía en desarrollo): donde vive el Service Worker. */
+const BASE = typeof location === "undefined" ? "" : new URL(".", location.href).pathname.replace(/\/$/, "");
+/** Lo que se deja en el búfer del WebSocket al subir una imagen antes de esperar. */
+const MAX_BUFER_SUBIDA = 1024 * 1024;
+/** Lo que se espera a que el Service Worker tome el control de la página antes de usar el respaldo HTTP. */
+const ESPERA_SW_MS = 3000;
 
 export type EstadoConexion =
   | { tipo: "conectando" }
@@ -72,12 +84,71 @@ export class Conexion {
   #cortadoDesde: number | null = null;
   #final = false;
   #alPrimeraVista: (() => void) | null = null;
-  /** Se cumple cuando llega la primera vista (la app puede empezar a leer). */
+  /** Se cumple cuando llega la primera vista y ya se sabe cómo se piden las imágenes (la app puede empezar). */
   readonly lista: Promise<void>;
+  /** Imágenes por esta conexión (pedir y subir). */
+  readonly imagenes: ImagenesRed;
+  /** Si el Service Worker controla la página: las imágenes van por la conexión. Si no, por el HTTP del túnel. */
+  #porServiceWorker = false;
 
   constructor(enlace: Enlace) {
     this.enlace = enlace;
-    this.lista = new Promise((r) => (this.#alPrimeraVista = r));
+    this.imagenes = new ImagenesRed(
+      {
+        mensaje: (m) => this.#enviar(m),
+        binario: (b) => {
+          if (this.#ws?.readyState === WebSocket.OPEN) this.#ws.send(b);
+        },
+        sitio: () => this.#sitio()
+      },
+      BASE
+    );
+    const vista = new Promise<void>((r) => (this.#alPrimeraVista = r));
+    const sw = this.#prepararServiceWorker().then((si) => {
+      this.#porServiceWorker = si;
+    });
+    this.lista = Promise.all([vista, sw]).then(() => {});
+  }
+
+  /** Registra el Service Worker de las imágenes y espera (poco) a que controle la página. `false` si no hay. */
+  async #prepararServiceWorker(): Promise<boolean> {
+    const sw = globalThis.navigator?.serviceWorker;
+    if (!sw) return false;
+    try {
+      sw.addEventListener("message", (e) => this.#imagenParaElServiceWorker(e));
+      await sw.register(`${BASE}/service-worker.js`, { scope: `${BASE}/`, type: import.meta.env.DEV ? "module" : "classic" });
+      await sw.ready;
+      if (sw.controller) return true;
+      return await new Promise<boolean>((ok) => {
+        const reloj = setTimeout(() => ok(false), ESPERA_SW_MS);
+        sw.addEventListener("controllerchange", () => {
+          clearTimeout(reloj);
+          ok(true);
+        }, { once: true });
+      });
+    } catch (err) {
+      console.warn("Sin Service Worker: las imágenes irán por HTTP", err);
+      return false;
+    }
+  }
+
+  /** El Service Worker pide una imagen (la de un `<img>` de esta página): se saca por la conexión. */
+  #imagenParaElServiceWorker(e: MessageEvent) {
+    const d = e.data;
+    const puerto = e.ports[0];
+    if (d?.tipo !== "openroll-imagen" || !puerto || typeof d.ruta !== "string") return;
+    this.imagenes.pedir(d.ruta, typeof d.mini === "string" ? d.mini : null).then(
+      (blob) => puerto.postMessage({ ok: true, blob }),
+      (err) => puerto.postMessage({ ok: false, error: String(err) })
+    );
+  }
+
+  /** Se cumple cuando el WebSocket tiene sitio para más (al subir una imagen). */
+  async #sitio(): Promise<void> {
+    while (this.#ws && this.#ws.readyState === WebSocket.OPEN && this.#ws.bufferedAmount > MAX_BUFER_SUBIDA) {
+      await new Promise((r) => setTimeout(r, 20));
+    }
+    if (this.#ws?.readyState !== WebSocket.OPEN) throw "Sin conexión con la sala";
   }
 
   /**
@@ -133,14 +204,11 @@ export class Conexion {
     });
   }
 
-  /** Sube la foto de una de sus fichas al host. Devuelve la ruta ("imagenes/…") para ponerla en la ficha. */
+  /** Sube la foto de una de sus fichas al host (por la conexión). Devuelve la ruta ("imagenes/…") para la ficha. */
   async subirImagen(archivo: File): Promise<string> {
-    if (!this.sesion) throw "Sin conexión con la sala";
+    if (this.estado.tipo !== "dentro") throw "Sin conexión con la sala";
     const ext = /\.([A-Za-z0-9]+)$/.exec(archivo.name)?.[1] ?? "";
-    const q = new URLSearchParams({ sesion: this.sesion, ext });
-    const r = await fetch(`https://${this.enlace.tunel}/subir?${q}`, { method: "POST", body: archivo });
-    if (!r.ok) throw (await r.text().catch(() => "")) || `No se pudo subir la imagen (${r.status})`;
-    return String((await r.json()).ruta);
+    return this.imagenes.subir(archivo, ext);
   }
 
   /** Al cortarse la conexión, lo que esperaba respuesta falla (el host ya no la va a dar). */
@@ -154,27 +222,36 @@ export class Conexion {
 
   /** URL de una imagen de la partida (la ruta puede llevar la marca de miniatura de `obtener_miniatura`). */
   urlImagen(ref: string): string {
-    if (!this.sesion) return "";
     const { ruta, mini } = separarMiniatura(ref);
+    if (this.#porServiceWorker) return claveImagen(BASE, ruta, mini);
+    if (!this.sesion) return "";
     return urlImagen(this.enlace, this.sesion, ruta, mini);
   }
 
   conectar() {
     this.#final = false;
     const ws = new WebSocket(urlWebSocket(this.enlace));
+    ws.binaryType = "arraybuffer";
     this.#ws = ws;
     ws.onmessage = (e) => {
+      // Binario: un trozo de imagen
+      if (typeof e.data !== "string") {
+        if (e.data instanceof ArrayBuffer) this.imagenes.alBinario(e.data);
+        return;
+      }
       let m: MensajeHost;
       try {
-        m = JSON.parse(String(e.data));
+        m = JSON.parse(e.data);
       } catch {
         return;
       }
+      if (this.imagenes.alMensaje(m)) return;
       void this.#recibir(m);
     };
     ws.onclose = () => {
       if (this.#ws !== ws) return;
       this.#fallarPendientes("Sin conexión con la sala");
+      this.imagenes.cortar("Sin conexión con la sala");
       if (this.#final) return;
       this.#ws = null;
       this.#reintentar();
@@ -198,6 +275,7 @@ export class Conexion {
   #terminar(motivo: string) {
     this.#final = true;
     this.estado = { tipo: "fuera", motivo };
+    void this.imagenes.terminar(motivo);
     this.#ws?.close();
   }
 

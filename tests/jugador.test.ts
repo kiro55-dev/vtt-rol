@@ -13,8 +13,11 @@ class WebSocketFalso {
   constructor(public url: string) {
     WebSocketFalso.ultimo = this;
   }
-  send(t: string) {
-    this.enviados.push(JSON.parse(t));
+  bufferedAmount = 0;
+  binarios: Uint8Array[] = [];
+  send(t: string | Uint8Array) {
+    if (typeof t === "string") this.enviados.push(JSON.parse(t));
+    else this.binarios.push(t);
   }
   close() {}
   /** El host dice algo. */
@@ -136,20 +139,29 @@ describe("conexión del jugador: pedirle acciones al host", () => {
     await vi.waitFor(async () => expect(await c.responder("obtener_historial_personal", {})).toEqual(["2d6", "1d8 + 1", "1d20"]));
   });
 
-  it("sube la foto al host con la sesión y la extensión del archivo, y devuelve la ruta", async () => {
-    const { c } = await conectado();
-    const peticiones: { url: string; metodo?: string }[] = [];
-    vi.stubGlobal("fetch", async (url: string, init?: { method?: string }) => {
-      peticiones.push({ url, metodo: init?.method });
-      return { ok: true, json: async () => ({ ruta: "imagenes/abc.png" }), text: async () => "" };
-    });
-    const archivo = { name: "mi foto.PNG" } as File;
-    await expect(c.subirImagen(archivo)).resolves.toBe("imagenes/abc.png");
-    expect(peticiones[0]).toEqual({ url: "https://x.trycloudflare.com/subir?sesion=S&ext=PNG", metodo: "POST" });
+  it("sube la foto al host por la conexión, en trozos con la extensión del archivo, y devuelve la ruta", async () => {
+    const { c, ws } = await conectado();
+    const bytes = new Uint8Array(40_000).map((_, i) => i % 256);
+    const archivo = Object.assign(new Blob([bytes]), { name: "mi foto.PNG" }) as unknown as File;
+    const subida = c.subirImagen(archivo);
+    await vi.waitFor(() => expect(ws.binarios.length).toBe(3)); // 16 KiB + 16 KiB + el resto
+    const aviso = ws.enviados.find((m) => m.tipo === "SubirImagen");
+    expect(aviso).toEqual({ tipo: "SubirImagen", id: aviso.id, ext: "PNG", tam: 40_000 });
+    const recibido = ws.binarios.flatMap((t) => [...t.subarray(5)]);
+    expect(recibido).toEqual([...bytes]);
+    ws.recibir({ tipo: "SubidaOk", id: aviso.id, ruta: "imagenes/abc.png" });
+    await expect(subida).resolves.toBe("imagenes/abc.png");
 
     // Un rechazo del host se enseña tal cual
-    vi.stubGlobal("fetch", async () => ({ ok: false, status: 400, text: async () => "El archivo no es una imagen" }));
-    await expect(c.subirImagen(archivo)).rejects.toBe("El archivo no es una imagen");
+    const otra = c.subirImagen(archivo);
+    await vi.waitFor(() => expect(ws.enviados.filter((m) => m.tipo === "SubirImagen").length).toBe(2));
+    ws.recibir({ tipo: "SubidaError", id: ws.enviados.filter((m) => m.tipo === "SubirImagen")[1].id, error: "El archivo no es una imagen" });
+    await expect(otra).rejects.toBe("El archivo no es una imagen");
+  });
+
+  it("sin Service Worker, las imágenes usan el respaldo HTTP del túnel con la sesión", async () => {
+    const { c } = await conectado();
+    expect(c.urlImagen("imagenes/a.png")).toBe("https://x.trycloudflare.com/imagen?ruta=imagenes%2Fa.png&sesion=S");
   });
 });
 

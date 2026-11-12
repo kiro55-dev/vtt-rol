@@ -21,6 +21,8 @@ const config = {
       fallback: "index.html",
     }),
     paths: web ? { base: process.env.OPENROLL_BASE ?? "/vtt-rol" } : {},
+    // src/service-worker.ts solo lo registra a mano la página de los jugadores (src/lib/red/conexion.svelte.ts)
+    serviceWorker: { register: false },
   },
 };
 
