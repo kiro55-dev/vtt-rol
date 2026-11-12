@@ -10,7 +10,7 @@ use tokio::sync::mpsc;
 use webrtc::data_channel::{DataChannel, DataChannelEvent};
 use webrtc::peer_connection::{
     PeerConnection, PeerConnectionBuilder, PeerConnectionEventHandler, RTCCertificate, RTCConfigurationBuilder,
-    RTCIceGatheringState, RTCIceServer, RTCPeerConnectionState, RTCSessionDescription,
+    RTCIceGatheringState, RTCIceServer, RTCPeerConnectionState, RTCSessionDescription, SettingEngineBuilder,
 };
 use webrtc::runtime::{default_runtime, Runtime};
 
@@ -123,6 +123,13 @@ pub async fn nuevo_peer(oferta_json: String, cert: &Certificado, stun: bool) -> 
     let config = RTCConfigurationBuilder::new().with_ice_servers(servidores).with_certificates(vec![cert.cert.clone()]).build();
     let pc = PeerConnectionBuilder::new()
         .with_configuration(config)
+        // Paciencia: en el modo manual el otro lado tarda minutos en pegar la respuesta. Por defecto la
+        // conexión se da por fallida a los 25 s y aquí se cerraba antes de que el navegador empezara.
+        .with_setting_engine(
+            SettingEngineBuilder::new()
+                .with_ice_timeouts(Some(Duration::from_secs(300)), Some(Duration::from_secs(300)), Some(Duration::from_secs(2)))
+                .build(),
+        )
         .with_handler(Arc::new(Manejador { runtime: runtime.clone(), reunidos, fin }))
         .with_runtime(runtime)
         .with_udp_addrs(vec!["0.0.0.0:0".to_string()])

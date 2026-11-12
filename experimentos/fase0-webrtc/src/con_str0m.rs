@@ -61,7 +61,11 @@ pub fn certificado(ruta: &Path) -> Result<Certificado, String> {
 pub async fn nuevo_peer(oferta_json: String, cert: &Certificado, stun: bool) -> Result<String, String> {
     instalar_cripto();
     let oferta: SdpOffer = serde_json::from_str(&oferta_json).map_err(|e| format!("oferta: {e}"))?;
-    let mut rtc = RtcConfig::new().set_dtls_cert(cert.cert.clone()).build(Instant::now());
+    let mut config = RtcConfig::new().set_dtls_cert(cert.cert.clone());
+    // Paciencia: en el modo manual el otro lado tarda minutos en pegar la respuesta. Con los 9 reintentos de
+    // serie (~20 s) la conexión se daba por perdida antes de que el navegador empezara.
+    config.set_max_stun_retransmits(100);
+    let mut rtc = config.build(Instant::now());
 
     let sock = UdpSocket::bind(SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 0)).await.map_err(|e| e.to_string())?;
     let local = SocketAddr::new(comun::ip_local(), sock.local_addr().map_err(|e| e.to_string())?.port());
