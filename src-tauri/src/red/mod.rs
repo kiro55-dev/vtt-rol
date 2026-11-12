@@ -151,16 +151,11 @@ impl SalaAbierta {
                 .map(|d| EnlaceSala { etiqueta: "Dirección propia".into(), url: format!("https://{d}/#{}", self.fragmento()) })
                 .collect(),
             // Como «abrir en LAN» de un juego: el enlace es solo `http://<ip>:<puerto>/`, sin llave
-            config::Respaldo::Lan { puerto } => {
-                let mut v: Vec<EnlaceSala> = self
-                    .lan
-                    .iter()
-                    .map(|d| EnlaceSala { etiqueta: d.interfaz.clone(), url: format!("http://{}:{puerto}/", d.ip) })
-                    .collect();
-                // Para probar desde este mismo equipo
-                v.push(EnlaceSala { etiqueta: "Este equipo".into(), url: format!("http://localhost:{puerto}/") });
-                v
-            }
+            config::Respaldo::Lan { puerto } => self
+                .lan
+                .iter()
+                .map(|d| EnlaceSala { etiqueta: d.interfaz.clone(), url: format!("http://{}:{puerto}/", d.ip) })
+                .collect(),
         }
     }
 
@@ -914,12 +909,11 @@ mod tests {
         let e = red.estado(&EstadoPartida::default());
         assert_eq!(e.fase, Fase::Abierta);
         let lan = config::direcciones_lan();
-        assert_eq!(e.enlaces.len(), lan.len() + 1, "una por IP y la de este equipo");
+        assert_eq!(e.enlaces.len(), lan.len(), "un enlace por cada IP del equipo");
         for (d, enlace) in lan.iter().zip(&e.enlaces) {
             assert_eq!(enlace.etiqueta, d.interfaz);
             assert_eq!(enlace.url, format!("http://{}:{puerto}/", d.ip), "sin llave: solo ip y puerto");
         }
-        assert_eq!(e.enlaces.last().unwrap().url, format!("http://localhost:{puerto}/"));
         // Escucha también fuera de 127.0.0.1 (en cualquier IP del equipo)
         if let Some(d) = lan.first() {
             assert!(tokio::net::TcpStream::connect((d.ip, puerto)).await.is_ok());

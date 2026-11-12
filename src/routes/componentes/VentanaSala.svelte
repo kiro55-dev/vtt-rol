@@ -58,10 +58,14 @@
     configGuardada = JSON.stringify(c);
   }
 
-  function guardarConfig() {
+  /** «Abrir sala» abre con lo que está elegido ahora: si cambió, se guarda antes (sin botón aparte). */
+  function abrirConLoElegido() {
     void hacer(async () => {
-      await sala.guardarConfig(JSON.parse(configEditada));
-      await cargarConfig();
+      if (hayCambios) {
+        await sala.guardarConfig(JSON.parse(configEditada)); // Rust comprueba la dirección y el puerto
+        await cargarConfig();
+      }
+      await sala.abrir();
     });
   }
 
@@ -123,7 +127,7 @@
     <div class="fila">
       {#if fase.tipo === "Cerrada"}
         <span class="estado cerrada">● Sala cerrada</span>
-        <button type="button" class="btn-principal" disabled={ocupado} onclick={() => hacer(() => sala.abrir())}>Abrir sala</button>
+        <button type="button" class="btn-principal" disabled={ocupado} onclick={abrirConLoElegido}>Abrir sala</button>
       {:else if fase.tipo === "Preparando"}
         <span class="estado preparando">● {fase.paso}{fase.progreso !== null ? ` ${Math.round(fase.progreso * 100)} %` : ""}</span>
         <button type="button" class="btn-secundario" onclick={() => hacer(() => sala.cerrar())}>Cancelar</button>
@@ -175,12 +179,6 @@
         {/if}
         {#if modo !== "Cloudflare" && !sala.estado.pagina_incluida}
           <span class="nota aviso">Esta versión de la app no lleva la página de los jugadores: solo funcionará el túnel de Cloudflare.</span>
-        {/if}
-        {#if hayCambios}
-          <div class="fila">
-            <button type="button" class="btn-secundario" disabled={ocupado || (modo === "Propio" && !urlPropia.trim())} onclick={guardarConfig}>Guardar</button>
-            <button type="button" class="btn-enlace" onclick={() => void cargarConfig()}>Deshacer</button>
-          </div>
         {/if}
       {:else}
         <span class="nota">

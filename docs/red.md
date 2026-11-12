@@ -47,7 +47,7 @@ https://kiro55-dev.github.io/vtt-rol/#t=…&s=…&k=…
     sala no abre y lo dice.
   - **Red local / VPN** («abrir en LAN»): la app escucha en **todas** las interfaces (`0.0.0.0:<puerto>`) y la
     ventana da un enlace por cada IPv4 del equipo con el nombre de su red (`config::direcciones_lan`, con
-    `if-addrs`; p. ej. «Radmin VPN — `http://26.x.x.x:8080/`») y otro de «Este equipo» (`localhost`). **El enlace va
+    `if-addrs`; p. ej. «Radmin VPN — `http://26.x.x.x:8080/`»). **El enlace va
     sin llave** (sin `s` ni `k`), como en los juegos: la confianza está en la red, y `SalaAbierta::sin_llave` deja
     pasar el saludo sin ella solo en este modo. Quien llegue a esa IP y puerto puede entrar (con el nombre, y la
     contraseña si el host la puso: sigue siendo opcional, y los topes de jugadores y de conexiones siguen valiendo).
