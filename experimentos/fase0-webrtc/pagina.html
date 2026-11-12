@@ -42,10 +42,27 @@
 <script>
 "use strict";
 const $ = (id) => document.getElementById(id);
-const res = { navegador: navigator.userAgent, plataforma: navigator.platform, fecha: new Date().toISOString() };
+const res = { navegador: navigator.userAgent, plataforma: navigator.platform, fecha: new Date().toISOString(), cronologia: [] };
 let pc, juego, arrastre;
+let T0 = performance.now();
 
 function log(t) { $("log").textContent += t + "\n"; }
+/** Un paso de la cronología (ms desde que se pulsó el botón). Se guarda aunque luego falle. */
+function marca(evento) {
+  const ms = Math.round(performance.now() - T0);
+  res.cronologia.push({ ms, evento });
+  log(`+${ms} ms  ${evento}`);
+}
+/** Tipos de candidato de un SDP sin dar las IPs: `host/mdns ×1, srflx/ipv4 ×1`. */
+function describirCandidatos(sdp) {
+  const cuenta = new Map();
+  for (const m of sdp.matchAll(/a=candidate:\S+ \d+ \S+ \d+ (\S+) \d+ typ (\w+)/g)) {
+    const clase = m[1].endsWith(".local") ? "mdns" : m[1].includes(":") ? "ipv6" : "ipv4";
+    const k = `${m[2]}/${clase}`;
+    cuenta.set(k, (cuenta.get(k) ?? 0) + 1);
+  }
+  return [...cuenta].map(([k, n]) => `${k} ×${n}`).join(", ") || "ninguno";
+}
 function fila(nombre, valor, clase) {
   const tr = document.createElement("tr");
   const a = document.createElement("td"); a.textContent = nombre;
@@ -82,24 +99,31 @@ function esperarIce(ms) {
 
 async function crearOferta() {
   pc = new RTCPeerConnection({ iceServers: [{ urls: ["stun:stun.l.google.com:19302", "stun:stun.cloudflare.com:3478"] }] });
-  pc.onconnectionstatechange = () => log(`conexión: ${pc.connectionState}`);
+  pc.onconnectionstatechange = () => marca(`conexión: ${pc.connectionState}`);
+  pc.oniceconnectionstatechange = () => marca(`ICE: ${pc.iceConnectionState}`);
+  pc.onicegatheringstatechange = () => marca(`reunir candidatos: ${pc.iceGatheringState}`);
+  pc.onicecandidateerror = (e) => marca(`error al reunir candidato (${e.errorCode} ${e.errorText || ""}) ${e.url || ""}`);
   juego = pc.createDataChannel("juego");
   arrastre = pc.createDataChannel("arrastre", { ordered: false, maxRetransmits: 0 });
   engancharReceptor(juego);
   engancharReceptor(arrastre);
+  juego.onopen = () => marca("canal «juego» abierto");
+  arrastre.onopen = () => marca("canal «arrastre» abierto");
   const t0 = performance.now();
   await pc.setLocalDescription(await pc.createOffer());
+  marca("oferta creada");
   await esperarIce(3000); // sin trickle: como mucho 3 s
   res.reunirCandidatosMs = performance.now() - t0;
-  res.candidatosPropios = [...pc.localDescription.sdp.matchAll(/typ (\w+)/g)].map((m) => m[1]);
-  log(`candidatos propios: ${res.candidatosPropios.join(", ") || "ninguno"}`);
+  res.candidatosPropios = describirCandidatos(pc.localDescription.sdp);
+  marca(`oferta lista · candidatos propios: ${res.candidatosPropios}`);
+  $("copiar").disabled = false; // desde aquí se pueden copiar los resultados, aunque luego falle
   return pc.localDescription;
 }
 
 function abierto(canal) {
   return new Promise((ok, mal) => {
     if (canal.readyState === "open") return ok();
-    const t = setTimeout(() => mal("el canal no se abrió en 20 s"), 20000);
+    const t = setTimeout(() => mal("el canal no se abrió en 90 s"), 90000);
     canal.addEventListener("open", () => { clearTimeout(t); ok(); });
   });
 }
@@ -209,9 +233,10 @@ async function conectarConRespuesta(respuesta, huellaHost) {
   const fp = /a=fingerprint:sha-256 ([0-9A-Fa-f:]+)/.exec(respuesta.sdp)?.[1];
   res.huellaRespuesta = fp ? fp.toUpperCase() : null;
   if (huellaHost) res.huellaCoincide = norm(fp) === norm(huellaHost);
-  res.candidatosHost = [...respuesta.sdp.matchAll(/typ (\w+)/g)].map((m) => m[1]);
+  res.candidatosHost = describirCandidatos(respuesta.sdp);
   const t0 = performance.now();
   await pc.setRemoteDescription(respuesta);
+  marca(`respuesta aplicada · candidatos del host: ${res.candidatosHost}`);
   await abierto(juego);
   await abierto(arrastre);
   res.conectarMs = performance.now() - t0;
@@ -256,18 +281,36 @@ async function pruebas() {
   $("copiar").disabled = false;
 }
 
-function fallo(e) { log("ERROR: " + e); fila("Error", String(e), "mal"); }
+/** Al fallar: el error, cómo estaban los pares de candidatos y el par elegido, para saber dónde se atascó. */
+async function fallo(e) {
+  marca(`ERROR: ${e}`);
+  res.error = String(e);
+  fila("Error", String(e), "mal");
+  try {
+    const estados = {};
+    (await pc?.getStats())?.forEach((s) => { if (s.type === "candidate-pair") estados[s.state] = (estados[s.state] ?? 0) + 1; });
+    res.paresDeCandidatos = estados;
+    res.par = await parElegido();
+    fila("Pares de candidatos", JSON.stringify(estados));
+  } catch {}
+  $("copiar").disabled = false;
+}
 
 $("local").onclick = async () => {
   $("local").disabled = $("btnManual").disabled = true;
+  T0 = performance.now();
+  marca("inicio (mismo PC)");
   try {
     res.modo = "local";
     res.libreria = await (await fetch("/info")).text();
     const huella = await (await fetch("/huella")).text();
     const oferta = await crearOferta();
+    marca("oferta enviada al host");
     const r = await fetch("/oferta", { method: "POST", body: JSON.stringify(oferta) });
     if (!r.ok) throw await r.text();
-    await conectarConRespuesta(await r.json(), huella);
+    const respuesta = await r.json();
+    marca("respuesta del host recibida");
+    await conectarConRespuesta(respuesta, huella);
   } catch (e) { fallo(e); }
 };
 
@@ -278,6 +321,8 @@ $("btnManual").onclick = async () => {
   $("local").disabled = $("btnManual").disabled = true;
   $("manual").style.display = "block";
   res.modo = "manual";
+  T0 = performance.now();
+  marca("inicio (manual)");
   try {
     $("oferta").value = aBase64(JSON.stringify(await crearOferta()));
     $("oferta").select();
@@ -286,6 +331,7 @@ $("btnManual").onclick = async () => {
 
 $("usar").onclick = async () => {
   $("usar").disabled = true;
+  marca("respuesta pegada");
   try { await conectarConRespuesta(JSON.parse(deBase64($("respuesta").value)), null); } catch (e) { fallo(e); }
 };
 

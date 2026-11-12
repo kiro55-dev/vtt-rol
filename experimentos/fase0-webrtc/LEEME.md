@@ -41,6 +41,18 @@ La primera vez se crea `cert-str0m.json` / `cert-webrtcrs.pem` en esta carpeta: 
 
 Si no conecta, los dos estáis detrás de routers que no lo permiten (NAT simétrico/CGNAT): es justo el caso que cubrirá el túnel de respaldo. Apúntalo igualmente.
 
+## Prueba en frío (el primer intento lento en Linux)
+
+En Linux el primer intento tras arrancar cada servidor tardó mucho (y con webrtc-rs llegó a fallar), y el segundo fue casi instantáneo. Para saber por qué, la página guarda ahora una **cronología** (cada paso con sus milisegundos, también si falla) y la consola del servidor escribe la suya.
+
+Para cada librería, **3 veces**:
+1. Arranca el servidor: `cargo run --release --bin servidor-webrtcrs` (o `servidor-str0m`).
+2. Abre http://127.0.0.1:8090 en una pestaña **nueva** y pulsa **Conectar (mismo PC)** una sola vez. Espera hasta que termine o salga el error (ahora espera hasta 90 s).
+3. Pulsa **Copiar resultados** (funciona aunque haya fallado) y copia también lo que salió en la consola del servidor.
+4. Para el servidor con Ctrl+C y vuelve al paso 1.
+
+Si puedes, repítelo con Chrome. Pasa a Claude los JSON y lo de la consola.
+
 ## Qué hacer con los resultados
 
 Pégale los JSON a Claude (o rellena `RESULTADOS.md`): con eso se elige la librería.

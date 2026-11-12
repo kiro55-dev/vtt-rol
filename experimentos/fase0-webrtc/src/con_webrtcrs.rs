@@ -10,7 +10,8 @@ use tokio::sync::mpsc;
 use webrtc::data_channel::{DataChannel, DataChannelEvent};
 use webrtc::peer_connection::{
     PeerConnection, PeerConnectionBuilder, PeerConnectionEventHandler, RTCCertificate, RTCConfigurationBuilder,
-    RTCIceGatheringState, RTCIceServer, RTCPeerConnectionState, RTCSessionDescription, SettingEngineBuilder,
+    RTCIceConnectionState, RTCIceGatheringState, RTCIceServer, RTCPeerConnectionState, RTCSessionDescription,
+    SettingEngineBuilder,
 };
 use webrtc::runtime::{default_runtime, Runtime};
 
@@ -43,18 +44,25 @@ struct Manejador {
     runtime: Arc<dyn Runtime>,
     reunidos: mpsc::Sender<()>,
     fin: mpsc::Sender<()>,
+    /// Cuándo llegó la oferta (para la cronología de la consola).
+    inicio: std::time::Instant,
 }
 
 #[async_trait::async_trait]
 impl PeerConnectionEventHandler for Manejador {
     async fn on_ice_gathering_state_change(&self, estado: RTCIceGatheringState) {
+        println!("[webrtc-rs] {} reunir candidatos: {estado}", comun::desde(self.inicio));
         if estado == RTCIceGatheringState::Complete {
             let _ = self.reunidos.try_send(());
         }
     }
 
+    async fn on_ice_connection_state_change(&self, estado: RTCIceConnectionState) {
+        println!("[webrtc-rs] {} ICE: {estado}", comun::desde(self.inicio));
+    }
+
     async fn on_connection_state_change(&self, estado: RTCPeerConnectionState) {
-        println!("[webrtc-rs] conexión: {estado}");
+        println!("[webrtc-rs] {} conexión: {estado}", comun::desde(self.inicio));
         if matches!(estado, RTCPeerConnectionState::Failed | RTCPeerConnectionState::Closed | RTCPeerConnectionState::Disconnected) {
             let _ = self.fin.try_send(());
         }
@@ -112,6 +120,7 @@ async fn atender_canal(canal: Arc<dyn DataChannel>, rt: Arc<dyn Runtime>) {
 
 /// Contesta una oferta y deja la conexión viva hasta que se corte. `stun = false` en los tests (sin red).
 pub async fn nuevo_peer(oferta_json: String, cert: &Certificado, stun: bool) -> Result<String, String> {
+    let inicio = std::time::Instant::now();
     let runtime = default_runtime().ok_or("sin runtime")?;
     let (reunidos, mut al_reunir) = mpsc::channel(1);
     let (fin, mut al_fin) = mpsc::channel(1);
@@ -130,7 +139,7 @@ pub async fn nuevo_peer(oferta_json: String, cert: &Certificado, stun: bool) -> 
                 .with_ice_timeouts(Some(Duration::from_secs(300)), Some(Duration::from_secs(300)), Some(Duration::from_secs(2)))
                 .build(),
         )
-        .with_handler(Arc::new(Manejador { runtime: runtime.clone(), reunidos, fin }))
+        .with_handler(Arc::new(Manejador { runtime: runtime.clone(), reunidos, fin, inicio }))
         .with_runtime(runtime)
         .with_udp_addrs(vec!["0.0.0.0:0".to_string()])
         .with_data_channel_send_buffer_limit(MAX_BUFER)
@@ -138,12 +147,14 @@ pub async fn nuevo_peer(oferta_json: String, cert: &Certificado, stun: bool) -> 
         .await
         .map_err(|e| format!("crear: {e}"))?;
     let oferta: RTCSessionDescription = serde_json::from_str(&oferta_json).map_err(|e| format!("oferta: {e}"))?;
+    println!("\n[webrtc-rs] {} oferta recibida · candidatos del navegador: {}", comun::desde(inicio), comun::describir_candidatos(&oferta.sdp));
     pc.set_remote_description(oferta).await.map_err(|e| format!("remota: {e}"))?;
     let respuesta = pc.create_answer(None).await.map_err(|e| format!("respuesta: {e}"))?;
     pc.set_local_description(respuesta).await.map_err(|e| format!("local: {e}"))?;
     // Sin trickle: se espera a tener los candidatos (como mucho 3 s) y se manda todo de una vez
     let _ = tokio::time::timeout(Duration::from_secs(3), al_reunir.recv()).await;
     let local = pc.local_description().await.ok_or("sin descripción local")?;
+    println!("[webrtc-rs] {} respuesta enviada · candidatos propios: {}", comun::desde(inicio), comun::describir_candidatos(&local.sdp));
     let json = serde_json::to_string(&local).map_err(|e| e.to_string())?;
     tokio::spawn(async move {
         let _ = al_fin.recv().await;

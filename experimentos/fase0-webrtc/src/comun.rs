@@ -69,6 +69,31 @@ pub fn procesar(estado: &mut EstadoCanal, m: Mensaje) -> Respuesta {
     }
 }
 
+/// Resumen de los candidatos ICE de un SDP sin dar las IPs: tipo y si la dirección es IPv4, IPv6 o un nombre
+/// mDNS (`….local`, lo que usan los navegadores para esconder la IP local). P. ej. `host/mdns ×1, srflx/ipv4 ×1`.
+pub fn describir_candidatos(sdp: &str) -> String {
+    let mut cuenta: Vec<(String, usize)> = Vec::new();
+    for l in sdp.lines().filter_map(|l| l.trim().strip_prefix("a=candidate:")) {
+        let campos: Vec<&str> = l.split_whitespace().collect();
+        let (Some(dir), Some(tipo)) = (campos.get(4), campos.iter().position(|c| *c == "typ").and_then(|i| campos.get(i + 1))) else { continue };
+        let clase = if dir.ends_with(".local") { "mdns" } else if dir.contains(':') { "ipv6" } else { "ipv4" };
+        let clave = format!("{tipo}/{clase}");
+        match cuenta.iter_mut().find(|(k, _)| *k == clave) {
+            Some((_, n)) => *n += 1,
+            None => cuenta.push((clave, 1)),
+        }
+    }
+    if cuenta.is_empty() {
+        return "ninguno".into();
+    }
+    cuenta.iter().map(|(k, n)| format!("{k} ×{n}")).collect::<Vec<_>>().join(", ")
+}
+
+/// Para el registro de la consola: milisegundos desde `inicio`.
+pub fn desde(inicio: std::time::Instant) -> String {
+    format!("+{} ms", inicio.elapsed().as_millis())
+}
+
 /// Huella SHA-256 de un certificado DER, como en el SDP: `AB:CD:…` en mayúsculas.
 pub fn huella_de_der(der: &[u8]) -> String {
     Sha256::digest(der).iter().map(|b| format!("{b:02X}")).collect::<Vec<_>>().join(":")
@@ -190,6 +215,18 @@ mod tests {
         assert_eq!(procesar(&mut e, Mensaje::Binario(5)), Respuesta::Nada);
         assert_eq!(procesar(&mut e, Mensaje::Texto("CUENTA".into())), Respuesta::Texto("RECIBIDOS 15".into()));
         assert_eq!(procesar(&mut e, Mensaje::Texto("CUENTA".into())), Respuesta::Texto("RECIBIDOS 0".into()));
+    }
+
+    #[test]
+    fn describe_los_candidatos_sin_dar_la_ip() {
+        let sdp = [
+            "a=candidate:1 1 udp 2113937151 0b5c-4e.local 63024 typ host generation 0",
+            "a=candidate:2 1 udp 1677729535 188.26.213.154 63024 typ srflx raddr 0.0.0.0 rport 0",
+            "a=candidate:3 1 udp 2113937151 fe80::1 5000 typ host",
+        ]
+        .join("\r\n");
+        assert_eq!(describir_candidatos(&sdp), "host/mdns ×1, srflx/ipv4 ×1, host/ipv6 ×1");
+        assert_eq!(describir_candidatos("v=0"), "ninguno");
     }
 
     #[test]

@@ -59,7 +59,10 @@ pub fn certificado(ruta: &Path) -> Result<Certificado, String> {
 
 /// Contesta una oferta y lanza el bucle de la conexión. `stun = false` en los tests (sin red).
 pub async fn nuevo_peer(oferta_json: String, cert: &Certificado, stun: bool) -> Result<String, String> {
+    let inicio = Instant::now();
     instalar_cripto();
+    let sdp_oferta = serde_json::from_str::<serde_json::Value>(&oferta_json).ok().and_then(|v| v["sdp"].as_str().map(String::from)).unwrap_or_default();
+    println!("\n[str0m] {} oferta recibida · candidatos del navegador: {}", comun::desde(inicio), comun::describir_candidatos(&sdp_oferta));
     let oferta: SdpOffer = serde_json::from_str(&oferta_json).map_err(|e| format!("oferta: {e}"))?;
     let mut config = RtcConfig::new().set_dtls_cert(cert.cert.clone());
     // Paciencia: en el modo manual el otro lado tarda minutos en pegar la respuesta. Con los 9 reintentos de
@@ -84,8 +87,10 @@ pub async fn nuevo_peer(oferta_json: String, cert: &Certificado, stun: bool) -> 
     }
     let respuesta = rtc.sdp_api().accept_offer(oferta).map_err(|e| format!("respuesta: {e}"))?;
     let json = serde_json::to_string(&respuesta).map_err(|e| e.to_string())?;
+    let sdp_respuesta = serde_json::from_str::<serde_json::Value>(&json).ok().and_then(|v| v["sdp"].as_str().map(String::from)).unwrap_or_default();
+    println!("[str0m] {} respuesta enviada · candidatos propios: {}", comun::desde(inicio), comun::describir_candidatos(&sdp_respuesta));
     tokio::spawn(async move {
-        if let Err(e) = bucle(rtc, sock, local).await {
+        if let Err(e) = bucle(rtc, sock, local, inicio).await {
             println!("[str0m] fin de la conexión: {e}");
         }
     });
@@ -99,7 +104,7 @@ struct Canal {
     pendiente: usize,
 }
 
-async fn bucle(mut rtc: Rtc, sock: UdpSocket, local: SocketAddr) -> Result<(), String> {
+async fn bucle(mut rtc: Rtc, sock: UdpSocket, local: SocketAddr, inicio: Instant) -> Result<(), String> {
     let mut buf = vec![0u8; 2048];
     let mut canales: HashMap<ChannelId, Canal> = HashMap::new();
     let trozo = vec![b'X'; TROZO];
@@ -113,12 +118,12 @@ async fn bucle(mut rtc: Rtc, sock: UdpSocket, local: SocketAddr) -> Result<(), S
                 }
                 Output::Event(ev) => match ev {
                     Event::IceConnectionStateChange(s) => {
-                        println!("[str0m] ICE: {s:?}");
+                        println!("[str0m] {} ICE: {s:?}", comun::desde(inicio));
                         if s == IceConnectionState::Disconnected {
                             return Ok(());
                         }
                     }
-                    Event::Connected => println!("[str0m] conectado"),
+                    Event::Connected => println!("[str0m] {} conectado (DTLS listo)", comun::desde(inicio)),
                     Event::ChannelOpen(id, etiqueta) => {
                         println!("[str0m] canal «{etiqueta}»");
                         canales.insert(id, Canal { etiqueta, estado: EstadoCanal::default(), pendiente: 0 });
