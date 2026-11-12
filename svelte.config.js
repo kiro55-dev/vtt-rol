@@ -9,7 +9,9 @@ import adapter from "@sveltejs/adapter-static";
 import { vitePreprocess } from "@sveltejs/vite-plugin-svelte";
 
 const web = process.env.OPENROLL_WEB === "1";
-const salida = web ? "build-web" : "build";
+// `build-jugador/` (raíz `/`) es la que lleva dentro la app del host y sirve su propio servidor de la sala
+// (`bun run web:build:app`); `build-web/` (raíz `/vtt-rol`) la de GitHub Pages.
+const salida = web ? (process.env.OPENROLL_SALIDA || "build-web") : "build";
 
 /** @type {import('@sveltejs/kit').Config} */
 const config = {

@@ -24,16 +24,53 @@
   let error = $state("");
   // Jugador cuya baja de la partida está pendiente de confirmar
   let quitando = $state<number | null>(null);
-  let copiado = $state(false);
+  /** La URL que se acaba de copiar (para poner «¡Copiado!» en su botón). */
+  let copiado = $state<string | null>(null);
   let contrasena = $state("");
   let confirmandoEnlace = $state(false);
   let ocupado = $state(false);
+
+  // «Cómo se publica»: lo que se está editando (se guarda con el botón; solo con la sala cerrada)
+  let modo = $state<"Cloudflare" | "Propio" | "Lan">("Cloudflare");
+  let urlPropia = $state("");
+  let puertoPropio = $state(8080);
+  let configGuardada = $state("");
+  const configEditada = $derived(
+    JSON.stringify(
+      modo === "Cloudflare"
+        ? { respaldo: { tipo: "Cloudflare" } }
+        : modo === "Propio"
+          ? { respaldo: { tipo: "Propio", url: urlPropia.trim(), puerto: Number(puertoPropio) } }
+          : { respaldo: { tipo: "Lan", puerto: Number(puertoPropio) } }
+    )
+  );
+  const hayCambios = $derived(configEditada !== configGuardada);
+
+  async function cargarConfig() {
+    const c = await sala.leerConfig();
+    modo = c.respaldo.tipo;
+    if (c.respaldo.tipo === "Propio") {
+      urlPropia = c.respaldo.url;
+      puertoPropio = c.respaldo.puerto;
+    } else if (c.respaldo.tipo === "Lan") {
+      puertoPropio = c.respaldo.puerto;
+    }
+    configGuardada = JSON.stringify(c);
+  }
+
+  function guardarConfig() {
+    void hacer(async () => {
+      await sala.guardarConfig(JSON.parse(configEditada));
+      await cargarConfig();
+    });
+  }
 
   const fase = $derived(sala.estado.fase);
   const nombreFicha = (id: number) => partida.banco.find((e) => e.id === id)?.nombre ?? `Ficha ${id}`;
 
   onMount(() => {
     void sala.recargar();
+    void cargarConfig().catch((e) => (error = String(e)));
   });
 
   /** Ejecuta una acción mostrando su error, sin dejar pulsar otra a la vez. */
@@ -50,9 +87,10 @@
     }
   }
 
-  async function copiar() {
-    copiado = await sala.copiarEnlace();
-    if (copiado) setTimeout(() => (copiado = false), 1500);
+  async function copiar(url: string) {
+    if (!(await sala.copiarEnlace(url))) return;
+    copiado = url;
+    setTimeout(() => (copiado = copiado === url ? null : copiado), 1500);
   }
 
   function guardarContrasena() {
@@ -98,15 +136,82 @@
       <div class="barra"><div class="relleno" style:width="{Math.round(fase.progreso * 100)}%"></div></div>
     {/if}
 
+    <!-- Cómo se publica en internet (de este equipo, no de la partida) -->
+    <div class="seccion">
+      <span class="etiqueta">Cómo llegan los jugadores</span>
+      {#if fase.tipo === "Cerrada"}
+        <label class="opcion">
+          <input type="radio" name="respaldo" value="Cloudflare" bind:group={modo} />
+          <span>Túnel de Cloudflare <span class="nota">(automático, sin configurar nada)</span></span>
+        </label>
+        <label class="opcion">
+          <input type="radio" name="respaldo" value="Propio" bind:group={modo} />
+          <span>Dirección propia <span class="nota">(tu dominio, tu túnel, tu proxy https…)</span></span>
+        </label>
+        <label class="opcion">
+          <input type="radio" name="respaldo" value="Lan" bind:group={modo} />
+          <span>Red local o VPN <span class="nota">(como «abrir en LAN»: Radmin VPN, Hamachi, ZeroTier, tu wifi…)</span></span>
+        </label>
+        {#if modo === "Propio"}
+          <div class="fila">
+            <input class="input-texto" placeholder="https://mi.dominio.es" maxlength="260" bind:value={urlPropia} />
+            <input class="input-texto input-puerto" type="number" min="1024" max="65535" title="Puerto de este equipo" bind:value={puertoPropio} />
+          </div>
+          <span class="nota">
+            Haz que esa dirección (https) lleve a <code>http://127.0.0.1:{puertoPropio}</code> de este equipo. La app escucha
+            ahí al abrir la sala y sirve ella misma la página de los jugadores.
+          </span>
+        {:else if modo === "Lan"}
+          <div class="fila">
+            <span class="nota">Puerto</span>
+            <input class="input-texto input-puerto" type="number" min="1024" max="65535" title="Puerto de este equipo" bind:value={puertoPropio} />
+          </div>
+          <span class="nota aviso">
+            Los jugadores entran con <code>http://&lt;tu IP en esa red&gt;:{puertoPropio}</code> (al abrir verás un enlace por
+            cada red). Va <b>sin cifrar</b>: úsalo solo en redes de confianza y pon contraseña. La primera vez Windows te
+            pedirá permiso en el cortafuegos.
+          </span>
+        {/if}
+        {#if modo !== "Cloudflare" && !sala.estado.pagina_incluida}
+          <span class="nota aviso">Esta versión de la app no lleva la página de los jugadores: solo funcionará el túnel de Cloudflare.</span>
+        {/if}
+        {#if hayCambios}
+          <div class="fila">
+            <button type="button" class="btn-secundario" disabled={ocupado || (modo === "Propio" && !urlPropia.trim())} onclick={guardarConfig}>Guardar</button>
+            <button type="button" class="btn-enlace" onclick={() => void cargarConfig()}>Deshacer</button>
+          </div>
+        {/if}
+      {:else}
+        <span class="nota">
+          {sala.estado.respaldo.tipo === "Propio"
+            ? `Por tu dirección propia (${sala.estado.respaldo.url}, puerto ${sala.estado.respaldo.puerto}).`
+            : sala.estado.respaldo.tipo === "Lan"
+              ? `En la red local, puerto ${sala.estado.respaldo.puerto} (sin cifrar).`
+              : "Por un túnel de Cloudflare."}
+          Cierra la sala para cambiarlo.
+        </span>
+      {/if}
+    </div>
+
     <!-- Enlace -->
     <div class="seccion">
       <span class="etiqueta">Enlace para los jugadores</span>
-      {#if sala.estado.enlace}
-        <div class="fila">
-          <input class="input-texto" readonly value={sala.estado.enlace} onfocus={(e) => e.currentTarget.select()} />
-          <button type="button" class="btn-secundario" onclick={copiar}>{copiado ? "¡Copiado!" : "Copiar"}</button>
-        </div>
-        <span class="nota">Cambia cada vez que abres la sala. Los que ya entraron no repiten la contraseña.</span>
+      {#if sala.estado.enlaces.length > 0}
+        {#each sala.estado.enlaces as e (e.url)}
+          {#if sala.estado.enlaces.length > 1}<span class="nota">{e.etiqueta}</span>{/if}
+          <div class="fila">
+            <input class="input-texto" readonly value={e.url} onfocus={(ev) => ev.currentTarget.select()} />
+            <button type="button" class="btn-secundario" onclick={() => copiar(e.url)}>{copiado === e.url ? "¡Copiado!" : "Copiar"}</button>
+          </div>
+        {/each}
+        <span class="nota">
+          {sala.estado.respaldo.tipo === "Cloudflare"
+            ? "Cambia cada vez que abres la sala."
+            : sala.estado.respaldo.tipo === "Lan"
+              ? "Pasa a cada jugador el de la red en la que estéis juntos (p. ej. el de Radmin VPN)."
+              : "Con tu dirección propia no cambia al volver a abrir la sala."}
+          Los que ya entraron no repiten la contraseña.
+        </span>
       {:else}
         <span class="nota">Abre la sala para obtenerlo.</span>
       {/if}
@@ -278,6 +383,9 @@
   .btn-no { background: none; border: none; color: #a1a1aa; font-size: 10px; cursor: pointer; }
   .btn-expulsar { background: none; border: none; color: #f87171; font-size: 10px; cursor: pointer; }
   .error { margin: 0; color: #f87171; font-size: 12px; }
+  .opcion { display: flex; align-items: center; gap: 6px; font-size: 12px; cursor: pointer; }
+  .nota.aviso { color: #fbbf24; }
+  .input-texto.input-puerto { width: 80px; flex: none; }
 
   .fantasma {
     position: fixed; z-index: 2000; pointer-events: none;

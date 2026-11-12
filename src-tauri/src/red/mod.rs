@@ -13,6 +13,8 @@
 //  * La identidad de la sala (enlace, contraseña, jugadores recordados) está en `sala.json`, que es solo del
 //    host: no pasa por el estado ni por los deltas.
 pub mod comandos;
+pub mod config;
+pub mod pagina;
 pub mod imagenes;
 pub mod peticiones;
 pub mod protocolo;
@@ -74,6 +76,19 @@ pub struct EstadoSala {
     pub mapas_compartidos: Vec<MapaCompartido>,
     /// Por qué falló lo último (abrir la sala...), hasta que se vuelva a intentar.
     pub error: Option<String>,
+    /// Cómo se publica: el que usa la sala abierta o, cerrada, el que usará al abrirse (`red.json`).
+    pub respaldo: config::Respaldo,
+    /// Todos los enlaces de la sala abierta (en red local, uno por cada IP del equipo). `enlace` es el primero.
+    pub enlaces: Vec<EnlaceSala>,
+    /// Si la app lleva dentro la página de los jugadores (hace falta para la dirección propia y la red local).
+    pub pagina_incluida: bool,
+}
+
+/// Un enlace para los jugadores y de qué red es (el nombre de la interfaz en red local, p. ej. «Radmin VPN»).
+#[derive(Serialize, Clone, Debug, PartialEq)]
+pub struct EnlaceSala {
+    pub etiqueta: String,
+    pub url: String,
 }
 
 #[derive(Serialize, Clone, Debug)]
@@ -109,11 +124,67 @@ struct SalaAbierta {
     subidas: HashMap<IdJugador, HashSet<String>>,
     /// Para que una apertura que se canceló (se cerró la sala a mitad) no pise a la siguiente.
     generacion: u64,
+    /// Cómo se publicó al abrirla (no cambia mientras está abierta).
+    respaldo: config::Respaldo,
+    /// En red local: las IPs de este equipo al abrir la sala (cada una con su enlace).
+    lan: Vec<config::DireccionLan>,
 }
 
 impl SalaAbierta {
+    /// El fragmento del enlace (tras el `#`) con la identidad de la sala.
+    fn fragmento(&self) -> String {
+        format!("s={}&k={}", self.sala.id, self.sala.secreto)
+    }
+
+    /// Los enlaces para los jugadores. Con el túnel de Cloudflare, a la página de GitHub Pages con `t`; con la
+    /// dirección propia o en red local, a la propia dirección (la página la sirve la app), sin `t`.
+    fn enlaces(&self) -> Vec<EnlaceSala> {
+        match &self.respaldo {
+            config::Respaldo::Cloudflare => self
+                .tunel
+                .iter()
+                .map(|t| EnlaceSala { etiqueta: "Túnel de Cloudflare".into(), url: enlace(URL_CLIENTE, t, &self.sala) })
+                .collect(),
+            config::Respaldo::Propio { .. } => self
+                .tunel
+                .iter()
+                .map(|d| EnlaceSala { etiqueta: "Dirección propia".into(), url: format!("https://{d}/#{}", self.fragmento()) })
+                .collect(),
+            config::Respaldo::Lan { puerto } => {
+                let mut v: Vec<EnlaceSala> = self
+                    .lan
+                    .iter()
+                    .map(|d| EnlaceSala { etiqueta: d.interfaz.clone(), url: format!("http://{}:{puerto}/#{}", d.ip, self.fragmento()) })
+                    .collect();
+                // Para probar desde este mismo equipo
+                v.push(EnlaceSala { etiqueta: "Este equipo".into(), url: format!("http://localhost:{puerto}/#{}", self.fragmento()) });
+                v
+            }
+        }
+    }
+
     fn enlace(&self) -> Option<String> {
-        self.tunel.as_ref().map(|t| enlace(URL_CLIENTE, t, &self.sala))
+        self.enlaces().into_iter().next().map(|e| e.url)
+    }
+
+    /// Las direcciones por las que los jugadores llegan a ESTA sala (`host` o `host:puerto`): a ellas va atada la
+    /// prueba del token (`sala::prueba`). Solo las que pone el host, nunca lo que diga una cabecera de la petición.
+    fn direcciones(&self) -> Vec<String> {
+        match &self.respaldo {
+            config::Respaldo::Lan { puerto } => {
+                let mut v: Vec<String> = self.lan.iter().map(|d| format!("{}:{puerto}", d.ip)).collect();
+                v.push(format!("localhost:{puerto}"));
+                v.push(format!("127.0.0.1:{puerto}"));
+                v
+            }
+            _ => self.tunel.iter().cloned().collect(),
+        }
+    }
+
+    /// Los orígenes de la página cuando la sirve la propia sala (el de GitHub Pages está en `Red::origenes`).
+    fn origenes_propios(&self) -> Vec<String> {
+        let esquema = if matches!(self.respaldo, config::Respaldo::Lan { .. }) { "http" } else { "https" };
+        self.direcciones().into_iter().map(|d| format!("{esquema}://{d}")).collect()
     }
 }
 
@@ -315,11 +386,14 @@ impl Red {
         match self.dentro().as_ref() {
             Some(s) => EstadoSala {
                 fase: s.fase.clone(),
-                enlace: s.enlace(),
+                enlace: if matches!(s.fase, Fase::Abierta) { s.enlace() } else { None },
                 pide_contrasena: s.sala.pide_contrasena(),
                 conectados: s.conexiones.keys().copied().collect(),
                 mapas_compartidos,
                 error,
+                respaldo: s.respaldo.clone(),
+                enlaces: if matches!(s.fase, Fase::Abierta) { s.enlaces() } else { Vec::new() },
+                pagina_incluida: pagina::incluida(),
             },
             None => EstadoSala {
                 fase: Fase::Cerrada,
@@ -328,6 +402,9 @@ impl Red {
                 conectados: Vec::new(),
                 mapas_compartidos,
                 error,
+                respaldo: config::leer(&self.raiz).respaldo,
+                enlaces: Vec::new(),
+                pagina_incluida: pagina::incluida(),
             },
         }
     }
@@ -336,10 +413,27 @@ impl Red {
     // Abrir y cerrar
     // ------------------------------------------------------------------
 
-    /// Abre la sala: servidor local, cloudflared (lo descarga la primera vez) y túnel. Avisa al front en
-    /// cada paso. Si se cierra a mitad, lo que se estaba preparando se descarta.
+    /// La configuración de red de este equipo (`red.json`).
+    pub fn config(&self) -> config::ConfigRed {
+        config::leer(&self.raiz)
+    }
+
+    /// Cambia la configuración de red. Solo con la sala cerrada: la abierta sigue con la que tenía.
+    pub fn guardar_config(&self, c: &config::ConfigRed) -> Result<(), String> {
+        if self.esta_abierta() {
+            return Err("Cierra la sala para cambiar cómo se publica".into());
+        }
+        config::guardar(&self.raiz, c)?;
+        self.avisar();
+        Ok(())
+    }
+
+    /// Abre la sala: servidor local y, según `red.json`, túnel de Cloudflare (cloudflared se descarga la primera
+    /// vez) o la dirección propia del host. Avisa al front en cada paso. Si se cierra a mitad, lo que se estaba
+    /// preparando se descarta.
     pub async fn abrir(self: &Arc<Self>) -> Result<(), String> {
         let generacion = self.siguiente_id.fetch_add(1, Ordering::Relaxed);
+        let respaldo = config::leer(&self.raiz).respaldo;
         {
             let mut dentro = self.dentro();
             if dentro.is_some() {
@@ -359,12 +453,14 @@ impl Red {
                 apagar_servidor: None,
                 proceso_tunel: None,
                 generacion,
+                respaldo: respaldo.clone(),
+                lan: Vec::new(),
             });
         }
         *bloquear(&self.ultimo_error) = None;
         self.avisar();
 
-        let resultado = self.preparar(generacion).await;
+        let resultado = self.preparar(generacion, respaldo).await;
         if let Err(e) = &resultado {
             // Solo si sigue siendo esta apertura (no se cerró ni se volvió a abrir entretanto)
             if self.dentro().as_ref().is_some_and(|s| s.generacion == generacion) {
@@ -377,9 +473,41 @@ impl Red {
     }
 
     /// Pasos de `abrir`. Tras cada espera comprueba que la sala sigue siendo la de esta apertura.
-    async fn preparar(self: &Arc<Self>, generacion: u64) -> Result<(), String> {
-        let (puerto, apagar) = servidor::arrancar(self.clone()).await?;
+    async fn preparar(self: &Arc<Self>, generacion: u64, respaldo: config::Respaldo) -> Result<(), String> {
+        // Dónde escucha: en red local, en todas las interfaces; si no, solo en este equipo (lo publica el túnel)
+        let (ip, puerto_fijo) = match &respaldo {
+            config::Respaldo::Propio { puerto, .. } => (std::net::Ipv4Addr::LOCALHOST, *puerto),
+            config::Respaldo::Lan { puerto } => (std::net::Ipv4Addr::UNSPECIFIED, *puerto),
+            config::Respaldo::Cloudflare => (std::net::Ipv4Addr::LOCALHOST, 0), // uno libre cualquiera
+        };
+        // (En los tests no hace falta haber construido la página.)
+        if respaldo.sirve_pagina() && !pagina::incluida() && !cfg!(test) {
+            return Err("Esta versión de la app no lleva la página de los jugadores (bun run web:build:app). Usa el túnel de Cloudflare.".into());
+        }
+        let (puerto, apagar) = servidor::arrancar(self.clone(), ip, puerto_fijo).await?;
         if !self.con_sala(generacion, |s| s.apagar_servidor = Some(apagar)) {
+            return Ok(());
+        }
+
+        // Red local: los enlaces son las IPs de este equipo
+        if let config::Respaldo::Lan { .. } = &respaldo {
+            let lan = config::direcciones_lan();
+            self.con_sala(generacion, |s| {
+                s.lan = lan;
+                s.fase = Fase::Abierta;
+            });
+            self.avisar();
+            return Ok(());
+        }
+
+        // Dirección propia: la pone el host (su dominio, su túnel...); aquí solo se escucha en su puerto
+        if let config::Respaldo::Propio { url, .. } = &respaldo {
+            let direccion = config::direccion_de_url(url)?;
+            self.con_sala(generacion, |s| {
+                s.tunel = Some(direccion);
+                s.fase = Fase::Abierta;
+            });
+            self.avisar();
             return Ok(());
         }
 
@@ -661,6 +789,13 @@ impl Red {
         encontrado
     }
 
+    /// Si se acepta una página de este origen (el WebSocket y el CORS de `/imagen`): la de GitHub Pages (y, en
+    /// desarrollo, localhost) o la que sirve la propia sala abierta en su dirección.
+    pub(crate) fn acepta_origen(&self, origen: &str) -> bool {
+        self.origenes.iter().any(|o| o == origen)
+            || self.dentro().as_ref().is_some_and(|s| s.origenes_propios().iter().any(|o| o.eq_ignore_ascii_case(origen)))
+    }
+
     /// Carpeta de la partida de la sala abierta.
     fn dir_sala(&self) -> Option<PathBuf> {
         self.dentro().as_ref().map(|s| s.dir.clone())
@@ -685,8 +820,10 @@ impl Red {
             apagar_servidor: None,
             proceso_tunel: None,
             generacion: 0,
+            respaldo: config::Respaldo::Cloudflare,
+            lan: Vec::new(),
         });
-        let (puerto, apagar) = servidor::arrancar(self.clone()).await.unwrap();
+        let (puerto, apagar) = servidor::arrancar(self.clone(), std::net::Ipv4Addr::LOCALHOST, 0).await.unwrap();
         self.dentro().as_mut().unwrap().apagar_servidor = Some(apagar);
         puerto
     }
@@ -706,6 +843,8 @@ impl Red {
             apagar_servidor: None,
             proceso_tunel: None,
             generacion: 0,
+            respaldo: config::Respaldo::Cloudflare,
+            lan: Vec::new(),
         });
     }
 
@@ -717,6 +856,100 @@ impl Red {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::tablero_general::almacen::pruebas::dir_temporal;
+
+    fn red_en(nombre: &str) -> Arc<Red> {
+        let dir = dir_temporal(nombre);
+        let almacen = Arc::new(Almacen::abrir(&dir).unwrap());
+        Arc::new(Red::nueva(Arc::new(Mutex::new(EstadoPartida::default())), almacen, dir))
+    }
+
+    fn puerto_libre() -> u16 {
+        std::net::TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port()
+    }
+
+    #[tokio::test]
+    async fn con_direccion_propia_se_abre_sin_tunel_en_su_puerto_y_el_enlace_la_lleva() {
+        let red = red_en("red_propia");
+        let puerto = puerto_libre();
+        let propia = config::ConfigRed { respaldo: config::Respaldo::Propio { url: "https://Mesa.Mi-Dominio.es/".into(), puerto } };
+        red.guardar_config(&propia).unwrap();
+        assert_eq!(red.estado(&EstadoPartida::default()).respaldo, propia.respaldo, "cerrada: enseña la que usará");
+
+        red.abrir().await.unwrap();
+        let e = red.estado(&EstadoPartida::default());
+        assert_eq!(e.fase, Fase::Abierta);
+        // El enlace es la propia dirección (la página la sirve la app): sin GitHub Pages ni `t`
+        let enlace = e.enlace.clone().unwrap();
+        assert!(enlace.starts_with("https://mesa.mi-dominio.es/#s="), "{enlace}");
+        assert!(!enlace.contains("t="), "{enlace}");
+        assert_eq!(e.enlaces.len(), 1);
+        assert!(red.acepta_origen("https://mesa.mi-dominio.es"), "su página");
+        assert!(!red.acepta_origen("https://otro.es"));
+        // Escucha en ese puerto, en 127.0.0.1 (lo que el host lleve hasta ahí es cosa suya)
+        assert!(tokio::net::TcpStream::connect(("127.0.0.1", puerto)).await.is_ok());
+        assert!(red.guardar_config(&config::ConfigRed::default()).is_err(), "abierta no se cambia");
+        red.cerrar();
+    }
+
+    #[tokio::test]
+    async fn en_red_local_escucha_en_todas_las_interfaces_y_da_un_enlace_por_ip() {
+        let red = red_en("red_lan");
+        let puerto = puerto_libre();
+        red.guardar_config(&config::ConfigRed { respaldo: config::Respaldo::Lan { puerto } }).unwrap();
+        red.abrir().await.unwrap();
+        let e = red.estado(&EstadoPartida::default());
+        assert_eq!(e.fase, Fase::Abierta);
+        let lan = config::direcciones_lan();
+        assert_eq!(e.enlaces.len(), lan.len() + 1, "una por IP y la de este equipo");
+        for (d, enlace) in lan.iter().zip(&e.enlaces) {
+            assert_eq!(enlace.etiqueta, d.interfaz);
+            assert!(enlace.url.starts_with(&format!("http://{}:{puerto}/#s=", d.ip)), "{}", enlace.url);
+        }
+        assert!(e.enlaces.last().unwrap().url.starts_with(&format!("http://localhost:{puerto}/#s=")));
+        // Escucha también fuera de 127.0.0.1 (en cualquier IP del equipo)
+        if let Some(d) = lan.first() {
+            assert!(tokio::net::TcpStream::connect((d.ip, puerto)).await.is_ok());
+            assert!(red.acepta_origen(&format!("http://{}:{puerto}", d.ip)));
+        }
+        assert!(red.acepta_origen(&format!("http://localhost:{puerto}")));
+        assert!(!red.acepta_origen(&format!("http://otro.es:{puerto}")), "un origen que no es suyo");
+        assert!(!red.acepta_origen(&format!("https://localhost:{puerto}")), "en red local es http");
+        red.cerrar();
+    }
+
+    #[tokio::test]
+    async fn la_prueba_del_token_vale_para_sus_direcciones_y_no_para_otra() {
+        let red = red_en("red_prueba");
+        let puerto = puerto_libre();
+        red.guardar_config(&config::ConfigRed { respaldo: config::Respaldo::Lan { puerto } }).unwrap();
+        red.abrir().await.unwrap();
+        let token = red.cambiar_sala(|s| Ok(s.nuevo_token(7))).unwrap();
+        let dentro = red.dentro();
+        let s = dentro.as_ref().unwrap();
+        let vale = |direccion: &str| {
+            let p = SalaGuardada::responder(&token, "reto", direccion);
+            s.direcciones().iter().find_map(|d| s.sala.jugador_de_prueba("reto", d, &p))
+        };
+        assert_eq!(vale(&format!("localhost:{puerto}")), Some(7));
+        assert_eq!(vale(&format!("127.0.0.1:{puerto}")), Some(7));
+        assert_eq!(vale("servidor-falso.es"), None, "una prueba hecha para otro servidor no vale");
+        drop(dentro);
+        red.cerrar();
+    }
+
+    #[tokio::test]
+    async fn con_el_puerto_ocupado_no_se_abre_y_se_dice_por_que() {
+        let red = red_en("red_ocupado");
+        let ocupado = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let puerto = ocupado.local_addr().unwrap().port();
+        red.guardar_config(&config::ConfigRed { respaldo: config::Respaldo::Propio { url: "https://mi.dominio.es".into(), puerto } }).unwrap();
+        let error = red.abrir().await.unwrap_err();
+        assert!(error.contains("ocupado"), "{error}");
+        let e = red.estado(&EstadoPartida::default());
+        assert_eq!(e.fase, Fase::Cerrada);
+        assert_eq!(e.error.as_deref(), Some(error.as_str()));
+    }
 
     #[test]
     fn el_enlace_lleva_todo_tras_el_almohadilla_y_el_origen_se_saca_bien() {

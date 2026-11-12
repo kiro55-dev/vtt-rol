@@ -30,6 +30,7 @@ use tokio::time::timeout;
 
 use crate::red::Red;
 use crate::red::imagenes;
+use crate::red::pagina;
 use crate::red::transporte::{self, Trama, Transporte};
 use crate::red::peticiones;
 use crate::red::protocolo::{MensajeCliente, MensajeHost, VERSION_PROTOCOLO};
@@ -49,16 +50,22 @@ const MAX_PETICIONES_EN_COLA: usize = 64;
 /// reconectar recibe su vista entera, así que no pierde nada, y el host no acumula memoria por él.
 const MAX_MENSAJES_PENDIENTES: usize = 2000;
 
-/// Arranca el servidor en un puerto libre de 127.0.0.1. Devuelve el puerto y cómo apagarlo.
-pub async fn arrancar(red: Arc<Red>) -> Result<(u16, oneshot::Sender<()>), String> {
-    let escucha = tokio::net::TcpListener::bind("127.0.0.1:0")
-        .await
-        .map_err(|e| format!("No se pudo arrancar el servidor de la sala: {e}"))?;
+/// Arranca el servidor en `ip`:`puerto` (127.0.0.1 normalmente; 0.0.0.0 en red local; puerto 0 = uno libre).
+/// Devuelve el puerto y cómo apagarlo.
+pub async fn arrancar(red: Arc<Red>, ip: std::net::Ipv4Addr, puerto: u16) -> Result<(u16, oneshot::Sender<()>), String> {
+    let escucha = tokio::net::TcpListener::bind((ip, puerto)).await.map_err(|e| {
+        if puerto != 0 && e.kind() == std::io::ErrorKind::AddrInUse {
+            format!("El puerto {puerto} está ocupado por otro programa: elige otro en «Cómo se publica»")
+        } else {
+            format!("No se pudo arrancar el servidor de la sala: {e}")
+        }
+    })?;
     let puerto = escucha.local_addr().map_err(|e| e.to_string())?.port();
     let app = Router::new()
-        .route("/", get(|| async { "OpenRoll" }))
         .route("/ws", get(ws))
 .route("/imagen", get(imagen))
+        // Todo lo demás: la página de los jugadores, que va dentro de la app (red/pagina.rs)
+        .fallback(get(pagina::servir))
         .layer(axum::middleware::from_fn_with_state(red.clone(), cors))
         .with_state(red);
     let (apagar, al_apagar) = oneshot::channel::<()>();
@@ -79,7 +86,7 @@ pub async fn arrancar(red: Arc<Red>) -> Result<(u16, oneshot::Sender<()>), Strin
 
 async fn ws(State(red): State<Arc<Red>>, cabeceras: HeaderMap, ws: WebSocketUpgrade) -> Response {
     let origen = cabeceras.get(header::ORIGIN).and_then(|o| o.to_str().ok()).unwrap_or("");
-    if !red.origenes.iter().any(|o| o == origen) {
+    if !red.acepta_origen(origen) {
         return (StatusCode::FORBIDDEN, "Origen no permitido").into_response();
     }
     ws.max_message_size(MAX_MENSAJE).on_upgrade(move |socket| atender(red, transporte::desde_websocket(socket)))
@@ -133,11 +140,9 @@ async fn atender(red: Arc<Red>, transporte: Transporte) {
         match dentro.as_ref() {
             Some(s) => (
                 s.sala.coincide(&sala, &secreto),
-                // La prueba se calcula con la dirección del túnel de ESTE host: una de otro no vale aquí
-                match (prueba.as_deref(), s.tunel.as_deref()) {
-                    (Some(p), Some(t)) => s.sala.jugador_de_prueba(&reto, t, p),
-                    _ => None,
-                },
+                // La prueba se calcula con la dirección por la que llegó el jugador, y solo valen las de ESTE host
+                // (su túnel, su dirección propia o sus IPs en red local): una hecha para otro servidor no vale aquí
+                prueba.as_deref().and_then(|p| s.direcciones().iter().find_map(|d| s.sala.jugador_de_prueba(&reto, d, p))),
                 s.sala.pide_contrasena(),
             ),
             None => (false, None, false),
@@ -386,7 +391,7 @@ async fn imagen(State(red): State<Arc<Red>>, Query(p): Query<PedidoImagen>) -> R
 /// El origen de la petición, si es el de la página de la sala (o localhost en desarrollo).
 fn origen_permitido(red: &Red, cabeceras: &HeaderMap) -> Option<HeaderValue> {
     let o = cabeceras.get(header::ORIGIN)?;
-    red.origenes.iter().any(|x| Some(x.as_str()) == o.to_str().ok()).then(|| o.clone())
+    red.acepta_origen(o.to_str().ok()?).then(|| o.clone())
 }
 
 /// CORS para el navegador del jugador: la página está en otra dirección que el túnel. Solo el origen de la
@@ -1264,5 +1269,33 @@ mod tests {
         assert!(esperar_subida(&mut j, 3).await.is_err());
         mandar_mem(&j, &MensajeCliente::SubirImagen { id: 4, ext: "png".into(), tam: crate::tablero_general::imagenes::MAX_BYTES_SUBIDA + 1 }).await;
         assert!(esperar_subida(&mut j, 4).await.is_err(), "demasiado grande: ni empieza");
+    }
+
+    #[tokio::test]
+    async fn el_servidor_de_la_sala_sirve_la_pagina_de_los_jugadores() {
+        let (_red, puerto) = red_de_prueba("srv_pagina", None).await;
+        let url = |camino: &str| format!("http://127.0.0.1:{puerto}{camino}");
+        let r = reqwest::get(url("/")).await.unwrap();
+        if !pagina::incluida() {
+            // Sin `bun run web:build:app`: lo dice en vez de fallar en silencio
+            assert_eq!(r.status(), 503);
+            return;
+        }
+        assert_eq!(r.status(), 200);
+        assert_eq!(r.headers()["content-type"], "text/html; charset=utf-8");
+        assert_eq!(r.headers()["cache-control"], "no-cache", "index.html siempre se revisa (nada de páginas viejas)");
+        assert_eq!(r.headers()["x-frame-options"], "DENY");
+        assert_eq!(r.headers()["x-content-type-options"], "nosniff");
+        let html = r.text().await.unwrap();
+        // Un archivo de `_app/immutable/` (con hash en el nombre) se guarda para siempre
+        let inicio = html.find("/_app/immutable/").expect("la página carga sus piezas de /_app/immutable/");
+        let fin = inicio + html[inicio..].find('"').unwrap();
+        let r = reqwest::get(url(&html[inicio..fin])).await.unwrap();
+        assert_eq!(r.status(), 200);
+        assert!(r.headers()["cache-control"].to_str().unwrap().contains("immutable"));
+        assert_eq!(reqwest::get(url("/no/existe.js")).await.unwrap().status(), 404);
+        assert_eq!(reqwest::get(url("/../../Cargo.toml")).await.unwrap().status(), 404, "nada fuera de la página");
+        // `/ws` y `/imagen` siguen siendo lo que eran
+        assert_eq!(reqwest::get(url("/imagen?ruta=imagenes%2Fx.png&sesion=nada")).await.unwrap().status(), 403);
     }
 }

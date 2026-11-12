@@ -13,6 +13,9 @@
 // Imágenes: van por esta misma conexión (`ImagenesRed`). Los `<img>` de la app piden `<base>/__imagen?ruta=…`,
 // que contesta el Service Worker (src/service-worker.ts) preguntándole a esta página. Sin Service Worker (p. ej.
 // Firefox en ventana privada) se usa el respaldo HTTP de siempre (`/imagen?sesion=…` del túnel).
+import { hmac } from "@noble/hashes/hmac.js";
+import { sha256 } from "@noble/hashes/sha2.js";
+import { bytesToHex } from "@noble/hashes/utils.js";
 import { emitirLocal, EVENTO_PARTIDA_CAMBIADA, instalarJugador } from "$lib/backend";
 import { EVENTO_AVISO } from "$lib/avisosTablero";
 import { esJugador } from "$lib/modo";
@@ -40,14 +43,14 @@ const REINTENTAR_DURANTE_MS = 60_000;
 const TIEMPO_RESPUESTA_MS = 30_000;
 const MAX_COMANDOS_PERSONALES = 100;
 
-const hex = (b: ArrayBuffer) => [...new Uint8Array(b)].map((x) => x.toString(16).padStart(2, "0")).join("");
-
-/** Lo mismo que `red::sala::prueba` en Rust (con el vector fijo de los tests de los dos lados). */
+/**
+ * Lo mismo que `red::sala::prueba` en Rust (con el vector fijo de los tests de los dos lados):
+ * HMAC-SHA256(SHA-256(token), "<reto>|<dirección>"). Con `@noble/hashes` y no con `crypto.subtle`, porque en red
+ * local la página va por `http://` y ahí el navegador no da `crypto.subtle` (solo en «contextos seguros»).
+ */
 export async function prueba(token: string, reto: string, tunel: string): Promise<string> {
-  const c = globalThis.crypto.subtle;
-  const clave = await c.digest("SHA-256", new TextEncoder().encode(token));
-  const k = await c.importKey("raw", clave, { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
-  return hex(await c.sign("HMAC", k, new TextEncoder().encode(`${reto}|${tunel}`)));
+  const texto = new TextEncoder();
+  return bytesToHex(hmac(sha256, sha256(texto.encode(token)), texto.encode(`${reto}|${tunel}`)));
 }
 
 function leerToken(sala: string): string | null {
@@ -354,7 +357,7 @@ export class Conexion {
  */
 export const conexion: Conexion | null = (() => {
   if (!esJugador) return null;
-  const enlace = leerEnlace(location.hash);
+  const enlace = leerEnlace(location.hash, location);
   if (!enlace) return null;
   const c = new Conexion(enlace);
   instalarJugador((cmd, args) => c.responder(cmd, args));

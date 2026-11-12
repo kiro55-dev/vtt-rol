@@ -34,10 +34,33 @@ https://kiro55-dev.github.io/vtt-rol/#t=…&s=…&k=…
   jugadores ven ese mapa (y su zona) al instante; desmarcada, deja de verse. Es independiente del mapa que el host
   tenga abierto: puede preparar otros sin que se vean. Cada jugador ve además sus propias fichas (las que el host le
   da arrastrándolo sobre ellas en «Configuración de sala»), enteras.
-- **El túnel** es un *quick tunnel* de Cloudflare (`cloudflared`, gratis y sin cuenta). Da una dirección
-  `https://<palabras>.trycloudflare.com` distinta cada vez que se abre la sala. `cloudflared` no va en el
-  instalador: se descarga la primera vez que se abre una sala (versión fijada y huella SHA-256 comprobada, en
-  `src-tauri/src/red/tunel.rs`) a `<datos de la app>/bin/`.
+- **Cómo se publica** (en «Configuración de sala» → «Cómo llegan los jugadores»; es de este equipo, no de la
+  partida: `<datos de la app>/red.json`, `src-tauri/src/red/config.rs`; solo se cambia con la sala cerrada):
+  - **Túnel de Cloudflare** (por defecto): un *quick tunnel* (`cloudflared`, gratis y sin cuenta). Da una dirección
+    `https://<palabras>.trycloudflare.com` distinta cada vez que se abre la sala. `cloudflared` no va en el
+    instalador: se descarga la primera vez que se abre una sala (versión fijada y huella SHA-256 comprobada, en
+    `src-tauri/src/red/tunel.rs`) a `<datos de la app>/bin/`.
+  - **Dirección propia**: el host pone su URL https (su dominio con su propio túnel de Cloudflare, `tailscale
+    funnel`, `ngrok`, un proxy https con un puerto abierto…) y un puerto; la app escucha en `127.0.0.1:<puerto>` y
+    el enlace es esa dirección (`https://mi.dominio.es/#s=…&k=…`), que no cambia al reabrir. Lo que lleve de la URL
+    a ese puerto lo monta el host. Solo https y sin rutas (`config::direccion_de_url`). Si el puerto está ocupado, la
+    sala no abre y lo dice.
+  - **Red local / VPN** («abrir en LAN»): la app escucha en **todas** las interfaces (`0.0.0.0:<puerto>`) y la
+    ventana da un enlace por cada IPv4 del equipo con el nombre de su red (`config::direcciones_lan`, con
+    `if-addrs`; p. ej. «Radmin VPN — `http://26.x.x.x:8080/#s=…&k=…`») y otro de «Este equipo» (`localhost`).
+    **Sin cifrar**: la contraseña y el token viajan en claro dentro de esa red (Radmin, ZeroTier, Hamachi cifran
+    entre sus equipos; una LAN normal no). Windows pide permiso al cortafuegos la primera vez.
+- **La página de los jugadores va dentro de la app** (`build-jugador/`, `bun run web:build:app`, raíz `/`; la
+  incluyen `beforeDevCommand`/`beforeBuildCommand`). El servidor de la sala la sirve en `/` (`red/pagina.rs`, con
+  `rust-embed`: en desarrollo la lee del disco, en release va en el ejecutable). Con la dirección propia o en red
+  local el enlace NO lleva `t`: el navegador entiende que el host es quien le sirvió la página (mismo origen), con
+  su esquema (`ws://` en red local). Página y servidor salen de la misma app: nunca hay «versión distinta». Con el
+  túnel de Cloudflare se sigue usando la de GitHub Pages, porque su dirección cambia cada vez y el navegador
+  perdería la memoria de los jugadores. Cabeceras: `index.html` y el Service Worker con `no-cache`, lo de
+  `_app/immutable/` con caché para siempre, y `nosniff`, `X-Frame-Options: DENY`, `Referrer-Policy: no-referrer`.
+- **En `http://` (red local) el navegador no es «contexto seguro»**: no hay `crypto.subtle` (la prueba del token
+  usa `@noble/hashes` en todos los modos) ni Service Worker (las imágenes van por el respaldo `/imagen`, relativo).
+  - (Fase 3 del plan WebRTC: conexión directa, con una de estas como respaldo.)
 - **La página de los jugadores está en una dirección fija** (GitHub Pages). Eso es lo que permite al navegador
   recordar al jugador aunque el túnel cambie.
 - **El enlace** es `URL_CLIENTE#t=<túnel>&s=<sala>&k=<secreto>`. Cambia cada vez que se abre la sala (por el
@@ -58,8 +81,13 @@ https://kiro55-dev.github.io/vtt-rol/#t=…&s=…&k=…
   `HMAC-SHA256(SHA-256(token), "<reto>|<túnel>")`. Como la respuesta va ligada al reto y a la dirección del
   túnel, un enlace falso que lleve a otro servidor no puede robar nada. Si un navegador que ya había entrado ve
   que la sala no lo reconoce, avisa de que desconfíe antes de poner la contraseña.
-- **Solo se acepta el WebSocket desde el origen de la página** (`Origin`), y solo hacia túneles
-  `*.trycloudflare.com` (el navegador rechaza cualquier otro `t`). Mensajes de 16 KiB como mucho.
+- **Solo se acepta el WebSocket desde el origen de la página** (`Origin`, `Red::acepta_origen`): el de GitHub Pages o
+  los de la propia sala abierta (`https://<dirección propia>`, `http://<ip>:<puerto>` de cada red), nunca lo que diga
+  la cabecera `Host`. La prueba del token se comprueba contra las direcciones de la sala (`SalaAbierta::direcciones`):
+  una hecha para otro servidor no vale. El navegador solo acepta como `t` una
+  dirección con forma de dominio (y puerto opcional), sin rutas ni usuarios, y siempre por `wss`/`https`. Ya no se
+  limita a `*.trycloudflare.com` (por la dirección propia); un enlace falso sigue sin poder robar el token, porque
+  la prueba va atada a la dirección. Mensajes de 512 KiB como mucho.
 - **Lo que sale hacia cada jugador** pasa siempre por `red::vista::vista_para`, que usa los filtros de
   `visibilidad.rs`: los mapas compartidos y sus zonas, sus fichas (enteras) y las demás instancias de esos mapas sin
   lo privado. Las definiciones de parámetros que salen son solo las de lo que ve (ni los nombres de los privados).

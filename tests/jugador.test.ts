@@ -26,7 +26,7 @@ class WebSocketFalso {
   }
 }
 
-const ENLACE = { tunel: "x.trycloudflare.com", sala: "AbCdEfGhIjKlMnOpQrStUv", secreto: "0123456789abcdef_-XYZ" };
+const ENLACE = { tunel: "x.trycloudflare.com", sala: "AbCdEfGhIjKlMnOpQrStUv", secreto: "0123456789abcdef_-XYZ", mismoOrigen: false, seguro: true };
 
 async function conectado() {
   vi.resetModules();

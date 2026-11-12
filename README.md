@@ -27,4 +27,16 @@ La segunda etapa arregla lo anterior, ya que la idea es la implementación de fu
 
 El rollmaster puede privatizar la información que quiera, incluso los rangos para que no se vean al resto. Existen pings, indicar con una flecha el camino que quieres seguir. Cuando creas una sala pasas un enlace y el resto solo tiene que abrir el enlace desde un navegador (mejor en pc) y ya ve la aplicación completa. La primera vez que entras tienes que poner tu nombre (este nombre es de la conexión no del rol, ya que dentro puede tener varias fichas el jugador). El host asigna las fichas que puede manejar el jugador arrastrando (incluso fuera de la categoría de jugador) y listo, el jugador tiene control sobre la ficha y no sobre el resto.
 
+La aplicación ofrece dos formas principal de hostear una sala:
+
+1A Autogestionado 100% por la aplicación
+Opción peer to peer gestionado por la propia aplicación, en la cual tiene como respaldo automático Cloudflare por si algún jugador tiene una NAT estricta y no permite este tipo de conexión (no hay que configurar nada, pero no garantizo que Cloudflare vaya a estar siempre 
+disponible).
+
+1B Usar tu propio respaldo
+Con tailscale instalado, habilitar https certificates dentro de https://console.tailscale.com/admin/dns, y en una terminal ejecutar tailscale funnel http://127.0.0.1:8080 (la primera vez pedira confirmación), poner la url que se obtiene en el programa, y compartir la url que se proporciona a los jugadores y listo.
+
+2 Red local
+La clásica, mediante hamachi o mi recomendación personal, radmin vpn, conectarses todo a una red local y poner ip del host más el puerto, como en minecraft.
+
 En una tercera etapa muy lejana se pensarán cosas como "Dungeon creator", muros que tapen visibilidad, pero no tengo claro que termine de encargar con la visión del programa, ya se verá.

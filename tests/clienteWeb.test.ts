@@ -11,14 +11,43 @@ const K = "0123456789abcdef_-XYZ";
 
 describe("enlace", () => {
   it("lee túnel, sala y secreto de lo que va tras el #", () => {
-    expect(leerEnlace(`#t=casa-roja.trycloudflare.com&s=${S}&k=${K}`)).toEqual({ tunel: "casa-roja.trycloudflare.com", sala: S, secreto: K });
+    expect(leerEnlace(`#t=casa-roja.trycloudflare.com&s=${S}&k=${K}`)).toEqual({
+      tunel: "casa-roja.trycloudflare.com",
+      sala: S,
+      secreto: K,
+      mismoOrigen: false,
+      seguro: true
+    });
   });
 
-  it("solo acepta túneles de Cloudflare y claves bien formadas", () => {
+  it("sin `t`, el host es quien sirve la página (dirección propia o red local), con su esquema", () => {
+    const propia = leerEnlace(`#s=${S}&k=${K}`, { host: "kirem-2.tail12739.ts.net", protocol: "https:" })!;
+    expect(propia).toEqual({ tunel: "kirem-2.tail12739.ts.net", sala: S, secreto: K, mismoOrigen: true, seguro: true });
+    expect(urlWebSocket(propia)).toBe("wss://kirem-2.tail12739.ts.net/ws");
+    expect(urlImagen(propia, "SES", "imagenes/a.png")).toBe("/imagen?ruta=imagenes%2Fa.png&sesion=SES");
+
+    const lan = leerEnlace(`#s=${S}&k=${K}`, { host: "26.1.2.3:8080", protocol: "http:" })!;
+    expect(lan).toMatchObject({ tunel: "26.1.2.3:8080", mismoOrigen: true, seguro: false });
+    expect(urlWebSocket(lan)).toBe("ws://26.1.2.3:8080/ws");
+
+    expect(leerEnlace(`#s=${S}&k=${K}`), "sin saber dónde está la página").toBeNull();
+    expect(leerEnlace(`#s=${S}&k=${K}`, { host: "x.es", protocol: "file:" })).toBeNull();
+  });
+
+  it("acepta la dirección propia del host (dominio y puerto opcional)", () => {
+    expect(leerEnlace(`#t=mesa.mi-dominio.es&s=${S}&k=${K}`)?.tunel).toBe("mesa.mi-dominio.es");
+    expect(leerEnlace(`#t=mesa.mi-dominio.es:8443&s=${S}&k=${K}`)?.tunel).toBe("mesa.mi-dominio.es:8443");
+    expect(leerEnlace(`#t=Mesa.MI-dominio.es&s=${S}&k=${K}`)?.tunel, "en minúsculas").toBe("mesa.mi-dominio.es");
+  });
+
+  it("solo acepta una dirección sin rutas ni usuarios, y claves bien formadas", () => {
     for (const malo of [
-      `#t=evil.example.com&s=${S}&k=${K}`,
-      `#t=a.trycloudflare.com.evil.com&s=${S}&k=${K}`,
       `#t=a.trycloudflare.com/x&s=${S}&k=${K}`,
+      `#t=usuario@a.trycloudflare.com&s=${S}&k=${K}`,
+      `#t=a b.es&s=${S}&k=${K}`,
+      `#t=-malo.es&s=${S}&k=${K}`,
+      `#t=a.es:puerto&s=${S}&k=${K}`,
+      `#t=javascript:alert(1)&s=${S}&k=${K}`,
       `#t=a.trycloudflare.com&s=corto&k=${K}`,
       `#t=a.trycloudflare.com&s=${S}&k=con espacios aqui!!`,
       `#t=a.trycloudflare.com&s=${S}`,

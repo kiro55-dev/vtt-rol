@@ -12,6 +12,20 @@ export type Fase =
   | { tipo: "Preparando"; paso: string; progreso: number | null }
   | { tipo: "Abierta" };
 
+/** Espejo de `red::config::Respaldo`: cómo se publica la sala en internet. */
+export type Respaldo = { tipo: "Cloudflare" } | { tipo: "Propio"; url: string; puerto: number } | { tipo: "Lan"; puerto: number };
+
+/** Espejo de `red::EnlaceSala`: un enlace para los jugadores y de qué red es (en red local, una por IP). */
+export interface EnlaceSala {
+  etiqueta: string;
+  url: string;
+}
+
+/** Espejo de `red::config::ConfigRed` (`<datos de la app>/red.json`, de este equipo). */
+export interface ConfigRed {
+  respaldo: Respaldo;
+}
+
 /** Espejo de `red::EstadoSala`. */
 export interface EstadoSala {
   fase: Fase;
@@ -21,6 +35,12 @@ export interface EstadoSala {
   /** Los mapas que ven los jugadores (los de la casilla marcada, de todas las zonas). */
   mapas_compartidos: { id: number; nombre: string }[];
   error: string | null;
+  /** El que usa la sala abierta o, cerrada, el que usará al abrirse. */
+  respaldo: Respaldo;
+  /** Todos los enlaces (en red local, uno por cada IP del equipo); `enlace` es el primero. */
+  enlaces: EnlaceSala[];
+  /** Si la app lleva dentro la página de los jugadores (hace falta para la dirección propia y la red local). */
+  pagina_incluida: boolean;
 }
 
 /** Espejo de `red::comandos::JugadorSala`. */
@@ -32,7 +52,17 @@ export interface JugadorSala {
   fichas: number[];
 }
 
-const CERRADA: EstadoSala = { fase: { tipo: "Cerrada" }, enlace: null, pide_contrasena: false, conectados: [], mapas_compartidos: [], error: null };
+const CERRADA: EstadoSala = {
+  fase: { tipo: "Cerrada" },
+  enlace: null,
+  pide_contrasena: false,
+  conectados: [],
+  mapas_compartidos: [],
+  error: null,
+  respaldo: { tipo: "Cloudflare" },
+  enlaces: [],
+  pagina_incluida: true
+};
 
 class Sala {
   estado = $state<EstadoSala>({ ...CERRADA });
@@ -79,6 +109,17 @@ class Sala {
     await this.recargar();
   }
 
+  /** Cómo se publica la sala en este equipo. */
+  leerConfig(): Promise<ConfigRed> {
+    return invoke<ConfigRed>("obtener_config_red");
+  }
+
+  /** Solo con la sala cerrada; Rust comprueba la dirección y el puerto (el error llega tal cual). */
+  async guardarConfig(config: ConfigRed) {
+    await invoke("guardar_config_red", { config });
+    await this.recargar();
+  }
+
   async regenerarEnlace() {
     await invoke("regenerar_enlace");
     await this.recargar();
@@ -112,10 +153,10 @@ class Sala {
     await Promise.all([this.recargar(), partida.recargarEntidades()]);
   }
 
-  async copiarEnlace(): Promise<boolean> {
-    if (!this.estado.enlace) return false;
+  async copiarEnlace(url = this.estado.enlace): Promise<boolean> {
+    if (!url) return false;
     try {
-      await navigator.clipboard.writeText(this.estado.enlace);
+      await navigator.clipboard.writeText(url);
       return true;
     } catch {
       return false;

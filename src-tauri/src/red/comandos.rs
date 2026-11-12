@@ -33,6 +33,18 @@ pub fn cerrar_sala(state: State<'_, AppState>) {
     state.red.cerrar();
 }
 
+/// Cómo se publica la sala en este equipo (`red.json`): túnel de Cloudflare o dirección propia.
+#[tauri::command]
+pub fn obtener_config_red(state: State<'_, AppState>) -> crate::red::config::ConfigRed {
+    state.red.config()
+}
+
+/// Solo con la sala cerrada. Comprueba la dirección y el puerto antes de guardar.
+#[tauri::command]
+pub fn guardar_config_red(config: crate::red::config::ConfigRed, state: State<'_, AppState>) -> Result<(), String> {
+    state.red.guardar_config(&config)
+}
+
 /// El enlace anterior deja de valer y todos tendrán que volver a poner la contraseña.
 #[tauri::command]
 pub fn regenerar_enlace(state: State<'_, AppState>) -> Result<(), String> {
