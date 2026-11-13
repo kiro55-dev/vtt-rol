@@ -26,6 +26,7 @@ pub mod transporte;
 pub mod trozos;
 pub mod webrtc;
 pub mod tunel;
+pub mod version;
 pub mod vista;
 
 use std::collections::{HashMap, HashSet, VecDeque};
@@ -451,6 +452,12 @@ impl Red {
 
     pub fn esta_abierta(&self) -> bool {
         self.dentro().is_some()
+    }
+
+    /// ¿Los jugadores usan la página de GitHub Pages (que se actualiza sola)? Con el túnel de Cloudflare, sí; con tu propia
+    /// dirección o en red local la página va dentro de la app y no puede haber desajuste.
+    pub fn pagina_en_github(&self) -> bool {
+        self.dentro().as_ref().is_some_and(|s| matches!(s.respaldo, config::Respaldo::Cloudflare))
     }
 
     /// Lo que enseña la ventana de la sala. Cerrada, lee `sala.json` para saber si hay contraseña. Se llama con

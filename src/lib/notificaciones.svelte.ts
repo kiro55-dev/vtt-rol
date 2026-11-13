@@ -7,6 +7,15 @@
 export interface Notificacion {
   id: number;
   texto: string;
+  /** Un texto largo (una frase entera): se parte en varias líneas en vez de cortarse con «…». */
+  largo: boolean;
+  /** Algo a lo que hacer caso (no una simple noticia): se ve con el borde ámbar. */
+  aviso: boolean;
+}
+
+export interface OpcionesNotificacion {
+  largo?: boolean;
+  aviso?: boolean;
 }
 
 /** Lo que dura un aviso en pantalla. */
@@ -24,9 +33,9 @@ class Notificaciones {
   #siguiente = 1;
 
   /** Enseña un aviso y lo quita solo a los `ms` (cada uno con su reloj). Devuelve su id. */
-  mostrar(texto: string, ms: number = DURACION_NOTIFICACION_MS): number {
+  mostrar(texto: string, ms: number = DURACION_NOTIFICACION_MS, opciones: OpcionesNotificacion = {}): number {
     const id = this.#siguiente++;
-    this.lista = [...this.lista, { id, texto }];
+    this.lista = [...this.lista, { id, texto, largo: !!opciones.largo, aviso: !!opciones.aviso }];
     while (this.lista.length > MAX_NOTIFICACIONES) this.quitar(this.lista[0].id);
     this.#relojes.set(
       id,

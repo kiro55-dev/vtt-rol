@@ -68,6 +68,19 @@ describe("notificaciones", () => {
     expect(textos()).toEqual(["B"]);
   });
 
+  it("un aviso largo (una frase entera) y uno de atención se marcan como tales; los normales, no", () => {
+    notificaciones.mostrar("Ana se unió a la sala");
+    notificaciones.mostrar("Actualiza OpenRoll: los jugadores no podrán entrar", 15000, { largo: true, aviso: true });
+    expect(notificaciones.lista.map((n) => [n.largo, n.aviso])).toEqual([
+      [false, false],
+      [true, true]
+    ]);
+    vi.advanceTimersByTime(3000);
+    expect(textos()).toEqual(["Actualiza OpenRoll: los jugadores no podrán entrar"]); // y dura lo que se pidió
+    vi.advanceTimersByTime(12_000);
+    expect(textos()).toEqual([]);
+  });
+
   it("se puede pedir otra duración", () => {
     notificaciones.mostrar("largo", 5000);
     vi.advanceTimersByTime(4999);

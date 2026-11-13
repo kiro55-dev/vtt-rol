@@ -14,6 +14,8 @@ on:
       - "vite.config.js"
       - "package.json"
       - "bun.lock"
+      - "src-tauri/Cargo.toml" # su versión va en version.json
+      - "src-tauri/tauri.conf.json"
       - ".github/workflows/cliente-web.yml"
   workflow_dispatch:
 

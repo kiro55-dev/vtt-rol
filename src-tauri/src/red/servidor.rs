@@ -154,7 +154,7 @@ pub(crate) async fn atender(red: Arc<Red>, transporte: Transporte) {
         }
     };
     if version != VERSION_PROTOCOLO {
-        return rechazar(&tx, "Versión distinta de la del host: recarga la página").await;
+        return rechazar(&tx, "Tu navegador y el host usan versiones distintas de OpenRoll. Recarga la página; si sigue igual, pídele al host que actualice la app").await;
     }
     let (valido, recordado, pide_contrasena) = {
         let dentro = red.dentro();

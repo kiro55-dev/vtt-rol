@@ -220,6 +220,9 @@
               : "Por un túnel de Cloudflare."}
           Cierra la sala para cambiarlo.
         </span>
+        {#if sala.avisoVersion}
+          <span class="nota aviso">{sala.avisoVersion.texto}</span>
+        {/if}
         {#if sala.estado.solo_respaldo && sala.estado.respaldo.tipo !== "Lan"}
           <span class="nota">Por túnel: no se ofrece la conexión directa.</span>
         {/if}

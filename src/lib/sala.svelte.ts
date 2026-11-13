@@ -6,6 +6,7 @@
 import { invoke } from "$lib/backend";
 import { listen } from "$lib/backend";
 import { partida } from "$lib/partida.svelte";
+import { notificaciones } from "$lib/notificaciones.svelte";
 
 export type Fase =
   | { tipo: "Cerrada" }
@@ -77,7 +78,15 @@ const CERRADA: EstadoSala = {
   solo_respaldo: false
 };
 
+/** Lo que dice la comprobación de versión (ver `red/version.rs`): «fuerte» = los jugadores no podrán entrar. */
+export interface AvisoVersion {
+  nivel: "fuerte" | "suave";
+  texto: string;
+}
+
 class Sala {
+  /** Si la web de los jugadores es más nueva que esta app (solo con el túnel de Cloudflare): se mira al abrir la sala. */
+  avisoVersion = $state<AvisoVersion | null>(null);
   estado = $state<EstadoSala>({ ...CERRADA });
   jugadores = $state<JugadorSala[]>([]);
   /** Si la ventana está abierta. */
@@ -115,9 +124,22 @@ class Sala {
     } finally {
       await this.recargar();
     }
+    void this.#comprobarVersion(); // sala abierta: ¿podrán entrar los jugadores con la versión de esta app?
+  }
+
+  /** Pregunta a Rust si la web de los jugadores es más nueva que la app. Sin red o sin Cloudflare, no hay aviso. */
+  async #comprobarVersion() {
+    try {
+      const aviso = await invoke<AvisoVersion | null>("comprobar_version_web");
+      this.avisoVersion = aviso ?? null;
+      if (aviso) notificaciones.mostrar(aviso.texto, aviso.nivel === "fuerte" ? 15000 : 8000, { largo: true, aviso: aviso.nivel === "fuerte" });
+    } catch {
+      this.avisoVersion = null;
+    }
   }
 
   async cerrar() {
+    this.avisoVersion = null;
     await invoke("cerrar_sala");
     await this.recargar();
   }
