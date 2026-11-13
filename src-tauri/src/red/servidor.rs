@@ -338,9 +338,10 @@ impl LimitePeticiones {
 async fn identificar(red: &Arc<Red>, tx: &Emisor, rx: &mut Receptor, pide_contrasena: bool) -> Option<(Jugador, Option<String>)> {
     let mut fallos = 0;
     let mut error = None;
+    let mut nombre_existente: Option<String> = None;
     loop {
-        enviar(tx, &MensajeHost::Identificate { pide_contrasena, error: error.take() }).await.ok()?;
-        let Ok(Some(MensajeCliente::Unirse { nombre, contrasena })) = timeout(TIEMPO_IDENTIFICARSE, recibir(rx)).await else {
+        enviar(tx, &MensajeHost::Identificate { pide_contrasena, error: error.take(), nombre_existente: nombre_existente.take() }).await.ok()?;
+        let Ok(Some(MensajeCliente::Unirse { nombre, contrasena, entrar_igualmente })) = timeout(TIEMPO_IDENTIFICARSE, recibir(rx)).await else {
             rechazar(tx, "No se recibió el nombre").await;
             return None;
         };
@@ -366,6 +367,24 @@ async fn identificar(red: &Arc<Red>, tx: &Emisor, rx: &mut Receptor, pide_contra
             }
             error = Some("Contraseña incorrecta".to_string());
             continue;
+        }
+
+        // Un nombre que ya está registrado (p. ej. el mismo jugador desde otro dispositivo): si alguien lo está usando
+        // (o acaba de perder la conexión y reconecta), se bloquea como siempre; si no, se puede entrar con él. La
+        // contraseña de la sala ya se comprobó arriba.
+        let existente = jugadores::existente(&red.estado_partida(), &nombre);
+        if let Some(j) = existente {
+            if red.esta_presente(j.id) {
+                error = Some("Ya hay un jugador con ese nombre: elige otro".to_string());
+                continue;
+            }
+            if !entrar_igualmente {
+                nombre_existente = Some(j.nombre.clone()); // se vuelve a preguntar, ofreciendo entrar igualmente
+                continue;
+            }
+            // Entra como el que ya estaba (mismo id, mismas fichas y permisos), con un token nuevo para ese navegador
+            let token = red.cambiar_sala(|s| Ok(s.nuevo_token(j.id))).ok();
+            return Some((j, token));
         }
 
         // Alta en la partida (un delta normal, bajo el lock del estado)
@@ -546,14 +565,14 @@ mod tests {
         let (red, puerto) = red_de_prueba("srv_contrasena", Some("dragón")).await;
         let (mut c, reto) = conectar_con_reto(puerto, &origen(&red)).await;
         mandar(&mut c, &hola(&red, &reto, None)).await;
-        assert_eq!(leer(&mut c).await, MensajeHost::Identificate { pide_contrasena: true, error: None });
+        assert_eq!(leer(&mut c).await, MensajeHost::Identificate { pide_contrasena: true, error: None, nombre_existente: None });
 
         // Mal: vuelve a preguntar
-        mandar(&mut c, &MensajeCliente::Unirse { nombre: "Ana".into(), contrasena: Some("otra".into()) }).await;
+        mandar(&mut c, &MensajeCliente::Unirse { nombre: "Ana".into(), contrasena: Some("otra".into()), entrar_igualmente: false }).await;
         assert!(matches!(leer(&mut c).await, MensajeHost::Identificate { error: Some(_), .. }));
 
         // Bien: bienvenida con token y vista
-        mandar(&mut c, &MensajeCliente::Unirse { nombre: "Ana".into(), contrasena: Some("dragón".into()) }).await;
+        mandar(&mut c, &MensajeCliente::Unirse { nombre: "Ana".into(), contrasena: Some("dragón".into()), entrar_igualmente: false }).await;
         let MensajeHost::Bienvenido { yo, token: Some(token), .. } = leer(&mut c).await else { panic!("sin bienvenida") };
         assert_eq!(yo, Jugador { id: 1, nombre: "Ana".into() });
         assert_eq!(leer(&mut c).await, MensajeHost::Vista { vista: VistaJugador::default() });
@@ -585,10 +604,10 @@ mod tests {
         let (red, puerto) = red_de_prueba("srv_sin_contrasena", None).await;
         let (mut c, reto) = conectar_con_reto(puerto, &origen(&red)).await;
         mandar(&mut c, &hola(&red, &reto, None)).await;
-        assert_eq!(leer(&mut c).await, MensajeHost::Identificate { pide_contrasena: false, error: None });
-        mandar(&mut c, &MensajeCliente::Unirse { nombre: "  ".into(), contrasena: None }).await;
+        assert_eq!(leer(&mut c).await, MensajeHost::Identificate { pide_contrasena: false, error: None, nombre_existente: None });
+        mandar(&mut c, &MensajeCliente::Unirse { nombre: "  ".into(), contrasena: None, entrar_igualmente: false }).await;
         assert!(matches!(leer(&mut c).await, MensajeHost::Identificate { error: Some(_), .. }));
-        mandar(&mut c, &MensajeCliente::Unirse { nombre: "Luis".into(), contrasena: None }).await;
+        mandar(&mut c, &MensajeCliente::Unirse { nombre: "Luis".into(), contrasena: None, entrar_igualmente: false }).await;
         assert!(matches!(leer(&mut c).await, MensajeHost::Bienvenido { .. }));
     }
 
@@ -599,7 +618,7 @@ mod tests {
         mandar(&mut c, &hola(&red, &reto, None)).await;
         leer(&mut c).await;
         for i in 1..=5 {
-            mandar(&mut c, &MensajeCliente::Unirse { nombre: "X".into(), contrasena: Some(format!("mala{i}")) }).await;
+            mandar(&mut c, &MensajeCliente::Unirse { nombre: "X".into(), contrasena: Some(format!("mala{i}")), entrar_igualmente: false }).await;
             let r = leer(&mut c).await;
             if i < 5 {
                 assert!(matches!(r, MensajeHost::Identificate { .. }), "{i}: {r:?}");
@@ -616,7 +635,7 @@ mod tests {
         let (mut c, reto) = conectar_con_reto(puerto, &origen(&red)).await;
         mandar(&mut c, &hola(&red, &reto, None)).await;
         leer(&mut c).await;
-        mandar(&mut c, &MensajeCliente::Unirse { nombre: "Ana".into(), contrasena: None }).await;
+        mandar(&mut c, &MensajeCliente::Unirse { nombre: "Ana".into(), contrasena: None, entrar_igualmente: false }).await;
         leer(&mut c).await; // Bienvenido
         leer(&mut c).await; // Vista
 
@@ -657,7 +676,7 @@ mod tests {
         let (mut c, reto) = conectar_con_reto(puerto, &origen(&red)).await;
         mandar(&mut c, &hola(&red, &reto, None)).await;
         leer(&mut c).await;
-        mandar(&mut c, &MensajeCliente::Unirse { nombre: "Ana".into(), contrasena: None }).await;
+        mandar(&mut c, &MensajeCliente::Unirse { nombre: "Ana".into(), contrasena: None, entrar_igualmente: false }).await;
         let MensajeHost::Bienvenido { sesion, .. } = leer(&mut c).await else { panic!() };
 
         let pedir = |ruta: &str, sesion: &str| format!("http://127.0.0.1:{puerto}/imagen?ruta={ruta}&sesion={sesion}");
@@ -732,7 +751,7 @@ mod tests {
         let (mut c, reto) = conectar_con_reto(sala.puerto, &sala.red.origenes[0]).await;
         mandar(&mut c, &hola(&sala.red, &reto, None)).await;
         leer(&mut c).await;
-        mandar(&mut c, &MensajeCliente::Unirse { nombre: nombre.into(), contrasena: None }).await;
+        mandar(&mut c, &MensajeCliente::Unirse { nombre: nombre.into(), contrasena: None, entrar_igualmente: false }).await;
         let MensajeHost::Bienvenido { yo, sesion, .. } = leer(&mut c).await else { panic!("sin bienvenida") };
         assert!(matches!(leer(&mut c).await, MensajeHost::Vista { .. }));
         (c, yo.id, sesion)
@@ -743,7 +762,7 @@ mod tests {
         let (mut c, reto) = conectar_con_reto(sala.puerto, &sala.red.origenes[0]).await;
         mandar(&mut c, &hola(&sala.red, &reto, None)).await;
         leer(&mut c).await;
-        mandar(&mut c, &MensajeCliente::Unirse { nombre: nombre.into(), contrasena: None }).await;
+        mandar(&mut c, &MensajeCliente::Unirse { nombre: nombre.into(), contrasena: None, entrar_igualmente: false }).await;
         let MensajeHost::Bienvenido { yo, token: Some(token), .. } = leer(&mut c).await else { panic!("sin bienvenida") };
         assert!(matches!(leer(&mut c).await, MensajeHost::Vista { .. }));
         (c, yo.id, token)
@@ -771,6 +790,118 @@ mod tests {
     /// Los avisos «se unió» que ha recibido la pantalla del host.
     fn unidos(sala: &Sala) -> Vec<Value> {
         sala.eventos.lock().unwrap().iter().filter(|(e, _)| e == "jugador-unido").map(|(_, p)| p.clone()).collect()
+    }
+
+    /// Un navegador SIN token: se conecta, saluda y queda esperando que le pidan el nombre.
+    async fn sin_token(sala: &Sala) -> Cliente {
+        let (mut c, reto) = conectar_con_reto(sala.puerto, &sala.red.origenes[0]).await;
+        mandar(&mut c, &hola(&sala.red, &reto, None)).await;
+        assert!(matches!(leer(&mut c).await, MensajeHost::Identificate { error: None, nombre_existente: None, .. }));
+        c
+    }
+
+    async fn unirse(c: &mut Cliente, nombre: &str, contrasena: Option<&str>, entrar_igualmente: bool) -> MensajeHost {
+        mandar(c, &MensajeCliente::Unirse { nombre: nombre.into(), contrasena: contrasena.map(Into::into), entrar_igualmente }).await;
+        leer(c).await
+    }
+
+    /// El mismo jugador desde OTRO dispositivo (sin su token): si nadie está conectado con su nombre se le ofrece entrar
+    /// igualmente, y entra como el que ya estaba (mismo id, con sus fichas y permisos) y con un token nuevo suyo.
+    #[tokio::test]
+    async fn un_nombre_ya_registrado_sin_nadie_conectado_se_ofrece_entrar_igualmente() {
+        let sala = sala_con_app("srv_nombre_existente").await;
+        let (c1, id, token) = entrar_con_token(&sala, "Ana").await;
+        poner_fichas(&sala, id); // la ficha 10 es de Ana
+        drop(c1);
+        esperar_sin_conectados(&sala).await;
+        sala.red.poner_ventana_reconexion_para_tests(0); // ya no está «reconectando»: se fue
+
+        let mut c2 = sin_token(&sala).await;
+        // Sin `entrar_igualmente`: no se registra a nadie nuevo, se le ofrece (con el nombre tal como está registrado)
+        let r = unirse(&mut c2, "  ANA ", None, false).await;
+        assert_eq!(r, MensajeHost::Identificate { pide_contrasena: false, error: None, nombre_existente: Some("Ana".into()) });
+        assert_eq!(sala.red.estado_partida().jugadores.len(), 1, "no se creó otro jugador");
+
+        // Entrar igualmente: el MISMO jugador, con token nuevo
+        let MensajeHost::Bienvenido { yo, token: Some(token2), .. } = unirse(&mut c2, "ANA", None, true).await else { panic!("debía entrar") };
+        assert_eq!((yo.id, yo.nombre.as_str()), (id, "Ana"));
+        assert_ne!(token2, token, "token propio de este navegador");
+        assert!(matches!(leer(&mut c2).await, MensajeHost::Vista { .. }));
+        assert_eq!(sala.red.estado_partida().jugadores.len(), 1);
+        // Conserva los permisos de las fichas (la 10 sigue siendo de Ana)
+        assert!(sala.red.estado_partida().banco_entidades.iter().any(|e| e.id == 10 && e.propietarios == vec![id]));
+        // Y a ese navegador ya no se le vuelve a preguntar
+        drop(c2);
+        esperar_sin_conectados(&sala).await;
+        let _c3 = volver(&sala, &token2).await;
+        // El token del primer dispositivo sigue sirviendo
+        drop(_c3);
+        esperar_sin_conectados(&sala).await;
+        let _c4 = volver(&sala, &token).await;
+    }
+
+    /// Si su jugador está conectado (o acaba de perder la conexión y reconecta), no se ofrece nada: se bloquea como siempre.
+    #[tokio::test]
+    async fn con_el_jugador_conectado_o_reconectando_el_nombre_sigue_bloqueado() {
+        let sala = sala_con_app("srv_nombre_ocupado").await;
+        let (c1, id, _) = entrar_con_token(&sala, "Ana").await;
+
+        // Conectado: ni siquiera pidiendo entrar igualmente
+        let mut otro = sin_token(&sala).await;
+        for igual in [false, true] {
+            let r = unirse(&mut otro, "Ana", None, igual).await;
+            assert!(
+                matches!(&r, MensajeHost::Identificate { error: Some(e), nombre_existente: None, .. } if e.contains("Ya hay un jugador")),
+                "{igual}: {r:?}"
+            );
+        }
+
+        // Se le cae la conexión: dentro de la ventana de reconexión sigue «presente»
+        drop(c1);
+        esperar_sin_conectados(&sala).await;
+        assert!(sala.red.esta_presente(id));
+        let r = unirse(&mut otro, "Ana", None, true).await;
+        assert!(matches!(&r, MensajeHost::Identificate { error: Some(_), nombre_existente: None, .. }), "{r:?}");
+        assert_eq!(sala.red.estado_partida().jugadores.len(), 1);
+
+        // Pasada la ventana, ya se puede
+        sala.red.poner_ventana_reconexion_para_tests(0);
+        assert!(!sala.red.esta_presente(id));
+        let r = unirse(&mut otro, "Ana", None, false).await;
+        assert!(matches!(&r, MensajeHost::Identificate { nombre_existente: Some(_), .. }), "{r:?}");
+    }
+
+    /// La contraseña de la sala se exige antes de ofrecer nada: sin ella no se sabe ni que el nombre existe.
+    #[tokio::test]
+    async fn la_contrasena_se_exige_antes_de_ofrecer_entrar_con_un_nombre_que_existe() {
+        let sala = sala_con_app("srv_nombre_contrasena").await;
+        let (c1, id, _) = entrar_con_token(&sala, "Ana").await;
+        drop(c1);
+        esperar_sin_conectados(&sala).await;
+        sala.red.poner_ventana_reconexion_para_tests(0);
+        sala.red.poner_contrasena(Some("dragón".into())).unwrap();
+
+        let (mut c, reto) = conectar_con_reto(sala.puerto, &sala.red.origenes[0]).await;
+        mandar(&mut c, &hola(&sala.red, &reto, None)).await;
+        assert!(matches!(leer(&mut c).await, MensajeHost::Identificate { pide_contrasena: true, .. }));
+        for igual in [false, true] {
+            let r = unirse(&mut c, "Ana", Some("mala"), igual).await;
+            assert!(matches!(&r, MensajeHost::Identificate { error: Some(e), nombre_existente: None, .. } if e == "Contraseña incorrecta"), "{r:?}");
+        }
+        let r = unirse(&mut c, "Ana", Some("dragón"), false).await;
+        assert!(matches!(&r, MensajeHost::Identificate { nombre_existente: Some(_), .. }), "{r:?}");
+        let MensajeHost::Bienvenido { yo, .. } = unirse(&mut c, "Ana", Some("dragón"), true).await else { panic!("debía entrar") };
+        assert_eq!(yo.id, id);
+    }
+
+    /// Un nombre que no existe se registra como siempre, aunque pida `entrar_igualmente`.
+    #[tokio::test]
+    async fn un_nombre_nuevo_se_registra_como_siempre() {
+        let sala = sala_con_app("srv_nombre_nuevo").await;
+        let mut c = sin_token(&sala).await;
+        let MensajeHost::Bienvenido { yo, token: Some(_), .. } = unirse(&mut c, "Luis", None, true).await else { panic!("debía registrarse") };
+        assert_eq!(yo.nombre, "Luis");
+        assert_eq!(sala.red.estado_partida().jugadores.len(), 1);
     }
 
     /// Al host le sale un aviso cuando alguien SE UNE, pero no cuando solo reconecta: ni si la nueva conexión sustituye a
@@ -1282,7 +1413,7 @@ mod tests {
         let MensajeHost::Reto { reto } = leer_mem(&mut j).await else { panic!("primero va el reto") };
         mandar_mem(&j, &hola(red, &reto, None)).await;
         assert!(matches!(leer_mem(&mut j).await, MensajeHost::Identificate { .. }));
-        mandar_mem(&j, &MensajeCliente::Unirse { nombre: nombre.into(), contrasena: None }).await;
+        mandar_mem(&j, &MensajeCliente::Unirse { nombre: nombre.into(), contrasena: None, entrar_igualmente: false }).await;
         assert!(matches!(leer_mem(&mut j).await, MensajeHost::Bienvenido { .. }));
         assert!(matches!(leer_mem(&mut j).await, MensajeHost::Vista { .. }));
         j
@@ -1509,7 +1640,7 @@ mod tests {
         let (mut c, _) = conectar_con_reto(puerto, &format!("http://localhost:{puerto}")).await;
         mandar(&mut c, &sin_llave).await;
         assert!(matches!(leer(&mut c).await, MensajeHost::Identificate { .. }), "entra sin llave");
-        mandar(&mut c, &MensajeCliente::Unirse { nombre: "Ana".into(), contrasena: None }).await;
+        mandar(&mut c, &MensajeCliente::Unirse { nombre: "Ana".into(), contrasena: None, entrar_igualmente: false }).await;
         assert!(matches!(leer(&mut c).await, MensajeHost::Bienvenido { .. }));
     }
 
@@ -1519,8 +1650,8 @@ mod tests {
         red.poner_respaldo_para_tests(crate::red::config::Respaldo::Lan { puerto });
         let (mut c, _) = conectar_con_reto(puerto, &format!("http://localhost:{puerto}")).await;
         mandar(&mut c, &MensajeCliente::Hola { version: VERSION_PROTOCOLO, sala: "".into(), secreto: "".into(), prueba: None }).await;
-        assert_eq!(leer(&mut c).await, MensajeHost::Identificate { pide_contrasena: true, error: None });
-        mandar(&mut c, &MensajeCliente::Unirse { nombre: "Ana".into(), contrasena: Some("otra".into()) }).await;
+        assert_eq!(leer(&mut c).await, MensajeHost::Identificate { pide_contrasena: true, error: None, nombre_existente: None });
+        mandar(&mut c, &MensajeCliente::Unirse { nombre: "Ana".into(), contrasena: Some("otra".into()), entrar_igualmente: false }).await;
         assert!(matches!(leer(&mut c).await, MensajeHost::Identificate { error: Some(_), .. }), "sin la contraseña no entra");
     }
 }

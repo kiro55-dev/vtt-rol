@@ -471,7 +471,7 @@ mod tests {
         let MensajeHost::Reto { .. } = entrada.mensaje().await else { panic!("primero va el reto") };
         decir(&juego, &MensajeCliente::Hola { version: VERSION_PROTOCOLO, sala: sala.id.clone(), secreto: sala.secreto.clone(), prueba: None }).await;
         assert!(matches!(entrada.mensaje().await, MensajeHost::Identificate { .. }));
-        decir(&juego, &MensajeCliente::Unirse { nombre: "Ana".into(), contrasena: None }).await;
+        decir(&juego, &MensajeCliente::Unirse { nombre: "Ana".into(), contrasena: None, entrar_igualmente: false }).await;
         assert!(matches!(entrada.mensaje().await, MensajeHost::Bienvenido { .. }));
         assert!(matches!(entrada.mensaje().await, MensajeHost::Vista { .. }));
         assert_eq!(red.vias().get(&1), Some(&Via::Directo), "la ventana de la sala sabe que entró directo");

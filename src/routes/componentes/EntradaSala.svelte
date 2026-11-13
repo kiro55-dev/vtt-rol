@@ -1,6 +1,7 @@
 <!-- src/routes/componentes/EntradaSala.svelte -->
 <!-- Nombre (y contraseña, si el host puso una) para entrar en la sala por primera vez. -->
 <script lang="ts">
+  import { untrack } from "svelte";
   import type { Conexion, EstadoConexion } from "$lib/red/conexion.svelte";
 
   let { conexion, estado }: { conexion: Conexion; estado: Extract<EstadoConexion, { tipo: "identificate" }> } = $props();
@@ -14,11 +15,21 @@
     enviando = false;
   });
 
+  // El nombre escrito ya está registrado y nadie lo usa: se ofrece entrar igualmente (mientras no lo cambie)
+  let nombreOfrecido = $state<string | null>(null);
+  // Solo cuando llega la respuesta del host (`estado`): lo que se teclee después no la renueva
+  $effect(() => {
+    const ofrecido = estado.nombreExistente;
+    nombreOfrecido = ofrecido ? untrack(() => nombre.trim()) : null;
+  });
+  const ofrecer = $derived(!!estado.nombreExistente && nombreOfrecido !== null && nombre.trim() === nombreOfrecido);
+
+  // El mismo botón: «Entrar», o «Entrar igualmente» si el nombre ya existe y nadie lo usa
   function entrar(e: SubmitEvent) {
     e.preventDefault();
     if (!nombre.trim() || enviando) return;
     enviando = true;
-    conexion.unirse(nombre, contrasena);
+    conexion.unirse(nombre, contrasena, ofrecer);
   }
 </script>
 
@@ -42,7 +53,11 @@
     </label>
   {/if}
   {#if estado.error}<p class="error" role="alert">{estado.error}</p>{/if}
-  <button type="submit" disabled={enviando || !nombre.trim()}>{enviando ? "Entrando…" : "Entrar"}</button>
+  {#if ofrecer}
+    <!-- Ese nombre ya es de un jugador de la partida y no hay nadie con él: el mismo jugador desde otro dispositivo -->
+    <p class="info" role="status">Ya existe un jugador con ese nombre registrado (no se perderán los permisos de las fichas).</p>
+  {/if}
+  <button type="submit" disabled={enviando || !nombre.trim()}>{enviando ? "Entrando…" : ofrecer ? "Entrar igualmente" : "Entrar"}</button>
   <p class="nota">Solo hace falta la primera vez: este navegador lo recordará.</p>
 </form>
 
@@ -58,5 +73,6 @@
   button:disabled { opacity: 0.5; cursor: not-allowed; }
   .error { margin: 0; color: #f87171; font-size: 13px; }
   .cuidado { margin: 0; color: #fbbf24; font-size: 12px; }
+  .info { margin: 0; color: #a1a1aa; font-size: 12px; }
   .nota { margin: 0; color: #71717a; font-size: 11px; }
 </style>

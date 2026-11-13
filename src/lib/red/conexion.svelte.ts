@@ -42,7 +42,8 @@ const ESPERA_SW_MS = 3000;
 
 export type EstadoConexion =
   | { tipo: "conectando" }
-  | { tipo: "identificate"; pideContrasena: boolean; error: string | null; recordado: boolean }
+  /** `nombreExistente`: el nombre escrito ya está registrado (así) y nadie lo usa: se puede «entrar igualmente» */
+  | { tipo: "identificate"; pideContrasena: boolean; error: string | null; recordado: boolean; nombreExistente: string | null }
   | { tipo: "dentro" }
   | { tipo: "reconectando" }
   | { tipo: "fuera"; motivo: string };
@@ -559,8 +560,8 @@ export class Conexion {
   }
 
   /** Nombre y contraseña, cuando el host los pide. */
-  unirse(nombre: string, contrasena: string) {
-    this.#enviar({ tipo: "Unirse", nombre: nombre.trim(), contrasena: contrasena || undefined });
+  unirse(nombre: string, contrasena: string, entrarIgualmente = false) {
+    this.#enviar({ tipo: "Unirse", nombre: nombre.trim(), contrasena: contrasena || undefined, entrar_igualmente: entrarIgualmente || undefined });
   }
 
   cerrar() {
@@ -611,7 +612,13 @@ export class Conexion {
       case "Identificate":
         // `recordado`: este navegador ya había entrado y aun así se le pregunta. Puede ser que el host
         // generó un enlace nuevo... o que este enlace no lleva al host de verdad (ver EntradaSala.svelte).
-        this.estado = { tipo: "identificate", pideContrasena: m.pide_contrasena, error: m.error ?? null, recordado: !!leerToken(this.enlace.sala) };
+        this.estado = {
+          tipo: "identificate",
+          pideContrasena: m.pide_contrasena,
+          error: m.error ?? null,
+          recordado: !!leerToken(this.enlace.sala),
+          nombreExistente: m.nombre_existente ?? null
+        };
         return;
       case "Bienvenido":
         if (m.token) guardarToken(this.enlace.sala, m.token);

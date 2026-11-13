@@ -794,6 +794,15 @@ impl Red {
         Ok(())
     }
 
+    /// ¿Está ese jugador «presente»? Conectado ahora, o se le acaba de cerrar la conexión (dentro de la ventana de
+    /// reconexión: está reconectando). Mientras lo esté, nadie puede entrar con su nombre.
+    pub(crate) fn esta_presente(&self, id: IdJugador) -> bool {
+        let dentro = self.dentro();
+        let Some(s) = dentro.as_ref() else { return false };
+        let ventana = Duration::from_millis(self.ventana_reconexion_ms.load(Ordering::Relaxed));
+        s.conexiones.contains_key(&id) || s.cerradas.get(&id).is_some_and(|t| t.elapsed() < ventana)
+    }
+
     pub fn conectados(&self) -> Vec<IdJugador> {
         self.dentro().as_ref().map(|s| s.conexiones.keys().copied().collect()).unwrap_or_default()
     }

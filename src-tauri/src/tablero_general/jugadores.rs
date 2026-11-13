@@ -44,6 +44,17 @@ fn clave_nombre(nombre: &str) -> String {
     nombre.split_whitespace().collect::<Vec<_>>().join(" ").to_lowercase()
 }
 
+/// El jugador YA registrado que se llama así (se limpia y compara el nombre igual que en `registrar`: sin mayúsculas, sin
+/// espacios de más ni caracteres invisibles). Sirve para dejar entrar con él a quien llega desde otro dispositivo.
+pub fn existente(est: &EstadoPartida, nombre: &str) -> Option<Jugador> {
+    let limpio: String = nombre.chars().filter(|c| !caracter_enganoso(*c)).collect();
+    let clave = clave_nombre(&limpio);
+    if clave.is_empty() {
+        return None;
+    }
+    est.jugadores.iter().find(|j| clave_nombre(&j.nombre) == clave).cloned()
+}
+
 /// Da de alta a un jugador nuevo con el siguiente id libre (el 0 es del host).
 pub fn registrar(est: &EstadoPartida, nombre: &str) -> Result<DeltaPartida, String> {
     let limpio: String = nombre.chars().filter(|c| !caracter_enganoso(*c)).collect();
@@ -145,6 +156,18 @@ mod tests {
             es_unico: false,
             propietarios,
         }
+    }
+
+    #[test]
+    fn se_encuentra_al_jugador_ya_registrado_por_su_nombre() {
+        let mut e = estado();
+        e.jugadores.push(Jugador { id: 3, nombre: "Marta López".into() });
+        for escrito in ["Marta López", "  marta   LÓPEZ ", "Mar\u{202E}ta\u{200B} López"] {
+            assert_eq!(existente(&e, escrito).map(|j| j.id), Some(3), "{escrito:?}");
+        }
+        assert_eq!(existente(&e, "Marta").map(|j| j.id), None, "solo si es el mismo nombre");
+        assert!(existente(&e, "").is_none() && existente(&e, "   ").is_none() && existente(&e, "\u{200B}").is_none());
+        assert!(existente(&e, "Otra").is_none());
     }
 
     #[test]

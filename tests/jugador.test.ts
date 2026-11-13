@@ -45,6 +45,47 @@ async function conectado() {
 
 const peticion = (ws: WebSocketFalso) => ws.enviados.filter((m) => m.tipo === "Pedir").at(-1);
 
+describe("conexión del jugador: nombre que ya existe", () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  /** Un navegador sin token: llega hasta que el host le pide el nombre. */
+  async function pidiendoNombre() {
+    vi.resetModules();
+    vi.doMock("@tauri-apps/api/core", () => ({ invoke: async () => null, convertFileSrc: (p: string) => p }));
+    vi.doMock("@tauri-apps/api/event", () => ({ listen: async () => () => {} }));
+    vi.stubGlobal("WebSocket", WebSocketFalso);
+    const { Conexion } = await import("$lib/red/conexion.svelte");
+    const c = new Conexion(ENLACE);
+    c.conectar();
+    const ws = WebSocketFalso.ultimo;
+    ws.recibir({ tipo: "Reto", reto: "r" });
+    await vi.waitFor(() => expect(ws.enviados.find((m) => m.tipo === "Hola")).toBeTruthy());
+    ws.recibir({ tipo: "Identificate", pide_contrasena: false });
+    return { c, ws };
+  }
+
+  it("si el host dice que el nombre ya existe, el estado lo sabe; y entrar igualmente lo manda con la marca", async () => {
+    const { c, ws } = await pidiendoNombre();
+    expect(c.estado).toMatchObject({ tipo: "identificate", nombreExistente: null });
+
+    c.unirse("  Ana ", "");
+    expect(ws.enviados.filter((m) => m.tipo === "Unirse").at(-1)).toEqual({ tipo: "Unirse", nombre: "Ana" }); // sin la marca
+    ws.recibir({ tipo: "Identificate", pide_contrasena: false, nombre_existente: "Ana" });
+    expect(c.estado).toMatchObject({ tipo: "identificate", nombreExistente: "Ana", error: null });
+
+    c.unirse("Ana", "secreta", true);
+    expect(ws.enviados.filter((m) => m.tipo === "Unirse").at(-1)).toEqual({ tipo: "Unirse", nombre: "Ana", contrasena: "secreta", entrar_igualmente: true });
+    ws.recibir({ tipo: "Bienvenido", yo: { id: 1, nombre: "Ana" }, sesion: "S", token: "t" });
+    expect(c.estado.tipo).toBe("dentro");
+  });
+
+  it("si el host dice que ya hay alguien con ese nombre, es un error y no se ofrece nada", async () => {
+    const { c, ws } = await pidiendoNombre();
+    ws.recibir({ tipo: "Identificate", pide_contrasena: false, error: "Ya hay un jugador con ese nombre: elige otro" });
+    expect(c.estado).toMatchObject({ tipo: "identificate", nombreExistente: null, error: "Ya hay un jugador con ese nombre: elige otro" });
+  });
+});
+
 describe("conexión del jugador: pedirle acciones al host", () => {
   beforeEach(() => vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] }));
   afterEach(() => {

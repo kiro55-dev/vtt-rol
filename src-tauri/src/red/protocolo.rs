@@ -10,9 +10,10 @@
 //     host:  Rechazado        (enlace que no vale, versión distinta...; se cierra)
 //            Bienvenido       (prueba válida: se le recuerda y entra directamente)
 //            Identificate     (hay que dar nombre y, si la hay, contraseña)
-//   cliente: Unirse { nombre, contrasena? }
+//   cliente: Unirse { nombre, contrasena?, entrar_igualmente? }
 //     host:  Bienvenido { token }   (el navegador guarda el token: la próxima vez no se pregunta nada)
-//            Identificate { error } (contraseña mal; tras varios intentos, Rechazado)
+//            Identificate { error?, nombre_existente? } (contraseña mal; tras varios intentos, Rechazado; o el nombre ya
+//                           existe y nadie lo usa: se puede repetir Unirse con entrar_igualmente)
 // Después: Vista (entera) y Cambios (solo lo que cambia), Aviso (ping, recorrido) y SalaCerrada.
 //
 // Imágenes (por la misma conexión, ver red/imagenes.rs):
@@ -28,7 +29,7 @@ use crate::tablero_general::modelos::Jugador;
 use crate::tablero_general::tablero::AvisoTablero;
 
 /// Súbelo cuando cambie cualquier mensaje.
-pub const VERSION_PROTOCOLO: u32 = 9;
+pub const VERSION_PROTOCOLO: u32 = 10;
 
 /// Primer byte de un trozo binario: de una imagen que baja (host → jugador) o que sube (jugador → host).
 pub const TROZO_BAJADA: u8 = 1;
@@ -53,6 +54,9 @@ pub enum MensajeCliente {
         nombre: String,
         #[serde(default)]
         contrasena: Option<String>,
+        /// Tras `Identificate { nombre_existente }`: entrar con el jugador que ya se llama así (mismo id, fichas y permisos).
+        #[serde(default)]
+        entrar_igualmente: bool,
     },
     /// Una acción del jugador (ver peticiones.rs): `peticion` es `{ cmd, ...args }`, un comando de la lista
     /// blanca. El host contesta con `Respuesta` del mismo `id`.
@@ -88,6 +92,10 @@ pub enum MensajeHost {
         /// Por qué se vuelve a preguntar (contraseña incorrecta, nombre vacío...).
         #[serde(default, skip_serializing_if = "Option::is_none")]
         error: Option<String>,
+        /// El nombre que se escribió ya está registrado (así) y NADIE lo usa ahora: se puede entrar con él con
+        /// `Unirse { entrar_igualmente: true }` (por ejemplo desde otro dispositivo). Si lo usa alguien, no se ofrece.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        nombre_existente: Option<String>,
     },
     Bienvenido {
         yo: Jugador,
@@ -141,7 +149,7 @@ mod tests {
             serde_json::from_str(r#"{"tipo":"Hola","version":3,"sala":"s","secreto":"k"}"#).unwrap();
         assert_eq!(hola, MensajeCliente::Hola { version: 3, sala: "s".into(), secreto: "k".into(), prueba: None });
         let unirse: MensajeCliente = serde_json::from_str(r#"{"tipo":"Unirse","nombre":"Ana"}"#).unwrap();
-        assert_eq!(unirse, MensajeCliente::Unirse { nombre: "Ana".into(), contrasena: None });
+        assert_eq!(unirse, MensajeCliente::Unirse { nombre: "Ana".into(), contrasena: None, entrar_igualmente: false });
         assert!(serde_json::from_str::<MensajeCliente>(r#"{"tipo":"Otro"}"#).is_err());
 
         let json = |m: &MensajeHost| serde_json::to_string(m).unwrap();
@@ -152,7 +160,7 @@ mod tests {
         assert_eq!(json(&MensajeHost::Respuesta { id: 7, ok: Some(serde_json::json!("x")), error: None }), r#"{"tipo":"Respuesta","id":7,"ok":"x"}"#);
         assert_eq!(json(&MensajeHost::Respuesta { id: 8, ok: None, error: Some("no".into()) }), r#"{"tipo":"Respuesta","id":8,"error":"no"}"#);
         assert_eq!(
-            json(&MensajeHost::Identificate { pide_contrasena: true, error: None }),
+            json(&MensajeHost::Identificate { pide_contrasena: true, error: None, nombre_existente: None }),
             r#"{"tipo":"Identificate","pide_contrasena":true}"#
         );
         let aviso = MensajeHost::Aviso { aviso: AvisoTablero::Ping { id_mapa: 1, casilla: Casilla { x: 2, y: 3 }, color: [4, 5, 6] } };

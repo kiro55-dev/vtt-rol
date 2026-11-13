@@ -5,7 +5,7 @@
 import type { AvisoTablero } from "$lib/avisosTablero";
 import type { DefinicionParametro, Entidad, Instancia, Mapa, Zona } from "$lib/partida.svelte";
 
-export const VERSION_PROTOCOLO = 9;
+export const VERSION_PROTOCOLO = 10;
 
 export interface Jugador {
   id: number;
@@ -55,7 +55,8 @@ export type MensajeCliente =
   | { tipo: "Hola"; version: number; sala: string; secreto: string; prueba?: string }
   /** ANTES del saludo: la oferta de la conexión directa (el código cifrado de `codigo.ts`). Una por conexión. */
   | { tipo: "OfertaDirecta"; codigo: string }
-  | { tipo: "Unirse"; nombre: string; contrasena?: string }
+  /** `entrar_igualmente`: tras `Identificate { nombre_existente }`, entrar con el jugador que ya se llama así (mismos permisos) */
+  | { tipo: "Unirse"; nombre: string; contrasena?: string; entrar_igualmente?: boolean }
   /** Una acción del jugador: `peticion` es `{ cmd, ...args }` (un comando de la lista blanca del host). */
   | { tipo: "Pedir"; id: number; peticion: Record<string, unknown> }
   /** Una imagen de la partida por esta misma conexión (ver imagenesRed.ts). `mini`: "ficha"/"mapa". */
@@ -69,7 +70,8 @@ export type MensajeCliente =
 export type MensajeHost =
   | { tipo: "Reto"; reto: string }
   | { tipo: "Rechazado"; motivo: string }
-  | { tipo: "Identificate"; pide_contrasena: boolean; error?: string }
+  /** `nombre_existente`: el nombre escrito ya está registrado (así) y nadie lo usa ahora: se puede entrar igualmente */
+  | { tipo: "Identificate"; pide_contrasena: boolean; error?: string; nombre_existente?: string }
   | { tipo: "Bienvenido"; yo: Jugador; token?: string; sesion: string }
   | { tipo: "Vista"; vista: VistaJugador }
   | { tipo: "Cambios"; cambios: Cambios }
