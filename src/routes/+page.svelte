@@ -5,6 +5,8 @@
   import { tiradas } from "$lib/tiradas.svelte";
   import { ajustesVista } from "$lib/ajustesVista.svelte";
   import { alRecibirAviso } from "$lib/avisosTablero";
+  import { listen } from "$lib/backend";
+  import { notificaciones, textoUnido } from "$lib/notificaciones.svelte";
   import { sala } from "$lib/sala.svelte";
   import { esJugador } from "$lib/modo";
   import { conexion } from "$lib/red/conexion.svelte";
@@ -13,6 +15,7 @@
   import PanelIzquierdo from "./componentes/PanelIzquierdo.svelte";
   import PanelDerecho from "./componentes/PanelDerecho.svelte";
   import Tablero from "./componentes/Tablero.svelte";
+  import Notificaciones from "./componentes/Notificaciones.svelte";
   import BarraRejilla from "./componentes/BarraRejilla.svelte";
   import BarraDados from "./componentes/BarraDados.svelte";
   import VentanaFicha from "./componentes/VentanaFicha.svelte";
@@ -80,6 +83,20 @@
     })
   );
 
+  // Solo el host: le sale un aviso cuando un jugador se une a la sala (no si solo reconecta: eso lo decide Rust)
+  onMount(() => {
+    if (esJugador) return;
+    let quitar: (() => void) | null = null;
+    let terminado = false;
+    listen<{ id: number; nombre: string }>("jugador-unido", (e) => notificaciones.mostrar(textoUnido(e.payload.nombre)))
+      .then((fn) => (terminado ? fn() : (quitar = fn)))
+      .catch((err) => console.warn("Avisos de la sala no disponibles:", err));
+    return () => {
+      terminado = true;
+      quitar?.();
+    };
+  });
+
   onMount(async () => {
     try {
       if (esJugador) {
@@ -137,6 +154,9 @@
     <div class="contenedor-lienzo">
       <Tablero mapa={partida.mapaActual} rejilla={partida.rejilla} />
     </div>
+    {#if !esJugador}
+      <Notificaciones />
+    {/if}
 
     <div class="barra-inferior">
       <BarraDados

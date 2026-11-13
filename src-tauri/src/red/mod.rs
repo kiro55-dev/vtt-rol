@@ -57,6 +57,9 @@ pub const URL_CLIENTE: &str = match option_env!("OPENROLL_URL_CLIENTE") {
 /// Fallos de contraseña permitidos por conexión antes de echarla, y en total por minuto.
 const FALLOS_POR_CONEXION: u32 = 5;
 const FALLOS_POR_MINUTO: usize = 20;
+/// Una conexión que vuelve antes de tanto (ms) de habérsele cerrado la anterior es una reconexión, no que «se unió»: lo mismo que
+/// el navegador insiste en reconectar (`REINTENTAR_DURANTE_MS` de `conexion.svelte.ts`).
+const VENTANA_RECONEXION_MS: u64 = 60_000;
 /// Conexiones que pueden estar a la vez saludando o escribiendo su nombre (sin ser aún nadie).
 pub(crate) const MAX_SIN_IDENTIFICAR: usize = 16;
 
@@ -155,6 +158,9 @@ struct SalaAbierta {
     codigos_vistos: VecDeque<String>,
     /// La escucha de ofertas por relés de Nostr (peer to peer): se para al soltarla (al cerrar la sala).
     senal: Option<senal::Senal>,
+    /// Cuándo se cerró la última conexión de cada jugador (por una caída o porque se fue): si vuelve enseguida es una
+    /// reconexión y no una entrada nueva (ver `Red::conectar`). El host expulsando o cambiando el enlace no la anota.
+    cerradas: HashMap<IdJugador, Instant>,
 }
 
 impl SalaAbierta {
@@ -275,6 +281,9 @@ pub struct Red {
     peers_a_medias: std::sync::atomic::AtomicUsize,
     /// Ofertas de conexión directa atendidas por minuto, vengan por donde vengan (el WebSocket o los relés).
     tope_ofertas: Mutex<senal::Tope>,
+    /// Si un jugador vuelve a conectar antes de tanto (ms) de habérsele cerrado la conexión, es una reconexión y no
+    /// una entrada nueva. Lo mismo que el navegador insiste en reconectar (un minuto).
+    ventana_reconexion_ms: AtomicU64,
 }
 
 /// Una plaza de conexión sin identificar; se libera sola al soltarla.
@@ -342,6 +351,7 @@ impl Red {
             sin_identificar: std::sync::atomic::AtomicUsize::new(0),
             peers_a_medias: std::sync::atomic::AtomicUsize::new(0),
             tope_ofertas: Mutex::new(senal::Tope::nuevo(senal::OFERTAS_POR_MINUTO)),
+            ventana_reconexion_ms: AtomicU64::new(VENTANA_RECONEXION_MS),
         }
     }
 
@@ -536,6 +546,7 @@ impl Red {
                 lan: Vec::new(),
                 solo_respaldo,
                 reles: Vec::new(),
+                cerradas: HashMap::new(),
                 codigos_vistos: VecDeque::new(),
                 senal: None,
             });
@@ -746,6 +757,7 @@ impl Red {
         let mut subidas = (PathBuf::new(), Vec::new());
         if let Some(s) = self.dentro().as_mut() {
             s.sesiones.clear();
+            s.cerradas.clear();
             subidas = (s.dir.clone(), s.subidas.drain().flat_map(|(_, r)| r).collect());
             for (_, c) in s.conexiones.drain() {
                 let _ = c.enviar.send(MensajeHost::Rechazado { motivo: "El host ha cambiado el enlace de la sala".into() });
@@ -770,6 +782,7 @@ impl Red {
         let mut subidas = (PathBuf::new(), Vec::new());
         if let Some(c) = self.dentro().as_mut().and_then(|s| {
             s.sesiones.remove(&id);
+            s.cerradas.remove(&id);
             subidas = (s.dir.clone(), s.subidas.remove(&id).unwrap_or_default().into_iter().collect());
             s.conexiones.remove(&id)
         }) {
@@ -877,17 +890,23 @@ impl Red {
 
     /// Da de alta la conexión de `id` con su vista inicial. Se llama con el estado cogido (`est`), así ningún
     /// delta se cuela entre la vista enviada y la guardada. Una conexión anterior del mismo jugador se cierra.
-    fn conectar(&self, est: &EstadoPartida, id: IdJugador, enviar: mpsc::UnboundedSender<MensajeHost>, via: Via) -> Option<u64> {
+    /// Devuelve el id de la conexión y si es una ENTRADA NUEVA (la primera vez, o tras más de la ventana de reconexión
+    /// desde que se le cerró la anterior) y no una reconexión: una conexión que sustituye a otra abierta, o una que
+    /// vuelve enseguida tras una caída, no cuenta como que «se unió».
+    fn conectar(&self, est: &EstadoPartida, id: IdJugador, enviar: mpsc::UnboundedSender<MensajeHost>, via: Via) -> Option<(u64, bool)> {
         let vista = vista_para(id, est);
         let mut dentro = self.dentro();
         let s = dentro.as_mut()?;
         let id_conexion = self.nuevo_id();
         let _ = enviar.send(MensajeHost::Vista { vista: vista.clone() });
         let anterior = s.conexiones.insert(id, Conexion { id_conexion, via, enviar, ultima: vista });
+        let sustituye = anterior.is_some();
         if let Some(a) = anterior {
             let _ = a.enviar.send(MensajeHost::Rechazado { motivo: "Has entrado desde otra pestaña o dispositivo".into() });
         }
-        Some(id_conexion)
+        let ventana = Duration::from_millis(self.ventana_reconexion_ms.load(Ordering::Relaxed));
+        let reconecta = s.cerradas.remove(&id).is_some_and(|t| t.elapsed() < ventana);
+        Some((id_conexion, !sustituye && !reconecta))
     }
 
     fn desconectar(&self, id: IdJugador, id_conexion: u64) {
@@ -895,7 +914,12 @@ impl Red {
             let mut dentro = self.dentro();
             let Some(s) = dentro.as_mut() else { return };
             match s.conexiones.get(&id) {
-                Some(c) if c.id_conexion == id_conexion => s.conexiones.remove(&id).is_some(),
+                Some(c) if c.id_conexion == id_conexion => {
+                    // Se anota cuándo: si vuelve enseguida, es una reconexión y no «se unió»
+                    s.cerradas.retain(|_, t| t.elapsed() < Duration::from_secs(600));
+                    s.cerradas.insert(id, Instant::now());
+                    s.conexiones.remove(&id).is_some()
+                }
                 _ => false,
             }
         };
@@ -978,6 +1002,7 @@ impl Red {
             lan: Vec::new(),
             solo_respaldo: false,
             reles: vec!["wss://rele.prueba".to_string()],
+            cerradas: HashMap::new(),
             codigos_vistos: VecDeque::new(),
             senal: None,
         });
@@ -1005,6 +1030,7 @@ impl Red {
             lan: Vec::new(),
             solo_respaldo: false,
             reles: Vec::new(),
+            cerradas: HashMap::new(),
             codigos_vistos: VecDeque::new(),
             senal: None,
         });
@@ -1013,6 +1039,11 @@ impl Red {
     /// Cambia cómo está publicada la sala abierta (para probar lo que depende de ello).
     pub(crate) fn poner_respaldo_para_tests(&self, r: config::Respaldo) {
         self.dentro().as_mut().unwrap().respaldo = r;
+    }
+
+    /// Cuánto cuenta como «reconexión» (para no esperar un minuto en los tests).
+    pub(crate) fn poner_ventana_reconexion_para_tests(&self, ms: u64) {
+        self.ventana_reconexion_ms.store(ms, Ordering::Relaxed);
     }
 
     pub(crate) fn sala_para_tests(&self) -> SalaGuardada {

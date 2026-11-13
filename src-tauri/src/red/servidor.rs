@@ -201,10 +201,14 @@ pub(crate) async fn atender(red: Arc<Red>, transporte: Transporte) {
         let est = red.estado_partida(); // estado → dentro
         red.conectar(&est, yo.id, canal, via)
     };
-    let Some(id_conexion) = id_conexion else {
+    let Some((id_conexion, nueva)) = id_conexion else {
         return rechazar(&tx, "La sala se ha cerrado").await;
     };
     red.avisar();
+    // Al host le sale un aviso de que alguien se unió; no si solo reconecta tras una caída (ver `Red::conectar`)
+    if nueva {
+        red.emitir("jugador-unido", serde_json::json!({ "id": yo.id, "nombre": yo.nombre }));
+    }
 
     // Las acciones del jugador se ejecutan en orden, una tras otra (mover y luego girar no se cruzan), en un
     // hilo aparte porque los comandos son bloqueantes. Cada respuesta va por el mismo canal que los cambios.
@@ -732,6 +736,73 @@ mod tests {
         let MensajeHost::Bienvenido { yo, sesion, .. } = leer(&mut c).await else { panic!("sin bienvenida") };
         assert!(matches!(leer(&mut c).await, MensajeHost::Vista { .. }));
         (c, yo.id, sesion)
+    }
+
+    /// Entra un jugador nuevo y se queda con el token que le da el host (para volver sin que se lo pregunte).
+    async fn entrar_con_token(sala: &Sala, nombre: &str) -> (Cliente, IdJugador, String) {
+        let (mut c, reto) = conectar_con_reto(sala.puerto, &sala.red.origenes[0]).await;
+        mandar(&mut c, &hola(&sala.red, &reto, None)).await;
+        leer(&mut c).await;
+        mandar(&mut c, &MensajeCliente::Unirse { nombre: nombre.into(), contrasena: None }).await;
+        let MensajeHost::Bienvenido { yo, token: Some(token), .. } = leer(&mut c).await else { panic!("sin bienvenida") };
+        assert!(matches!(leer(&mut c).await, MensajeHost::Vista { .. }));
+        (c, yo.id, token)
+    }
+
+    /// Un jugador conocido vuelve a conectar con su token (como el navegador al reconectar).
+    async fn volver(sala: &Sala, token: &str) -> Cliente {
+        let (mut c, reto) = conectar_con_reto(sala.puerto, &sala.red.origenes[0]).await;
+        mandar(&mut c, &hola(&sala.red, &reto, Some(token))).await;
+        let MensajeHost::Bienvenido { token: None, .. } = leer(&mut c).await else { panic!("debía entrar sin preguntar") };
+        assert!(matches!(leer(&mut c).await, MensajeHost::Vista { .. }));
+        c
+    }
+
+    async fn esperar_sin_conectados(sala: &Sala) {
+        for _ in 0..100 {
+            if sala.red.conectados().is_empty() {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        panic!("seguía conectado");
+    }
+
+    /// Los avisos «se unió» que ha recibido la pantalla del host.
+    fn unidos(sala: &Sala) -> Vec<Value> {
+        sala.eventos.lock().unwrap().iter().filter(|(e, _)| e == "jugador-unido").map(|(_, p)| p.clone()).collect()
+    }
+
+    /// Al host le sale un aviso cuando alguien SE UNE, pero no cuando solo reconecta: ni si la nueva conexión sustituye a
+    /// una abierta ni si vuelve enseguida tras una caída. Pasada la ventana (un minuto) vuelve a contar como entrar.
+    #[tokio::test]
+    async fn el_host_se_entera_de_quien_se_une_pero_no_de_quien_solo_reconecta() {
+        let sala = sala_con_app("srv_unido").await;
+        let (c1, id, token) = entrar_con_token(&sala, "Ana").await;
+        assert_eq!(unidos(&sala), vec![json!({ "id": id, "nombre": "Ana" })], "la primera vez, sí");
+
+        // Una conexión nueva mientras la anterior sigue abierta (reconexión que la sustituye): no
+        let c2 = volver(&sala, &token).await;
+        assert_eq!(unidos(&sala).len(), 1, "sustituir a la abierta no es unirse");
+
+        // Se le cae la conexión y vuelve enseguida: no
+        drop((c1, c2));
+        esperar_sin_conectados(&sala).await;
+        let c3 = volver(&sala, &token).await;
+        assert_eq!(unidos(&sala).len(), 1, "una reconexión tras una caída no avisa");
+
+        // Pasada la ventana de reconexión, volver cuenta como entrar (aquí se deja en 0 para no esperar un minuto)
+        sala.red.poner_ventana_reconexion_para_tests(0);
+        drop(c3);
+        esperar_sin_conectados(&sala).await;
+        let c4 = volver(&sala, &token).await;
+        assert_eq!(unidos(&sala).len(), 2, "tras la ventana, sí");
+
+        // Otro jugador nuevo: sí, con su nombre
+        let (_c5, id_luis, _) = entrar_con_token(&sala, "Luis").await;
+        assert_eq!(unidos(&sala).last().unwrap(), &json!({ "id": id_luis, "nombre": "Luis" }));
+        assert_eq!(unidos(&sala).len(), 3);
+        drop(c4);
     }
 
     /// Una ficha del jugador `j` (la 10) con su instancia 1 en el mapa 1, y una del host (la 11, instancia 2).
