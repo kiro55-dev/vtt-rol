@@ -184,7 +184,7 @@
         {/if}
         <label class="opcion">
           <input type="radio" name="forma" value="lan" bind:group={forma} />
-          <span>Red local o VPN <span class="nota">(como «abrir en LAN»: Radmin VPN, Hamachi, ZeroTier, tu wifi…)</span></span>
+          <span>Red local o VPN <span class="nota">(Radmin VPN, Hamachi, ZeroTier, tu wifi…)</span></span>
         </label>
         {#if modo === "Propio"}
           <div class="fila">
@@ -201,7 +201,7 @@
             <input class="input-texto input-puerto" type="number" min="1024" max="65535" title="Puerto de este equipo" bind:value={puertoPropio} />
           </div>
           <span class="nota aviso">
-            Como «abrir en LAN»: los jugadores entran con <code>http://&lt;tu IP en esa red&gt;:{puertoPropio}</code>, sin
+            Los jugadores entran con <code>http://&lt;tu IP en esa red&gt;:{puertoPropio}</code>, sin
             más (al abrir verás un enlace por cada red). <b>Cualquiera que llegue a esa IP y puerto puede entrar</b>, y va
             sin cifrar: úsalo en redes de confianza y, si no lo son, pon contraseña. La primera vez Windows te pedirá
             permiso en el cortafuegos.

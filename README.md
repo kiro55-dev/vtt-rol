@@ -27,7 +27,9 @@ La segunda etapa arregla lo anterior, ya que la idea es la implementación de fu
 
 El rollmaster puede privatizar la información que quiera, incluso los rangos para que no se vean al resto. Existen pings, indicar con una flecha el camino que quieres seguir. Cuando creas una sala pasas un enlace y el resto solo tiene que abrir el enlace desde un navegador (mejor en pc) y ya ve la aplicación completa. La primera vez que entras tienes que poner tu nombre (este nombre es de la conexión no del rol, ya que dentro puede tener varias fichas el jugador). El host asigna las fichas que puede manejar el jugador arrastrando (incluso fuera de la categoría de jugador) y listo, el jugador tiene control sobre la ficha y no sobre el resto.
 
-La aplicación ofrece dos formas principal de hostear una sala:
+La aplicación ofrece tres formas principal de hostear una sala:
+
+1 Peer to peer con respaldo
 
 1A Autogestionado 100% por la aplicación
 Opción peer to peer gestionado por la propia aplicación, en la cual tiene como respaldo automático Cloudflare por si algún jugador tiene una NAT estricta y no permite este tipo de conexión (no hay que configurar nada, pero no garantizo que Cloudflare vaya a estar siempre 
@@ -36,7 +38,10 @@ disponible). Le das a abrir sala y compartes enlaces,
 1B Usar tu propio respaldo
 Igual que la primera, pero el respaldo lo pones tú. Por ejemplo, con tailscale instalado, habilitar https certificates dentro de https://console.tailscale.com/admin/dns, y en una terminal ejecutar tailscale funnel http://127.0.0.1:8080 (la primera vez pedira confirmación), poner la url que se obtiene en el programa, y compartir la url que se proporciona a los jugadores y listo.
 
-2 Red local
+2 Solo túnel
+Es igual que la primera, con cloudflare o el tuyo propio, pero sin ser peer to peer. Para casos en los que no quieras compartir tu ip pública por si la gente con la que juegas no es de confianza. Lo máximo que pueden llegar a hacer con tu ip pública escanearte puertos por si tienes algo abierto (de normal no vas a tener nada a no ser que hayas configurado algo por tu cuenta) o intentar hacer ataques de denegación de servicio (tampoco es normal que un jugador pueda hacer esto en primer lugar, y tus datos siempre están a salvo).
+
+3 Red local
 La clásica, mediante hamachi, tailscale o mi recomendación personal, radmin vpn, conectarses todo a una red local y poner ip del host más el puerto, como en minecraft. Si pide permisos de cortafuegos de la aplicación dadle a permitir o no funcionará.
 El programa te devolverá probablemente varios enlaces, en de tu red local de verdad (casa), el de radmin, u otros programas de red en caso de tenerlo, usar el que interese. Puedes considerarlo como un escaneo automático.
 
