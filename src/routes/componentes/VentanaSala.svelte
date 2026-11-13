@@ -162,6 +162,16 @@
               <input type="radio" name="respaldo" value="Propio" bind:group={respaldo} />
               <span>Tu propia dirección <span class="nota">(tu dominio, Tailscale funnel, ngrok, tu proxy https…)</span></span>
             </label>
+            {#if respaldo === "Propio"}
+              <div class="fila">
+                <input class="input-texto" placeholder="https://mi.dominio.es" maxlength="260" bind:value={urlPropia} />
+                <input class="input-texto input-puerto" type="number" min="1024" max="65535" title="Puerto de este equipo" bind:value={puertoPropio} />
+              </div>
+              <span class="nota">
+                Haz que esa dirección (https) lleve a <code>http://127.0.0.1:{puertoPropio}</code> de este equipo. La app
+                escucha ahí al abrir la sala y sirve ella misma la página de los jugadores.
+              </span>
+            {/if}
           </div>
         {/snippet}
         <label class="opcion">
@@ -186,16 +196,7 @@
           <input type="radio" name="forma" value="lan" bind:group={forma} />
           <span>Red local o VPN <span class="nota">(Radmin VPN, Hamachi, ZeroTier, tu wifi…)</span></span>
         </label>
-        {#if modo === "Propio"}
-          <div class="fila">
-            <input class="input-texto" placeholder="https://mi.dominio.es" maxlength="260" bind:value={urlPropia} />
-            <input class="input-texto input-puerto" type="number" min="1024" max="65535" title="Puerto de este equipo" bind:value={puertoPropio} />
-          </div>
-          <span class="nota">
-            Haz que esa dirección (https) lleve a <code>http://127.0.0.1:{puertoPropio}</code> de este equipo. La app escucha
-            ahí al abrir la sala y sirve ella misma la página de los jugadores.
-          </span>
-        {:else if modo === "Lan"}
+        {#if modo === "Lan"}
           <div class="fila">
             <span class="nota">Puerto</span>
             <input class="input-texto input-puerto" type="number" min="1024" max="65535" title="Puerto de este equipo" bind:value={puertoPropio} />
