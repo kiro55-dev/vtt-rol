@@ -1,8 +1,8 @@
 // src-tauri/src/red/webrtc.rs
 //
-// La conexión DIRECTA con un jugador (WebRTC, punto a punto), del lado del host. En esta fase la señalización es a
-// mano: el jugador le pasa al host el código de su oferta, `responder` lo comprueba y devuelve el código de la
-// respuesta. Cuando los tres canales que abre el navegador están abiertos, se arma un `Transporte` y se lanza el mismo
+// La conexión DIRECTA con un jugador (WebRTC, punto a punto), del lado del host. La oferta del jugador llega por los
+// relés de Nostr (`senal.rs`); `responder_con` la comprueba y devuelve el código de la respuesta, que se publica por
+// el mismo camino. Cuando los tres canales que abre el navegador están abiertos, se arma un `Transporte` y se lanza el mismo
 // `servidor::atender` que atiende a los del túnel: saludo, contraseña, permisos y topes son los mismos.
 //
 // Canales (los abre el navegador):
@@ -31,7 +31,7 @@ use webrtc::runtime::{default_runtime, Runtime};
 
 use crate::red::codigo::{self, Contenido};
 use crate::red::servidor;
-use crate::red::transporte::{Trama, Transporte, CAPACIDAD};
+use crate::red::transporte::{Trama, Transporte, Via, CAPACIDAD};
 use crate::red::trozos::{trocear, Recomponer};
 use crate::red::Red;
 
@@ -45,7 +45,7 @@ const ADELANTO_MAX_MS: u64 = 60 * 1000;
 const GRACIA_SRFLX: Duration = Duration::from_millis(300);
 const TOPE_RESPUESTA: Duration = Duration::from_millis(1500);
 /// Los tres canales tienen que abrirse en este tiempo desde que se contesta (si no, se descarta).
-const TIEMPO_ABRIRSE: Duration = Duration::from_secs(10 * 60);
+const TIEMPO_ABRIRSE: Duration = Duration::from_secs(45);
 /// Un mensaje del protocolo no puede ocupar más (igual que el WebSocket).
 const MAX_MENSAJE: usize = 512 * 1024;
 /// Lo que se deja en el búfer de salida de un canal antes de esperar (contrapresión).
@@ -65,11 +65,11 @@ impl Drop for PlazaPeer {
 
 impl Red {
     /// El secreto del enlace y el certificado de la sala abierta, si va en peer to peer.
-    fn datos_directo(&self) -> Result<(String, RTCCertificate), String> {
+    pub(crate) fn datos_directo(&self) -> Result<(String, RTCCertificate), String> {
         let dentro = self.dentro();
         let s = dentro.as_ref().ok_or("La sala está cerrada")?;
-        if !s.p2p() {
-            return Err("La conexión directa solo está en «Peer to peer» (en red local ya llegan directos)".into());
+        if !s.directa() {
+            return Err("Esta sala no ofrece conexión directa (red local, o «Solo respaldo»)".into());
         }
         let cert = s.sala.certificado().ok_or("La sala no tiene certificado para la conexión directa")?;
         Ok((s.sala.secreto.clone(), cert))
@@ -156,12 +156,8 @@ impl PeerConnectionEventHandler for Manejador {
     }
 }
 
-/// Contesta la oferta de un jugador. `Ok` con el código de la respuesta (para pasárselo). La conexión sigue sola.
-pub async fn responder(red: &Arc<Red>, codigo: &str) -> Result<String, String> {
-    responder_con(red, codigo, true).await
-}
-
-/// `stun = false` en los tests (sin red).
+/// Contesta la oferta de un jugador (el código que llegó por los relés, `senal.rs`). `Ok` con el código de la
+/// respuesta, que se le devuelve por el mismo camino; la conexión sigue sola. `stun = false` en los tests (sin red).
 pub(crate) async fn responder_con(red: &Arc<Red>, codigo: &str, stun: bool) -> Result<String, String> {
     let (secreto, certificado) = red.datos_directo()?;
     let contenido = codigo::descifrar(&secreto, codigo)?;
@@ -189,11 +185,11 @@ pub(crate) async fn responder_con(red: &Arc<Red>, codigo: &str, stun: bool) -> R
     let config = RTCConfigurationBuilder::new().with_ice_servers(servidores).with_certificates(vec![certificado]).build();
     let pc = PeerConnectionBuilder::new()
         .with_configuration(config)
-        // Paciencia: con los códigos a mano el otro lado tarda minutos en pegar la respuesta; con los 25 s de serie la
-        // conexión se daba por fallida antes de que el navegador empezara (fase 0)
+        // Si no llega a conectar en 30 s se da por fallida y libera su plaza (`MAX_PEERS_A_MEDIAS`): así los intentos que
+        // fallan (NAT estricto) no llenan al host
         .with_setting_engine(
             SettingEngineBuilder::new()
-                .with_ice_timeouts(Some(Duration::from_secs(300)), Some(Duration::from_secs(300)), Some(Duration::from_secs(2)))
+                .with_ice_timeouts(Some(Duration::from_secs(30)), Some(Duration::from_secs(30)), Some(Duration::from_secs(2)))
                 .build(),
         )
         .with_handler(Arc::new(Manejador { runtime: runtime.clone(), eventos: eventos.clone(), srflx: srflx_tx, completo: completo_tx }))
@@ -268,7 +264,7 @@ async fn vida_del_peer(
                         canales["arrastre"].clone(),
                         eventos.clone(),
                     ));
-                    tokio::spawn(servidor::atender(red.clone(), Transporte { tx: tx_salida, rx: rx_entrada }));
+                    tokio::spawn(servidor::atender(red.clone(), Transporte { via: Via::Directo, tx: tx_salida, rx: rx_entrada }));
                 }
             }
             Ev::Mensaje(etiqueta, es_texto, datos) => {
@@ -478,6 +474,7 @@ mod tests {
         decir(&juego, &MensajeCliente::Unirse { nombre: "Ana".into(), contrasena: None }).await;
         assert!(matches!(entrada.mensaje().await, MensajeHost::Bienvenido { .. }));
         assert!(matches!(entrada.mensaje().await, MensajeHost::Vista { .. }));
+        assert_eq!(red.vias().get(&1), Some(&Via::Directo), "la ventana de la sala sabe que entró directo");
 
         // --- Una imagen: se pide por el canal SIN reintentos (el host lo trata igual) y llega por `imagenes` ---
         let pedir = MensajeCliente::PedirImagen { id: 1, ruta: "imagenes/fondo.png".into(), mini: None };
@@ -516,9 +513,9 @@ mod tests {
     async fn sin_sala_o_en_red_local_no_hay_conexion_directa() {
         let red = red_de_prueba("webrtc_sin_sala");
         assert!(responder_con(&red, "x", false).await.unwrap_err().contains("cerrada"));
-        red.guardar_config(&crate::red::config::ConfigRed { respaldo: crate::red::config::Respaldo::Lan { puerto: 18999 } }).unwrap();
+        red.guardar_config(&crate::red::config::ConfigRed { respaldo: crate::red::config::Respaldo::Lan { puerto: 18999 }, ..Default::default() }).unwrap();
         red.abrir().await.unwrap();
-        assert!(responder_con(&red, "x", false).await.unwrap_err().contains("Peer to peer"));
+        assert!(responder_con(&red, "x", false).await.unwrap_err().contains("no ofrece conexión directa"));
         red.cerrar();
     }
 }

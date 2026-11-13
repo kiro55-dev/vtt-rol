@@ -9,7 +9,6 @@
   import { esJugador } from "$lib/modo";
   import { conexion } from "$lib/red/conexion.svelte";
   import EntradaSala from "./componentes/EntradaSala.svelte";
-  import ConexionDirecta from "./componentes/ConexionDirecta.svelte";
 
   import PanelIzquierdo from "./componentes/PanelIzquierdo.svelte";
   import PanelDerecho from "./componentes/PanelDerecho.svelte";
@@ -113,8 +112,6 @@
     {#if !conexion}
       <h1>OpenRoll</h1>
       <p>Este enlace no es válido. Pide al host el enlace de la sala.</p>
-    {:else if conexion.estado.tipo === "directo-a-mano"}
-      <ConexionDirecta {conexion} estado={conexion.estado} />
     {:else if conexion.estado.tipo === "identificate"}
       <EntradaSala {conexion} estado={conexion.estado} />
     {:else if conexion.estado.tipo === "fuera"}

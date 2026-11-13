@@ -11,9 +11,10 @@
 // Si se corta, se reintenta durante un minuto (p. ej. el móvil cambia de red).
 //
 // Por dónde habla: si el enlace lleva la huella del host (`f`) y el navegador puede, primero la conexión DIRECTA
-// (WebRTC, punto a punto, `webrtc.ts`): se pasa un código al host y se pega su respuesta. Si no se puede o no se quiere,
-// «Entrar por el respaldo»: el WebSocket de siempre (túnel, dirección propia o red local). Si la directa se cae,
-// se sigue por el respaldo para no cortar la partida. En los dos casos es un `TransporteCliente`.
+// (WebRTC, punto a punto, `webrtc.ts`), poniéndose de acuerdo con el host por relés de Nostr (`senal.ts`) sin que el
+// jugador haga nada. Si no se puede o algo falla, entra por el respaldo: el WebSocket de siempre (túnel, dirección propia
+// o red local). Si la directa se cae, se sigue por el respaldo para no cortar la partida. En los dos casos es un
+// `TransporteCliente`.
 //
 // Imágenes: van por esta misma conexión (`ImagenesRed`). Los `<img>` de la app piden `<base>/__imagen?ruta=…`,
 // que contesta el Service Worker (src/service-worker.ts) preguntándole a esta página. Sin Service Worker (p. ej.
@@ -26,7 +27,8 @@ import { EVENTO_AVISO, type AvisoTablero } from "$lib/avisosTablero";
 import { esJugador } from "$lib/modo";
 import { claveAlmacen, leerEnlace, urlImagen, urlWebSocket, type Enlace } from "./enlace";
 import { ImagenesRed, claveImagen } from "./imagenesRed";
-import { porWebSocket, type TransporteCliente } from "./transporte";
+import { porWebSocket, type OyentesTransporte, type TransporteCliente } from "./transporte";
+import { pedirRespuesta } from "./senal";
 import { crearDirecto, soportaDirecto, type Directo } from "./webrtc";
 import { VERSION_PROTOCOLO, type Jugador, type MensajeCliente, type MensajeHost, type VistaJugador } from "./protocolo";
 import { aplicarCambios, partesCambiadas, PETICIONES, responder, separarMiniatura, vistaVacia } from "./replica";
@@ -40,17 +42,18 @@ const ESPERA_SW_MS = 3000;
 
 export type EstadoConexion =
   | { tipo: "conectando" }
-  /** Conexión directa a mano: `codigo` es la oferta para pasarle al host (`null` mientras se prepara); `conectando`: ya
-   *  se pegó su respuesta y se está abriendo. */
-  | { tipo: "directo-a-mano"; codigo: string | null; error: string | null; conectando: boolean }
   | { tipo: "identificate"; pideContrasena: boolean; error: string | null; recordado: boolean }
   | { tipo: "dentro" }
   | { tipo: "reconectando" }
   | { tipo: "fuera"; motivo: string };
 
 const REINTENTAR_DURANTE_MS = 60_000;
-/** Pegada la respuesta del host, lo que se espera a que se abra la conexión directa antes de decir que no pudo. */
-const TIEMPO_ABRIR_DIRECTO_MS = 45_000;
+/** Con la respuesta del host ya usada, lo que se espera a que la conexión directa hable antes de pasar al respaldo. */
+const TIEMPO_ABRIR_DIRECTO_MS = 12_000;
+/** Tras un fallo de lo directo, no se vuelve a intentar al entrar durante este tiempo (se entra ya por el respaldo). */
+const RECORDAR_FALLO_MS = 30 * 60_000;
+/** Tras caerse una directa que había funcionado: cuándo se prueba a volver a ella (en segundo plano, 3 intentos). */
+export const ESPERAS_MEJORA_MS = [30_000, 120_000, 300_000];
 /** Lo que se espera la respuesta del host a una acción. */
 const TIEMPO_RESPUESTA_MS = 30_000;
 const MAX_COMANDOS_PERSONALES = 100;
@@ -63,6 +66,27 @@ const MAX_COMANDOS_PERSONALES = 100;
 export async function prueba(token: string, reto: string, tunel: string): Promise<string> {
   const texto = new TextEncoder();
   return bytesToHex(hmac(sha256, sha256(texto.encode(token)), texto.encode(`${reto}|${tunel}`)));
+}
+
+const claveFallo = (sala: string) => `openroll.directo.${sala}`;
+
+/** ¿Falló lo directo hace poco en este navegador con esta sala? (Sin almacenamiento: no se sabe, se intenta.) */
+function falloReciente(sala: string): boolean {
+  try {
+    const v = JSON.parse(localStorage.getItem(claveFallo(sala)) ?? "null");
+    return typeof v?.fallo === "number" && Date.now() - v.fallo < RECORDAR_FALLO_MS;
+  } catch {
+    return false;
+  }
+}
+
+function anotarFallo(sala: string, hay: boolean) {
+  try {
+    if (hay) localStorage.setItem(claveFallo(sala), JSON.stringify({ fallo: Date.now() }));
+    else localStorage.removeItem(claveFallo(sala));
+  } catch {
+    // Sin almacenamiento: no se recuerda
+  }
 }
 
 function leerToken(sala: string): string | null {
@@ -101,6 +125,17 @@ export class Conexion {
   #directo: Directo | null = null;
   /** Si se habla por la conexión directa (la prueba del token se ata a la huella del host y no a una dirección). */
   #porDirecto = false;
+  /** El intento de conexión directa en curso (se aborta al pasar al respaldo o al cerrar). */
+  #intento: AbortController | null = null;
+  /** Se cumple al llegar lo primero del host por la directa (señal de que los canales abrieron). */
+  #alPrimerMensaje: ((abrio: boolean) => void) | null = null;
+  #huboMensaje = false;
+  /** Esta sesión ya habló por la directa (si se cae, se prueba a volver a ella). */
+  #huboDirecta = false;
+  /** Intentos de volver a lo directo desde la última caída. */
+  #mejoras = 0;
+  #relojMejora: ReturnType<typeof setTimeout> | null = null;
+  #mejorando: AbortController | null = null;
   /** Tras caerse la directa, solo se reconecta por el respaldo. */
   #soloRespaldo = false;
   /** Identifica el transporte actual: el cierre de uno anterior (p. ej. la directa, al pasar al respaldo) no cuenta. */
@@ -259,11 +294,50 @@ export class Conexion {
   }
 
   /** Lo que llega del host, venga por donde venga. */
-  #oyentes(): import("./transporte").OyentesTransporte {
+  #oyentes(): OyentesTransporte {
     const id = Symbol("transporte");
     this.#idTransporte = id;
+    return this.#crearOyentes(id);
+  }
+
+  /**
+   * Oyentes de un transporte que se está probando en segundo plano (la vuelta a lo directo): lo que llega se guarda
+   * hasta `activar()` (el momento del cambio); si se cierra antes, solo avisa de que el intento falló.
+   */
+  #oyentesDiferidos(alHablar: () => void, alFallar: () => void) {
+    const id = Symbol("transporte");
+    const reales = this.#crearOyentes(id);
+    let activo = false;
+    const cola: Array<() => void> = [];
+    const oyentes: OyentesTransporte = {
+      alTexto: (t) => {
+        if (activo) return reales.alTexto(t);
+        cola.push(() => reales.alTexto(t));
+        alHablar();
+      },
+      alBinario: (b) => {
+        if (activo) return reales.alBinario(b);
+        cola.push(() => reales.alBinario(b));
+      },
+      alCerrar: () => {
+        if (activo) return reales.alCerrar();
+        alFallar();
+      }
+    };
+    const activar = () => {
+      this.#idTransporte = id;
+      activo = true;
+      for (const f of cola.splice(0)) f();
+    };
+    return { oyentes, activar };
+  }
+
+  #crearOyentes(id: symbol): OyentesTransporte {
     return {
       alTexto: (texto) => {
+        if (this.#idTransporte !== id) return; // un transporte viejo (p. ej. el WebSocket tras pasar a lo directo) no cuenta
+        this.#huboMensaje = true;
+        this.#alPrimerMensaje?.(true);
         let m: MensajeHost;
         try {
           m = JSON.parse(texto);
@@ -273,35 +347,44 @@ export class Conexion {
         if (this.imagenes.alMensaje(m)) return;
         void this.#recibir(m);
       },
-      alBinario: (datos) => this.imagenes.alBinario(datos),
+      alBinario: (datos) => {
+        if (this.#idTransporte === id) this.imagenes.alBinario(datos);
+      },
       alCerrar: () => {
         if (this.#idTransporte !== id) return; // ya hay otro transporte: este no cuenta
+        // La directa se cerró antes de hablar: el intento falla y `#intentarDirecto` pasa al respaldo
+        if (this.#alPrimerMensaje) return this.#alPrimerMensaje(false);
         this.#fallarPendientes("Sin conexión con la sala");
         this.imagenes.cortar("Sin conexión con la sala");
         if (this.#final) return;
         this.#t = null;
         if (this.#porDirecto) {
-          // Se cayó la directa: se sigue por el respaldo para no cortar la partida
+          // Se cayó la directa: se sigue por el respaldo para no cortar la partida (y se intentará volver a lo directo)
           this.#porDirecto = false;
           this.#soloRespaldo = true;
           this.#directo = null;
+          this.#mejoras = 0;
+          this.#programarMejora();
         }
         this.#reintentar();
       }
     };
   }
 
-  /** Empieza a conectar: la directa si se puede (el enlace lleva la huella y el navegador sabe), si no el respaldo. */
+  /** Empieza a conectar: directo si se puede (el enlace lleva la huella y el navegador sabe), si no por el respaldo. */
   conectar() {
     this.#final = false;
-    if (this.#soloRespaldo || !this.enlace.huella || !soportaDirecto()) return this.conectarPorRespaldo();
-    void this.#prepararDirecto();
+    if (this.#soloRespaldo || !this.enlace.huella || !soportaDirecto() || falloReciente(this.enlace.sala)) return this.conectarPorRespaldo();
+    void this.#intentarDirecto();
   }
 
   /** El WebSocket de siempre: túnel, dirección propia o red local. */
   conectarPorRespaldo() {
     this.#final = false;
     this.#soloRespaldo = true;
+    this.#intento?.abort();
+    this.#intento = null;
+    this.#alPrimerMensaje = null;
     // Primero el transporte nuevo (así el cierre del anterior ya no cuenta), luego se suelta el viejo
     const oyentes = this.#oyentes();
     const viejo = this.#directo;
@@ -312,40 +395,112 @@ export class Conexion {
     this.#t = porWebSocket(urlWebSocket(this.enlace), oyentes);
   }
 
-  /** Abre los canales y saca el código de la oferta para pasárselo al host. */
-  async #prepararDirecto() {
-    this.estado = { tipo: "directo-a-mano", codigo: null, error: null, conectando: false };
+  /**
+   * La conexión directa, sola: abre los canales, intercambia los códigos con el host por los relés (`senal.ts`) y espera
+   * a que hable. Si algo falla o se agota el tiempo, entra por el respaldo sin pedir nada al jugador.
+   */
+  async #intentarDirecto() {
+    const intento = new AbortController();
+    this.#intento = intento;
+    this.#huboMensaje = false;
+    this.estado = { tipo: "conectando" };
+    const vale = () => this.#intento === intento;
     try {
       const d = await crearDirecto(this.enlace, this.#oyentes());
-      // Si mientras tanto eligió el respaldo, esto ya no vale
-      if (this.estado.tipo !== "directo-a-mano") return d.transporte.cerrar();
+      if (!vale()) return d.transporte.cerrar();
       this.#directo = d;
       this.#t = d.transporte;
-      this.estado = { tipo: "directo-a-mano", codigo: d.codigo, error: null, conectando: false };
-    } catch (err) {
-      this.estado = { tipo: "directo-a-mano", codigo: null, error: String(err), conectando: false };
+      const respuesta = await pedirRespuesta({ secreto: this.enlace.secreto, codigoOferta: d.codigo, n: d.n, cancelar: intento.signal });
+      if (!vale()) return;
+      await d.usarRespuesta(respuesta); // comprueba que el certificado es el del enlace
+      this.#porDirecto = true;
+      const abrio =
+        this.#huboMensaje ||
+        (await new Promise<boolean>((ok) => {
+          this.#alPrimerMensaje = ok;
+          setTimeout(() => ok(false), TIEMPO_ABRIR_DIRECTO_MS);
+        }));
+      if (!vale()) return;
+      this.#alPrimerMensaje = null;
+      if (!abrio) throw "La conexión directa no se abrió";
+      this.#huboDirecta = true;
+      anotarFallo(this.enlace.sala, false);
+    } catch {
+      if (vale()) {
+        anotarFallo(this.enlace.sala, true); // la próxima vez se entra ya por el respaldo, sin esperar
+        this.conectarPorRespaldo();
+      }
     }
   }
 
-  /** El código de respuesta que pegó el jugador: se comprueba y se abre la conexión. */
-  async usarRespuesta(codigo: string) {
-    const d = this.#directo;
-    if (!d || this.estado.tipo !== "directo-a-mano") return;
-    const mio = this.estado.codigo;
+  #cancelarMejora() {
+    if (this.#relojMejora) clearTimeout(this.#relojMejora);
+    this.#relojMejora = null;
+    this.#mejorando?.abort();
+    this.#mejorando = null;
+  }
+
+  /** Programa el próximo intento de volver a lo directo (solo si esta sesión ya habló por la directa). */
+  #programarMejora() {
+    if (this.#final || this.#porDirecto || !this.#huboDirecta || this.#mejoras >= ESPERAS_MEJORA_MS.length) return;
+    if (this.#relojMejora) clearTimeout(this.#relojMejora);
+    this.#relojMejora = setTimeout(() => void this.#mejorarADirecto(), ESPERAS_MEJORA_MS[this.#mejoras]);
+  }
+
+  /**
+   * Con la partida en marcha por el respaldo, prueba la conexión directa EN SEGUNDO PLANO (sin tocar el WebSocket): si
+   * habla, se cambia con el camino de una reconexión; si no, el jugador ni se entera.
+   */
+  async #mejorarADirecto() {
+    this.#relojMejora = null;
+    if (this.#final || this.#porDirecto || !this.enlace.huella || !soportaDirecto()) return;
+    // Aún reconectando (o pidiendo nombre): se espera al siguiente turno sin gastar un intento
+    if (this.estado.tipo !== "dentro") return this.#programarMejora();
+    // Sin token guardado (p. ej. ventana privada) el cambio pediría el nombre otra vez: no se intenta
+    if (!leerToken(this.enlace.sala)) return;
+    this.#mejoras++;
+    const intento = new AbortController();
+    this.#mejorando = intento;
+    const vale = () => this.#mejorando === intento && !this.#final;
+    let directo: Directo | null = null;
+    let cambiado = false;
     try {
-      await d.usarRespuesta(codigo);
-    } catch (err) {
-      this.estado = { tipo: "directo-a-mano", codigo: mio, error: String(err), conectando: false };
-      return;
+      let habla!: (b: boolean) => void;
+      const hablo = new Promise<boolean>((ok) => (habla = ok));
+      const dif = this.#oyentesDiferidos(
+        () => habla(true),
+        () => habla(false)
+      );
+      directo = await crearDirecto(this.enlace, dif.oyentes);
+      if (!vale()) throw "cancelado";
+      const respuesta = await pedirRespuesta({ secreto: this.enlace.secreto, codigoOferta: directo.codigo, n: directo.n, cancelar: intento.signal });
+      if (!vale()) throw "cancelado";
+      await directo.usarRespuesta(respuesta); // comprueba el certificado del host
+      const reloj = setTimeout(() => habla(false), TIEMPO_ABRIR_DIRECTO_MS);
+      const abrio = await hablo;
+      clearTimeout(reloj);
+      if (!vale() || !abrio || this.estado.tipo !== "dentro") throw "no se abrió";
+      // El cambio sigue el camino de una reconexión: lo pendiente se corta, se suelta el WebSocket y la directa
+      // hace el saludo (reto → prueba atada a la huella → bienvenida → vista)
+      this.#fallarPendientes("Cambiando de conexión");
+      this.imagenes.cortar("Cambiando de conexión");
+      const viejo = this.#t;
+      this.#directo = directo;
+      this.#t = directo.transporte;
+      this.#porDirecto = true;
+      this.#huboDirecta = true;
+      this.#mejoras = 0;
+      cambiado = true;
+      this.estado = { tipo: "reconectando" };
+      this.#idTransporte = null; // lo que diga el viejo, desde ahora, no cuenta
+      viejo?.cerrar();
+      dif.activar();
+    } catch {
+      if (!cambiado) directo?.transporte.cerrar();
+      if (vale()) this.#programarMejora();
+    } finally {
+      if (this.#mejorando === intento) this.#mejorando = null;
     }
-    this.#porDirecto = true;
-    this.estado = { tipo: "directo-a-mano", codigo: mio, error: null, conectando: true };
-    setTimeout(() => {
-      if (this.#directo === d && this.estado.tipo === "directo-a-mano") {
-        this.estado = { tipo: "directo-a-mano", codigo: mio, error: "No se pudo conectar directo (¿cortafuegos o router estricto?). Entra por el respaldo.", conectando: false };
-        this.#porDirecto = false;
-      }
-    }, TIEMPO_ABRIR_DIRECTO_MS);
   }
 
   /** Nombre y contraseña, cuando el host los pide. */
@@ -355,6 +510,9 @@ export class Conexion {
 
   cerrar() {
     this.#final = true;
+    this.#intento?.abort();
+    this.#intento = null;
+    this.#cancelarMejora();
     this.#t?.cerrar();
   }
 
@@ -368,6 +526,7 @@ export class Conexion {
 
   #terminar(motivo: string) {
     this.#final = true;
+    this.#cancelarMejora();
     this.estado = { tipo: "fuera", motivo };
     void this.imagenes.terminar(motivo);
     this.#t?.cerrar();

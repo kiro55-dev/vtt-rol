@@ -33,12 +33,6 @@ pub fn cerrar_sala(state: State<'_, AppState>) {
     state.red.cerrar();
 }
 
-/// Conexión directa a mano: el host pega el código del jugador (su oferta) y recibe el código de respuesta.
-#[tauri::command]
-pub async fn responder_codigo_directo(codigo: String, state: State<'_, AppState>) -> Result<String, String> {
-    crate::red::webrtc::responder(&state.red, &codigo).await
-}
-
 /// Cómo se publica la sala en este equipo (`red.json`): túnel de Cloudflare o dirección propia.
 #[tauri::command]
 pub fn obtener_config_red(state: State<'_, AppState>) -> crate::red::config::ConfigRed {
@@ -53,8 +47,11 @@ pub fn guardar_config_red(config: crate::red::config::ConfigRed, state: State<'_
 
 /// El enlace anterior deja de valer y todos tendrán que volver a poner la contraseña.
 #[tauri::command]
-pub fn regenerar_enlace(state: State<'_, AppState>) -> Result<(), String> {
-    state.red.regenerar_enlace()
+pub async fn regenerar_enlace(state: State<'_, AppState>) -> Result<(), String> {
+    state.red.regenerar_enlace()?;
+    // Las etiquetas de los relés salen del secreto: la escucha se rehace con el enlace nuevo
+    state.red.reiniciar_senal();
+    Ok(())
 }
 
 /// `None` o vacía: sin contraseña.
@@ -101,6 +98,8 @@ pub struct JugadorSala {
     pub id: IdJugador,
     pub nombre: String,
     pub conectado: bool,
+    /// Por dónde entró, si está conectado: para saber si la conexión directa funcionó o cayó al respaldo.
+    pub via: Option<crate::red::transporte::Via>,
     /// Las fichas del banco de las que es propietario.
     pub fichas: Vec<u16>,
 }
@@ -110,12 +109,14 @@ pub struct JugadorSala {
 pub fn obtener_jugadores(state: State<'_, AppState>) -> Vec<JugadorSala> {
     let est = state.lock();
     let conectados = state.red.conectados(); // estado → red
+    let vias = state.red.vias();
     est.jugadores
         .iter()
         .map(|j| JugadorSala {
             id: j.id,
             nombre: j.nombre.clone(),
             conectado: conectados.contains(&j.id),
+            via: vias.get(&j.id).copied(),
             fichas: est.banco_entidades.iter().filter(|e| e.propietarios.contains(&j.id)).map(|e| e.id).collect(),
         })
         .collect()

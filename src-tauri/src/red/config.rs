@@ -71,6 +71,10 @@ pub fn direcciones_lan() -> Vec<DireccionLan> {
 pub struct ConfigRed {
     #[serde(default)]
     pub respaldo: Respaldo,
+    /// «Solo respaldo»: no se ofrece la conexión directa (ni relés ni huella en el enlace), así los jugadores nunca
+    /// ven la IP del host: entran todos por el respaldo (con Cloudflare, el túnel esconde la IP).
+    #[serde(default)]
+    pub solo_respaldo: bool,
 }
 
 /// La de este equipo; la de serie si no hay o está rota (no se puede quedar sin poder abrir la sala).
@@ -171,25 +175,35 @@ mod tests {
     }
 
     #[test]
+    fn solo_respaldo_se_guarda_y_una_config_antigua_sin_el_campo_sigue_valiendo() {
+        let raiz = dir_temporal("config_red_solo");
+        let c = ConfigRed { respaldo: Respaldo::Cloudflare, solo_respaldo: true };
+        guardar(&raiz, &c).unwrap();
+        assert_eq!(leer(&raiz), c);
+        std::fs::write(raiz.join(ARCHIVO), r#"{"respaldo":{"tipo":"Cloudflare"}}"#).unwrap();
+        assert!(!leer(&raiz).solo_respaldo, "un red.json antiguo no lo trae: falso");
+    }
+
+    #[test]
     fn se_guarda_y_se_lee_y_si_falta_o_esta_rota_vale_la_de_serie() {
         let raiz = dir_temporal("config_red");
         assert_eq!(leer(&raiz), ConfigRed::default(), "sin archivo: Cloudflare");
-        let propia = ConfigRed { respaldo: Respaldo::Propio { url: "https://mi.dominio.es".into(), puerto: 8080 } };
+        let propia = ConfigRed { respaldo: Respaldo::Propio { url: "https://mi.dominio.es".into(), puerto: 8080 }, ..Default::default() };
         guardar(&raiz, &propia).unwrap();
         assert_eq!(leer(&raiz), propia);
-        assert!(guardar(&raiz, &ConfigRed { respaldo: Respaldo::Propio { url: "http://x.es".into(), puerto: 8080 } }).is_err());
-        assert!(guardar(&raiz, &ConfigRed { respaldo: Respaldo::Propio { url: "https://x.es".into(), puerto: 80 } }).is_err(), "puerto bajo");
-        assert!(guardar(&raiz, &ConfigRed { respaldo: Respaldo::Lan { puerto: 80 } }).is_err(), "puerto bajo");
+        assert!(guardar(&raiz, &ConfigRed { respaldo: Respaldo::Propio { url: "http://x.es".into(), puerto: 8080 }, ..Default::default() }).is_err());
+        assert!(guardar(&raiz, &ConfigRed { respaldo: Respaldo::Propio { url: "https://x.es".into(), puerto: 80 }, ..Default::default() }).is_err(), "puerto bajo");
+        assert!(guardar(&raiz, &ConfigRed { respaldo: Respaldo::Lan { puerto: 80 }, ..Default::default() }).is_err(), "puerto bajo");
         assert_eq!(leer(&raiz), propia, "lo que no vale no se guarda");
         std::fs::write(raiz.join(ARCHIVO), "{ roto").unwrap();
         assert_eq!(leer(&raiz), ConfigRed::default());
         // El formato que se guarda
         let json = serde_json::to_string(&propia).unwrap();
-        assert_eq!(json, r#"{"respaldo":{"tipo":"Propio","url":"https://mi.dominio.es","puerto":8080}}"#);
-        let lan = ConfigRed { respaldo: Respaldo::Lan { puerto: 8080 } };
+        assert_eq!(json, r#"{"respaldo":{"tipo":"Propio","url":"https://mi.dominio.es","puerto":8080},"solo_respaldo":false}"#);
+        let lan = ConfigRed { respaldo: Respaldo::Lan { puerto: 8080 }, ..Default::default() };
         guardar(&raiz, &lan).unwrap();
         assert_eq!(leer(&raiz), lan);
-        assert_eq!(serde_json::to_string(&lan).unwrap(), r#"{"respaldo":{"tipo":"Lan","puerto":8080}}"#);
+        assert_eq!(serde_json::to_string(&lan).unwrap(), r#"{"respaldo":{"tipo":"Lan","puerto":8080},"solo_respaldo":false}"#);
     }
 
     #[test]

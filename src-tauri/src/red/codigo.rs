@@ -1,7 +1,7 @@
 // src-tauri/src/red/codigo.rs
 //
-// Los códigos de la conexión directa a mano: el jugador le pasa al host su oferta (SDP de WebRTC) y el host le devuelve
-// la respuesta, por donde quieran (Discord, WhatsApp…). Un SDP lleva las IPs de cada uno, así que va **cifrado** con
+// Los códigos de la conexión directa: el jugador le pasa al host su oferta (SDP de WebRTC) y el host le devuelve
+// la respuesta, por los relés de Nostr (`senal.rs`). Un SDP lleva las IPs de cada uno, así que va **cifrado** con
 // una clave sacada del secreto del enlace: quien no tenga el enlace ni lo lee ni puede fabricar uno que el host acepte.
 //
 //   código = base64url( nonce (12 bytes) ‖ AES-256-GCM( deflate( JSON { tipo, sdp, t, n } ) ) )

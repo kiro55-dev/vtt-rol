@@ -57,12 +57,45 @@ https://kiro55-dev.github.io/vtt-rol/#t=…&s=…&k=…
 - **Conexión directa (peer to peer, WebRTC)**: la forma principal «Peer to peer» (con respaldo Cloudflare o tu
   dirección propia). El jugador habla **directo** con el host, sin pasar por ningún servidor; el respaldo es el
   WebSocket de siempre, para quien tenga una red que no lo permita (NAT estricto) o no quiera. Librería del host:
-  `webrtc` 0.21.1 (elegida en `experimentos/fase0-webrtc/`). En esta fase la señalización es **a mano**; los relés
-  automáticos son la fase siguiente.
-  - **Cómo se conecta**: si el enlace lleva la huella (`&f=…`) y el navegador puede (WebRTC, WebCrypto y una página
-    https), la página empieza en «Conexión directa»: el jugador copia **su código** (su oferta) y se lo pasa al
-    host; el host lo pega en «Configuración de sala» → «Conexión directa» → «Responder» y le devuelve **el suyo**; el
-    jugador lo pega y «Conectar». «Entrar por el respaldo» siempre está. Si la directa se cae, se sigue por el respaldo.
+  `webrtc` 0.21.1 (elegida en `experimentos/fase0-webrtc/`). Los dos se ponen de acuerdo **solos**, por relés de Nostr.
+  - **Cómo se conecta** (el jugador no toca nada): si el enlace lleva la huella (`&f=…`) y el navegador puede (WebRTC,
+    WebCrypto y una página https), `conexion.svelte.ts` intenta lo directo: abre los canales, publica su oferta en los
+    relés (`src/lib/red/senal.ts`) y espera la respuesta del host (hasta 10 s); si llega, comprueba la huella y espera a
+    que el host hable (hasta 12 s). **Cualquier fallo o tiempo agotado → entra por el respaldo sin pedir nada** (relés
+    caídos, NAT estricto, navegador sin WebRTC, reloj mal puesto…). Si la directa se cae en pleno juego, se sigue por el
+    respaldo.
+  - **Señalización por relés de Nostr** (`red/senal.rs` ↔ `senal.ts`): el contenido es el MISMO código cifrado de más
+    abajo (no hay segundo cifrado) dentro de un evento efímero (kind 27184, que los relés reenvían y no guardan),
+    firmado con una clave Schnorr nueva por evento. Las etiquetas con las que se encuentran salen del secreto del
+    enlace (HMAC-SHA256, «oferta» y «respuesta»; la respuesta lleva además la etiqueta `x` con el `n` de la oferta). El
+    host (`senal::arrancar`, al abrir la sala en peer to peer) escucha en `senal::RELES` (una tarea por relé, reconecta
+    con espera de 1 s a 60 s) y contesta con `webrtc::responder_con`. Topes: 6 ofertas por minuto, eventos ≤ 32 KiB,
+    `created_at` a ±2 min, y el mismo evento (llega por varios relés) una vez, además de los de abajo. La lista de relés
+    es una constante en Rust y en TS (a cambiar a la vez, como el protocolo); se eligió con
+    `experimentos/fase4-nostr/probar.ts` (RESULTADOS.md): los relés públicos cambian sus reglas. Con «Generar enlace
+    nuevo» la escucha se rehace (las etiquetas cambian con el secreto). El TLS de los relés usa un proveedor de rustls
+    explícito (`ring`): en el proceso conviven `aws-lc-rs` (reqwest) y `ring` (webrtc), y el «por defecto» entraría en
+    pánico. Rust y TS comparten un vector fijo (id y firma del evento, etiquetas).
+  - **Qué ven los relés**: la IP de quien publica (host y cada jugador), la hora, el tamaño y una etiqueta opaca. NO
+    ven el SDP ni las IPs de los candidatos (cifrado) ni a qué sala va (etiqueta derivada del secreto). Aunque lo
+    alteraran, el navegador rechaza una respuesta con otra huella.
+  - **Para el host** (desarrollo): en «Configuración de sala», cada jugador conectado lleva una etiqueta **«Directo»**
+    o **«Respaldo»** (**«Red local»** en ese modo; viene de `Transporte.via` → `Conexion.via` → `JugadorSala.via`), y
+    la sala abierta en peer to peer enseña «relés conectados N de M» (`EstadoSala.senal`).
+  - **«Túnel»** (tercera opción principal junto a «Peer to peer» y «Red local»; `ConfigRed.solo_respaldo` en `red.json`, `SalaAbierta::directa()`):
+    no se ofrece lo directo: el enlace sale sin `&f=`, no se crea el certificado ni se escucha en los relés, y todos
+    entran por el respaldo; los jugadores nunca ven la IP del host (con Cloudflare, el túnel la esconde). Un enlace viejo
+    con `f` espera ~10 s y cae solo al respaldo (regenerar el enlace lo evita). Los enlaces de Cloudflare también llevan
+    la huella cuando se ofrece lo directo.
+  - **Volver a lo directo**: si una directa que había funcionado se cae, el jugador sigue por el respaldo y a los 30 s,
+    2 min y 5 min prueba la directa **en segundo plano** (`#mejorarADirecto`, oyentes diferidos): si habla, se cambia con
+    el camino de una reconexión (se cierra el WebSocket, la directa saluda y llega la vista); si no, no se entera. Solo si
+    hay token guardado (si no, pediría el nombre otra vez). Los mensajes de un transporte viejo se ignoran (si no, el
+    `Rechazado` «has entrado desde otra pestaña» del host cortaría la sesión).
+  - **Recordar el fallo**: si lo directo falla al entrar, se guarda `openroll.directo.<sala>` en el navegador y en
+    los próximos 30 min se entra ya por el respaldo, sin esperar; si funciona, se borra.
+  - **Tiempos**: ICE fallido a los 30 s y plaza a medias liberada a los 45 s (antes 300 s y 10 min, por los códigos a
+    mano), para que los intentos que fallan no llenen las 8 plazas del host.
   - **Códigos** (`red/codigo.rs` ↔ `src/lib/red/codigo.ts`): `base64url(nonce ‖ AES-256-GCM(deflate(JSON {tipo, sdp, t,
     n})))` con clave HKDF-SHA256 del secreto del enlace. Un SDP lleva IPs: sin el enlace no se lee ni se fabrica uno
     que el host acepte. El host rechaza los de más de 10 minutos, los repetidos y más de 8 a medias
@@ -81,10 +114,10 @@ https://kiro55-dev.github.io/vtt-rol/#t=…&s=…&k=…
     viejo que el último visto (y un `Arrastre` retrasado justo tras soltar). Por el WebSocket todo va por el único canal.
   - El host contesta en cuanto tiene el primer candidato público (`srflx`) + 300 ms, o a los 1,5 s, sin esperar a que
     la recogida «termine» (en Linux a veces no llegaba a tiempo: fase 0). Tiempos ICE de 5 minutos (los 25 s de serie
-    cerraban antes de que el jugador pegara la respuesta). El firewall de Windows pedirá permiso para la red (UDP).
+    cerraban antes de que llegara la respuesta). El firewall de Windows pedirá permiso para la red (UDP).
   - En **red local** no hay conexión directa de este tipo: ya llegan directos por `http` (sin certificado, sin huella).
   - **Privacidad**: en directo, host y jugador ven la IP pública del otro (los navegadores esconden las locales).
-    Quien no quiera, elige «Entrar por el respaldo».
+    Quien no quiera, no usa «Peer to peer» (red local, o dirección propia sin huella).
 - **La página de los jugadores va dentro de la app** (`build-jugador/`, `bun run web:build:app`, raíz `/`; la
   incluyen `beforeDevCommand`/`beforeBuildCommand`). El servidor de la sala la sirve en `/` (`red/pagina.rs`, con
   `rust-embed`: en desarrollo la lee del disco, en release va en el ejecutable). Con la dirección propia o en red

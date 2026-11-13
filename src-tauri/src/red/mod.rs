@@ -20,6 +20,7 @@ pub mod imagenes;
 pub mod peticiones;
 pub mod protocolo;
 pub mod sala;
+pub mod senal;
 pub mod servidor;
 pub mod transporte;
 pub mod trozos;
@@ -39,6 +40,7 @@ use tokio::sync::{mpsc, oneshot};
 use crate::red::peticiones::Peticion;
 use crate::red::protocolo::MensajeHost;
 use crate::red::sala::SalaGuardada;
+use crate::red::transporte::Via;
 use crate::red::vista::{VistaJugador, diferencias, vista_para};
 use crate::tablero_general::almacen::{Almacen, bloquear};
 use crate::tablero_general::estado::EstadoPartida;
@@ -85,6 +87,17 @@ pub struct EstadoSala {
     pub enlaces: Vec<EnlaceSala>,
     /// Si la app lleva dentro la página de los jugadores (hace falta para la dirección propia y la red local).
     pub pagina_incluida: bool,
+    /// Cuántos relés de Nostr tiene conectados la escucha de ofertas (solo en peer to peer, con la sala abierta).
+    pub senal: Option<EstadoSenal>,
+    /// «Solo respaldo»: el de la sala abierta o, cerrada, el que se usará al abrirse (`red.json`).
+    pub solo_respaldo: bool,
+}
+
+/// Cómo va el intercambio automático de la conexión directa (para desarrollo: «Relés: 3 de 4»).
+#[derive(Serialize, Clone, Debug, PartialEq)]
+pub struct EstadoSenal {
+    pub reles_conectados: usize,
+    pub reles_total: usize,
 }
 
 /// Un enlace para los jugadores y de qué red es (el nombre de la interfaz en red local, p. ej. «Radmin VPN»).
@@ -103,6 +116,8 @@ pub struct MapaCompartido {
 /// Un jugador conectado: por dónde se le envía y qué vio la última vez (para mandarle solo lo que cambia).
 struct Conexion {
     id_conexion: u64,
+    /// Por dónde entró: directo (WebRTC) o por el respaldo (WebSocket).
+    via: Via,
     enviar: mpsc::UnboundedSender<MensajeHost>,
     ultima: VistaJugador,
 }
@@ -129,10 +144,14 @@ struct SalaAbierta {
     generacion: u64,
     /// Cómo se publicó al abrirla (no cambia mientras está abierta).
     respaldo: config::Respaldo,
+    /// «Solo respaldo» al abrirla: sin conexión directa (ver `config::ConfigRed`).
+    solo_respaldo: bool,
     /// En red local: las IPs de este equipo al abrir la sala (cada una con su enlace).
     lan: Vec<config::DireccionLan>,
     /// Códigos de la conexión directa ya usados (su `n`): no se aceptan dos veces. Los últimos 256.
     codigos_vistos: VecDeque<String>,
+    /// La escucha de ofertas por relés de Nostr (peer to peer): se para al soltarla (al cerrar la sala).
+    senal: Option<senal::Senal>,
 }
 
 impl SalaAbierta {
@@ -149,9 +168,14 @@ impl SalaAbierta {
         !matches!(self.respaldo, config::Respaldo::Lan { .. })
     }
 
-    /// La huella del certificado de la conexión directa, si la sala va en peer to peer.
+    /// Si se ofrece la conexión directa: peer to peer y sin «solo respaldo».
+    fn directa(&self) -> bool {
+        self.p2p() && !self.solo_respaldo
+    }
+
+    /// La huella del certificado de la conexión directa, si se ofrece (va en el enlace como `f`).
     fn huella(&self) -> Option<String> {
-        if self.p2p() { self.sala.huella() } else { None }
+        if self.directa() { self.sala.huella() } else { None }
     }
 
     /// Los enlaces para los jugadores. Con el túnel de Cloudflare, a la página de GitHub Pages con `t`; con la
@@ -161,7 +185,7 @@ impl SalaAbierta {
             config::Respaldo::Cloudflare => self
                 .tunel
                 .iter()
-                .map(|t| EnlaceSala { etiqueta: "Túnel de Cloudflare".into(), url: enlace(URL_CLIENTE, t, &self.sala) })
+                .map(|t| EnlaceSala { etiqueta: "Túnel de Cloudflare".into(), url: format!("{URL_CLIENTE}#t={t}&{}", self.fragmento()) })
                 .collect(),
             config::Respaldo::Propio { .. } => self
                 .tunel
@@ -214,11 +238,6 @@ impl SalaAbierta {
         let esquema = if matches!(self.respaldo, config::Respaldo::Lan { .. }) { "http" } else { "https" };
         self.direcciones().into_iter().filter(|d| !d.starts_with("webrtc:")).map(|d| format!("{esquema}://{d}")).collect()
     }
-}
-
-/// El enlace que se pasa a los jugadores. Todo va tras el `#`: el navegador nunca lo envía a ningún servidor.
-pub fn enlace(url_cliente: &str, tunel: &str, sala: &SalaGuardada) -> String {
-    format!("{url_cliente}#t={tunel}&s={}&k={}", sala.id, sala.secreto)
 }
 
 pub struct Red {
@@ -425,6 +444,8 @@ impl Red {
                 respaldo: s.respaldo.clone(),
                 enlaces: if matches!(s.fase, Fase::Abierta) { s.enlaces() } else { Vec::new() },
                 pagina_incluida: pagina::incluida(),
+                senal: s.senal.as_ref().map(|x| EstadoSenal { reles_conectados: x.conectados(), reles_total: x.total() }),
+                solo_respaldo: s.solo_respaldo,
             },
             None => EstadoSala {
                 fase: Fase::Cerrada,
@@ -436,6 +457,8 @@ impl Red {
                 respaldo: config::leer(&self.raiz).respaldo,
                 enlaces: Vec::new(),
                 pagina_incluida: pagina::incluida(),
+                senal: None,
+                solo_respaldo: config::leer(&self.raiz).solo_respaldo,
             },
         }
     }
@@ -464,7 +487,9 @@ impl Red {
     /// preparando se descarta.
     pub async fn abrir(self: &Arc<Self>) -> Result<(), String> {
         let generacion = self.siguiente_id.fetch_add(1, Ordering::Relaxed);
-        let respaldo = config::leer(&self.raiz).respaldo;
+        let config_red = config::leer(&self.raiz);
+        let respaldo = config_red.respaldo.clone();
+        let solo_respaldo = config_red.solo_respaldo;
         {
             let mut dentro = self.dentro();
             if dentro.is_some() {
@@ -473,7 +498,7 @@ impl Red {
             let dir = self.almacen.dir();
             let mut sala = SalaGuardada::leer_o_crear(&dir)?;
             // Peer to peer: la identidad de la conexión directa (su huella va en el enlace)
-            if !matches!(respaldo, config::Respaldo::Lan { .. }) && sala.asegurar_certificado()? {
+            if !matches!(respaldo, config::Respaldo::Lan { .. }) && !solo_respaldo && sala.asegurar_certificado()? {
                 sala.guardar(&dir)?;
             }
             *dentro = Some(SalaAbierta {
@@ -490,7 +515,9 @@ impl Red {
                 generacion,
                 respaldo: respaldo.clone(),
                 lan: Vec::new(),
+                solo_respaldo,
                 codigos_vistos: VecDeque::new(),
+                senal: None,
             });
         }
         *bloquear(&self.ultimo_error) = None;
@@ -543,6 +570,7 @@ impl Red {
                 s.tunel = Some(direccion);
                 s.fase = Fase::Abierta;
             });
+            self.iniciar_senal(generacion);
             self.avisar();
             return Ok(());
         }
@@ -572,8 +600,38 @@ impl Red {
         });
         // Si se cerró mientras tanto, `proceso` sigue aquí y se mata al soltarlo (kill_on_drop)
         drop(proceso);
+        self.iniciar_senal(generacion);
         self.avisar();
         Ok(())
+    }
+
+    /// Empieza a escuchar las ofertas de los jugadores en los relés de Nostr (peer to peer). Si ya había una
+    /// escucha, se sustituye (y la vieja se para). Hay que llamarla dentro de un runtime de tokio. En los tests no se
+    /// toca la red de verdad.
+    fn iniciar_senal(self: &Arc<Self>, generacion: u64) {
+        if cfg!(test) {
+            return;
+        }
+        // Sin conexión directa (red local o «solo respaldo») no hay nada que escuchar
+        if !self.dentro().as_ref().is_some_and(|s| s.generacion == generacion && s.directa()) {
+            return;
+        }
+        let reles: Vec<String> = senal::RELES.iter().map(|r| r.to_string()).collect();
+        match senal::arrancar(self, &reles, true) {
+            // Si la sala ya no es la de esta apertura, `s` se suelta aquí y la escucha se para
+            Ok(s) => {
+                self.con_sala(generacion, |sala| sala.senal = Some(s));
+            }
+            Err(e) => eprintln!("No se pudo empezar la señalización por relés: {e}"),
+        }
+    }
+
+    /// Tras cambiar el enlace: las etiquetas de los relés salen del secreto, así que la escucha se rehace.
+    pub fn reiniciar_senal(self: &Arc<Self>) {
+        let generacion = self.dentro().as_ref().filter(|s| s.directa() && matches!(s.fase, Fase::Abierta)).map(|s| s.generacion);
+        if let Some(g) = generacion {
+            self.iniciar_senal(g);
+        }
     }
 
     /// Cambia la sala si sigue siendo la de `generacion`. Devuelve si lo era.
@@ -692,6 +750,11 @@ impl Red {
         self.dentro().as_ref().map(|s| s.conexiones.keys().copied().collect()).unwrap_or_default()
     }
 
+    /// Por dónde está conectado cada jugador conectado.
+    pub fn vias(&self) -> HashMap<IdJugador, Via> {
+        self.dentro().as_ref().map(|s| s.conexiones.iter().map(|(id, c)| (*id, c.via)).collect()).unwrap_or_default()
+    }
+
     // ------------------------------------------------------------------
     // Envíos
     // ------------------------------------------------------------------
@@ -777,13 +840,13 @@ impl Red {
 
     /// Da de alta la conexión de `id` con su vista inicial. Se llama con el estado cogido (`est`), así ningún
     /// delta se cuela entre la vista enviada y la guardada. Una conexión anterior del mismo jugador se cierra.
-    fn conectar(&self, est: &EstadoPartida, id: IdJugador, enviar: mpsc::UnboundedSender<MensajeHost>) -> Option<u64> {
+    fn conectar(&self, est: &EstadoPartida, id: IdJugador, enviar: mpsc::UnboundedSender<MensajeHost>, via: Via) -> Option<u64> {
         let vista = vista_para(id, est);
         let mut dentro = self.dentro();
         let s = dentro.as_mut()?;
         let id_conexion = self.nuevo_id();
         let _ = enviar.send(MensajeHost::Vista { vista: vista.clone() });
-        let anterior = s.conexiones.insert(id, Conexion { id_conexion, enviar, ultima: vista });
+        let anterior = s.conexiones.insert(id, Conexion { id_conexion, via, enviar, ultima: vista });
         if let Some(a) = anterior {
             let _ = a.enviar.send(MensajeHost::Rechazado { motivo: "Has entrado desde otra pestaña o dispositivo".into() });
         }
@@ -859,7 +922,9 @@ impl Red {
             generacion: 0,
             respaldo: config::Respaldo::Cloudflare,
             lan: Vec::new(),
+            solo_respaldo: false,
             codigos_vistos: VecDeque::new(),
+            senal: None,
         });
         let (puerto, apagar) = servidor::arrancar(self.clone(), std::net::Ipv4Addr::LOCALHOST, 0).await.unwrap();
         self.dentro().as_mut().unwrap().apagar_servidor = Some(apagar);
@@ -883,7 +948,9 @@ impl Red {
             generacion: 0,
             respaldo: config::Respaldo::Cloudflare,
             lan: Vec::new(),
+            solo_respaldo: false,
             codigos_vistos: VecDeque::new(),
+            senal: None,
         });
     }
 
@@ -916,7 +983,7 @@ mod tests {
     async fn con_direccion_propia_se_abre_sin_tunel_en_su_puerto_y_el_enlace_la_lleva() {
         let red = red_en("red_propia");
         let puerto = puerto_libre();
-        let propia = config::ConfigRed { respaldo: config::Respaldo::Propio { url: "https://Mesa.Mi-Dominio.es/".into(), puerto } };
+        let propia = config::ConfigRed { respaldo: config::Respaldo::Propio { url: "https://Mesa.Mi-Dominio.es/".into(), puerto }, ..Default::default() };
         red.guardar_config(&propia).unwrap();
         assert_eq!(red.estado(&EstadoPartida::default()).respaldo, propia.respaldo, "cerrada: enseña la que usará");
 
@@ -943,11 +1010,49 @@ mod tests {
         red.cerrar();
     }
 
+    /// «Solo respaldo»: la sala no ofrece lo directo. Y el enlace de Cloudflare sí lo ofrece si no está marcado.
+    #[tokio::test]
+    async fn solo_respaldo_quita_la_huella_del_enlace_y_la_conexion_directa() {
+        let red = red_en("red_solo_respaldo");
+        red.abrir_local().await;
+        let e = red.estado(&EstadoPartida::default());
+        let enlace = e.enlace.clone().unwrap();
+        assert!(enlace.contains("#t=prueba.local&s="), "{enlace}");
+        assert_eq!(enlace.split("&f=").nth(1).map(str::len), Some(43), "Cloudflare también ofrece lo directo: {enlace}");
+        assert!(!e.solo_respaldo);
+        assert!(red.dentro().as_ref().unwrap().direcciones().iter().any(|d| d.starts_with("webrtc:")));
+        assert!(red.datos_directo().is_ok());
+
+        red.dentro().as_mut().unwrap().solo_respaldo = true;
+        let e = red.estado(&EstadoPartida::default());
+        let enlace = e.enlace.unwrap();
+        assert!(!enlace.contains("&f="), "sin huella no se intenta lo directo: {enlace}");
+        assert!(e.solo_respaldo);
+        assert!(!red.dentro().as_ref().unwrap().direcciones().iter().any(|d| d.starts_with("webrtc:")));
+        assert!(red.datos_directo().unwrap_err().contains("no ofrece conexión directa"));
+        red.cerrar();
+    }
+
+    #[tokio::test]
+    async fn solo_respaldo_al_abrir_no_crea_certificado_ni_escucha_en_los_reles() {
+        let red = red_en("red_solo_respaldo_abrir");
+        let puerto = puerto_libre();
+        let config = config::ConfigRed { respaldo: config::Respaldo::Propio { url: "https://mi.dominio.es".into(), puerto }, solo_respaldo: true };
+        red.guardar_config(&config).unwrap();
+        assert!(red.estado(&EstadoPartida::default()).solo_respaldo, "cerrada: enseña lo que usará");
+        red.abrir().await.unwrap();
+        let e = red.estado(&EstadoPartida::default());
+        assert!(!e.enlace.unwrap().contains("&f="));
+        assert!(e.senal.is_none());
+        assert!(SalaGuardada::leer_o_crear(&red.almacen.dir()).unwrap().certificado_dtls.is_none(), "no se crea certificado");
+        red.cerrar();
+    }
+
     #[tokio::test]
     async fn en_red_local_escucha_en_todas_las_interfaces_y_da_un_enlace_por_ip() {
         let red = red_en("red_lan");
         let puerto = puerto_libre();
-        red.guardar_config(&config::ConfigRed { respaldo: config::Respaldo::Lan { puerto } }).unwrap();
+        red.guardar_config(&config::ConfigRed { respaldo: config::Respaldo::Lan { puerto }, ..Default::default() }).unwrap();
         red.abrir().await.unwrap();
         let e = red.estado(&EstadoPartida::default());
         assert_eq!(e.fase, Fase::Abierta);
@@ -973,7 +1078,7 @@ mod tests {
     async fn la_prueba_del_token_vale_para_sus_direcciones_y_no_para_otra() {
         let red = red_en("red_prueba");
         let puerto = puerto_libre();
-        red.guardar_config(&config::ConfigRed { respaldo: config::Respaldo::Lan { puerto } }).unwrap();
+        red.guardar_config(&config::ConfigRed { respaldo: config::Respaldo::Lan { puerto }, ..Default::default() }).unwrap();
         red.abrir().await.unwrap();
         let token = red.cambiar_sala(|s| Ok(s.nuevo_token(7))).unwrap();
         let dentro = red.dentro();
@@ -994,7 +1099,7 @@ mod tests {
         let red = red_en("red_ocupado");
         let ocupado = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let puerto = ocupado.local_addr().unwrap().port();
-        red.guardar_config(&config::ConfigRed { respaldo: config::Respaldo::Propio { url: "https://mi.dominio.es".into(), puerto } }).unwrap();
+        red.guardar_config(&config::ConfigRed { respaldo: config::Respaldo::Propio { url: "https://mi.dominio.es".into(), puerto }, ..Default::default() }).unwrap();
         let error = red.abrir().await.unwrap_err();
         assert!(error.contains("ocupado"), "{error}");
         let e = red.estado(&EstadoPartida::default());
@@ -1003,9 +1108,7 @@ mod tests {
     }
 
     #[test]
-    fn el_enlace_lleva_todo_tras_el_almohadilla_y_el_origen_se_saca_bien() {
-        let sala = SalaGuardada { id: "S".into(), secreto: "K".into(), hash_contrasena: None, tokens: vec![], certificado_dtls: None };
-        assert_eq!(enlace("https://a.github.io/vtt-rol/", "x.trycloudflare.com", &sala), "https://a.github.io/vtt-rol/#t=x.trycloudflare.com&s=S&k=K");
+    fn el_origen_de_la_pagina_se_saca_bien() {
         assert_eq!(origen("https://a.github.io/vtt-rol/"), "https://a.github.io");
         assert_eq!(origen("http://localhost:5173/"), "http://localhost:5173");
     }

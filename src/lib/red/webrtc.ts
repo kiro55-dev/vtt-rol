@@ -1,9 +1,9 @@
 // src/lib/red/webrtc.ts
 //
 // La conexión DIRECTA con el host (WebRTC, punto a punto), del lado del navegador (espejo de src-tauri/src/red/webrtc.rs).
-// En esta fase la señalización es a mano: el jugador genera un código (su oferta, cifrada con el secreto del enlace),
-// se lo pasa al host y pega el código de respuesta que este le devuelve. Antes de aceptar la respuesta se comprueba
-// que su certificado es el del enlace (`f`): así nadie que haya visto el código puede hacerse pasar por el host.
+// La señalización es automática (`senal.ts`, relés de Nostr): el jugador genera su oferta (cifrada con el secreto del
+// enlace), la publica y recibe el código de respuesta del host. Antes de aceptar la respuesta se comprueba que su
+// certificado es el del enlace (`f`): así nadie (ni un relé) puede hacerse pasar por el host.
 //
 // Canales (los abre el navegador): `juego` (fiable y ordenado: el protocolo, en trozos de ≤ 16 KiB), `imagenes`
 // (fiable y ordenado) y `arrastre` (sin orden ni reintentos: el arrastre en vivo).
@@ -37,8 +37,10 @@ export function huellasDelSdp(sdp: string): string[] {
 }
 
 export interface Directo {
-  /** Mi oferta, lista para copiar y pasársela al host. */
+  /** Mi oferta (cifrada), para publicarla en los relés. */
   codigo: string;
+  /** El `n` de la oferta: la respuesta del host lleva el mismo. */
+  n: string;
   /** El código que devuelve el host. Lanza un texto para enseñar si no vale (otra sala, vieja, de otro host…). */
   usarRespuesta(codigoRespuesta: string): Promise<void>;
   transporte: TransporteCliente;
@@ -90,11 +92,13 @@ export async function crearDirecto(enlace: Enlace, oyentes: OyentesTransporte): 
   });
   const sdp = pc.localDescription?.sdp;
   if (!sdp) throw "No se pudo preparar la conexión directa";
-  const codigo = await cifrar(enlace.secreto, { tipo: "oferta", sdp, t: Date.now(), n: nonceAleatorio() });
+  const n = nonceAleatorio();
+  const codigo = await cifrar(enlace.secreto, { tipo: "oferta", sdp, t: Date.now(), n });
 
   const abierto = () => juego.readyState === "open" && imagenes.readyState === "open";
   return {
     codigo,
+    n,
     async usarRespuesta(codigoRespuesta: string) {
       const c = await descifrar(enlace.secreto, codigoRespuesta);
       if (c.tipo !== "respuesta") throw "Eso no es la respuesta del host (¿has pegado tu propio código?)";

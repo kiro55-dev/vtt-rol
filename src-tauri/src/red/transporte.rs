@@ -36,8 +36,19 @@ pub enum Trama {
     Efimero(String),
 }
 
+/// Por dónde llega un jugador (lo enseña la ventana de la sala al host, para saber si la conexión directa funcionó).
+#[derive(serde::Serialize, Clone, Copy, Debug, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum Via {
+    /// Peer to peer (WebRTC).
+    Directo,
+    /// El WebSocket: el túnel, la dirección propia o la red local.
+    Respaldo,
+}
+
 /// La conexión con un jugador, vista como dos colas.
 pub struct Transporte {
+    pub via: Via,
     /// Hacia el jugador (acotada: ver arriba).
     pub tx: mpsc::Sender<Trama>,
     /// Lo que llega del jugador. `None` al cerrarse la conexión.
@@ -103,7 +114,7 @@ pub fn desde_websocket(socket: WebSocket) -> Transporte {
         }
     });
 
-    Transporte { tx, rx }
+    Transporte { via: Via::Respaldo, tx, rx }
 }
 
 /// Dos extremos unidos en memoria (para los tests: uno hace de host y el otro de jugador).
@@ -111,7 +122,7 @@ pub fn desde_websocket(socket: WebSocket) -> Transporte {
 pub fn en_memoria() -> (Transporte, Transporte) {
     let (a_tx, a_rx) = mpsc::channel(CAPACIDAD);
     let (b_tx, b_rx) = mpsc::channel(CAPACIDAD);
-    (Transporte { tx: a_tx, rx: b_rx }, Transporte { tx: b_tx, rx: a_rx })
+    (Transporte { via: Via::Respaldo, tx: a_tx, rx: b_rx }, Transporte { via: Via::Respaldo, tx: b_tx, rx: a_rx })
 }
 
 #[cfg(test)]

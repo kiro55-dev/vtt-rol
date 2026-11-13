@@ -121,7 +121,7 @@ async fn rechazar(tx: &Emisor, motivo: &str) {
 
 /// Atiende a un jugador de principio a fin, venga por donde venga (`Transporte`).
 pub(crate) async fn atender(red: Arc<Red>, transporte: Transporte) {
-    let Transporte { tx, mut rx } = transporte;
+    let Transporte { tx, mut rx, via } = transporte;
     // Mientras no es nadie ocupa una plaza: así no se pueden abrir cientos de conexiones que se quedan esperando
     let Some(plaza) = red.plaza_saludo() else {
         return rechazar(&tx, "Hay demasiada gente entrando a la vez: prueba en un momento").await;
@@ -181,7 +181,7 @@ pub(crate) async fn atender(red: Arc<Red>, transporte: Transporte) {
     let avisos = canal.clone();
     let id_conexion = {
         let est = red.estado_partida(); // estado → dentro
-        red.conectar(&est, yo.id, canal)
+        red.conectar(&est, yo.id, canal, via)
     };
     let Some(id_conexion) = id_conexion else {
         return rechazar(&tx, "La sala se ha cerrado").await;
@@ -1135,6 +1135,7 @@ mod tests {
         let (red, _) = red_de_prueba("srv_memoria", None).await;
         let mut j = entrar_mem(&red, "Ana").await;
         assert_eq!(red.conectados(), vec![1]);
+        assert_eq!(red.vias().get(&1), Some(&transporte::Via::Respaldo), "por un WebSocket (o su equivalente en memoria) es el respaldo");
         // Una acción recibe su respuesta por el mismo transporte
         mandar_mem(&j, &MensajeCliente::Pedir { id: 1, peticion: serde_json::json!({ "cmd": "tirar_dado", "comando": "1d6" }) }).await;
         assert!(matches!(leer_mem(&mut j).await, MensajeHost::Respuesta { id: 1, .. }));

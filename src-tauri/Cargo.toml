@@ -49,6 +49,13 @@ bytes = "1"
 aes-gcm = "0.10"
 hkdf = "0.12"
 flate2 = "1.1.11"
+# Señalización automática por relés de Nostr (fase 4): firma Schnorr de los eventos y cliente WebSocket con TLS.
+# En el proceso conviven dos proveedores de rustls (aws-lc-rs por reqwest, ring por webrtc): el TLS de los relés
+# se construye con `ring` explícito (red/senal.rs), nunca con el proveedor «por defecto» (que entraría en pánico).
+k256 = { version = "0.13", default-features = false, features = ["schnorr", "std"] }
+tokio-tungstenite = { version = "0.30.0", features = ["rustls-tls-webpki-roots"] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+webpki-roots = "1"
 
 # Read the optimization guideline for more details: https://tauri.app/concept/size/#cargo-configuration
 [profile.release]
@@ -63,4 +70,3 @@ tar = "0.4.46"
 
 [dev-dependencies]
 reqwest = { version = "0.13", default-features = false, features = ["rustls", "stream", "json"] }
-tokio-tungstenite = "0.30.0"

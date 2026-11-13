@@ -24,12 +24,16 @@ export interface EnlaceSala {
 /** Espejo de `red::config::ConfigRed` (`<datos de la app>/red.json`, de este equipo). */
 export interface ConfigRed {
   respaldo: Respaldo;
+  /** No ofrecer la conexión directa: los jugadores no verán la IP del host. */
+  solo_respaldo: boolean;
 }
 
 /** Espejo de `red::EstadoSala`. */
 export interface EstadoSala {
   fase: Fase;
   enlace: string | null;
+  /** «Solo respaldo»: el de la sala abierta o, cerrada, el que se usará al abrirse. */
+  solo_respaldo: boolean;
   pide_contrasena: boolean;
   conectados: number[];
   /** Los mapas que ven los jugadores (los de la casilla marcada, de todas las zonas). */
@@ -41,13 +45,20 @@ export interface EstadoSala {
   enlaces: EnlaceSala[];
   /** Si la app lleva dentro la página de los jugadores (hace falta para la dirección propia y la red local). */
   pagina_incluida: boolean;
+  /** Cuántos relés de Nostr tiene conectados la escucha de ofertas (solo en peer to peer, con la sala abierta). */
+  senal: { reles_conectados: number; reles_total: number } | null;
 }
+
+/** Por dónde entró un jugador: directo (peer to peer) o por el respaldo (túnel, dirección propia o red local). */
+export type ViaJugador = "directo" | "respaldo";
 
 /** Espejo de `red::comandos::JugadorSala`. */
 export interface JugadorSala {
   id: number;
   nombre: string;
   conectado: boolean;
+  /** Por dónde entró, si está conectado. */
+  via: ViaJugador | null;
   /** Ids de las fichas del banco de las que es propietario. */
   fichas: number[];
 }
@@ -61,7 +72,9 @@ const CERRADA: EstadoSala = {
   error: null,
   respaldo: { tipo: "Cloudflare" },
   enlaces: [],
-  pagina_incluida: true
+  pagina_incluida: true,
+  senal: null,
+  solo_respaldo: false
 };
 
 class Sala {
@@ -107,11 +120,6 @@ class Sala {
   async cerrar() {
     await invoke("cerrar_sala");
     await this.recargar();
-  }
-
-  /** Conexión directa a mano: el código que pasa un jugador (su oferta) → el código de respuesta para devolverle. */
-  responderCodigo(codigo: string): Promise<string> {
-    return invoke<string>("responder_codigo_directo", { codigo });
   }
 
   /** Cómo se publica la sala en este equipo. */

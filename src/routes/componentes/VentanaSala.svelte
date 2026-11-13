@@ -31,27 +31,30 @@
   let ocupado = $state(false);
 
   // «Cómo se publica»: lo que se está editando (se guarda con el botón; solo con la sala cerrada)
-  // Dos formas principales: «Peer to peer» (con el respaldo que elijas: Cloudflare o tu dirección propia) y «Red local»
-  let forma = $state<"p2p" | "lan">("p2p");
+  // Tres formas: «Peer to peer» (directo, con un respaldo), «Túnel» (todos por un servidor: sin conexión directa) y «Red
+  // local». En las dos primeras se elige Cloudflare o tu propia dirección.
+  let forma = $state<"p2p" | "tunel" | "lan">("p2p");
   let respaldo = $state<"Cloudflare" | "Propio">("Cloudflare");
   const modo = $derived<"Cloudflare" | "Propio" | "Lan">(forma === "lan" ? "Lan" : respaldo);
   let urlPropia = $state("");
   let puertoPropio = $state(8080);
   let configGuardada = $state("");
   const configEditada = $derived(
-    JSON.stringify(
-      modo === "Cloudflare"
-        ? { respaldo: { tipo: "Cloudflare" } }
-        : modo === "Propio"
-          ? { respaldo: { tipo: "Propio", url: urlPropia.trim(), puerto: Number(puertoPropio) } }
-          : { respaldo: { tipo: "Lan", puerto: Number(puertoPropio) } }
-    )
+    JSON.stringify({
+      respaldo:
+        modo === "Cloudflare"
+          ? { tipo: "Cloudflare" }
+          : modo === "Propio"
+            ? { tipo: "Propio", url: urlPropia.trim(), puerto: Number(puertoPropio) }
+            : { tipo: "Lan", puerto: Number(puertoPropio) },
+      solo_respaldo: forma === "tunel"
+    })
   );
   const hayCambios = $derived(configEditada !== configGuardada);
 
   async function cargarConfig() {
     const c = await sala.leerConfig();
-    forma = c.respaldo.tipo === "Lan" ? "lan" : "p2p";
+    forma = c.respaldo.tipo === "Lan" ? "lan" : c.solo_respaldo ? "tunel" : "p2p";
     if (c.respaldo.tipo !== "Lan") respaldo = c.respaldo.tipo;
     if (c.respaldo.tipo === "Propio") {
       urlPropia = c.respaldo.url;
@@ -60,18 +63,6 @@
       puertoPropio = c.respaldo.puerto;
     }
     configGuardada = JSON.stringify(c);
-  }
-
-  // Conexión directa a mano: el código del jugador y el que se le devuelve
-  let codigoJugador = $state("");
-  let codigoRespuesta = $state("");
-
-  function responderJugador() {
-    void hacer(async () => {
-      codigoRespuesta = "";
-      codigoRespuesta = await sala.responderCodigo(codigoJugador);
-      codigoJugador = "";
-    });
   }
 
   /** «Abrir sala» abre con lo que está elegido ahora: si cambió, se guarda antes (sin botón aparte). */
@@ -160,13 +151,9 @@
     <div class="seccion">
       <span class="etiqueta">Cómo llegan los jugadores</span>
       {#if fase.tipo === "Cerrada"}
-        <label class="opcion">
-          <input type="radio" name="forma" value="p2p" bind:group={forma} />
-          <span>Peer to peer <span class="nota">(directo con cada jugador, con un respaldo por si su red no lo permite)</span></span>
-        </label>
-        {#if forma === "p2p"}
+        {#snippet eleccion(titulo: string)}
           <div class="subopciones">
-            <span class="nota">Respaldo:</span>
+            <span class="nota">{titulo}</span>
             <label class="opcion">
               <input type="radio" name="respaldo" value="Cloudflare" bind:group={respaldo} />
               <span>Cloudflare <span class="nota">(automático, sin configurar nada)</span></span>
@@ -176,6 +163,24 @@
               <span>Tu propia dirección <span class="nota">(tu dominio, Tailscale funnel, ngrok, tu proxy https…)</span></span>
             </label>
           </div>
+        {/snippet}
+        <label class="opcion">
+          <input type="radio" name="forma" value="p2p" bind:group={forma} />
+          <span>Peer to peer <span class="nota">(directo con cada jugador, con un respaldo por si su red no lo permite)</span></span>
+        </label>
+        {#if forma === "p2p"}
+          {@render eleccion("Respaldo:")}
+          <span class="nota">Con la conexión directa, tú y cada jugador veis la IP pública del otro. Si no quieres que vean la tuya, usa «Túnel».</span>
+        {/if}
+        <label class="opcion">
+          <input type="radio" name="forma" value="tunel" bind:group={forma} />
+          <span>Túnel <span class="nota">(todos entran por un servidor, sin conexión directa: nadie ve tu IP)</span></span>
+        </label>
+        {#if forma === "tunel"}
+          {@render eleccion("Servidor:")}
+          {#if respaldo === "Propio"}
+            <span class="nota">Con tu propia dirección, los jugadores solo ven esa dirección, no tu IP.</span>
+          {/if}
         {/if}
         <label class="opcion">
           <input type="radio" name="forma" value="lan" bind:group={forma} />
@@ -214,30 +219,14 @@
               : "Por un túnel de Cloudflare."}
           Cierra la sala para cambiarlo.
         </span>
+        {#if sala.estado.solo_respaldo && sala.estado.respaldo.tipo !== "Lan"}
+          <span class="nota">Por túnel: no se ofrece la conexión directa.</span>
+        {/if}
+        {#if sala.estado.senal}
+          <span class="nota">Intercambio automático de la conexión directa: relés conectados {sala.estado.senal.reles_conectados} de {sala.estado.senal.reles_total}.</span>
+        {/if}
       {/if}
     </div>
-
-    <!-- Conexión directa a mano (peer to peer): el jugador te pasa su código y tú le devuelves el tuyo -->
-    {#if fase.tipo === "Abierta" && sala.estado.respaldo.tipo !== "Lan"}
-      <div class="seccion">
-        <span class="etiqueta">Conexión directa (peer to peer)</span>
-        <span class="nota">
-          Quien abre el enlace ve «Conexión directa»: te pasa su código, lo pegas aquí y le devuelves la respuesta. Si no
-          quiere (o no puede), entra por el respaldo.
-        </span>
-        <textarea class="codigo" rows="3" placeholder="Código del jugador" maxlength="16384" bind:value={codigoJugador}></textarea>
-        <div class="fila">
-          <button type="button" class="btn-secundario" disabled={ocupado || !codigoJugador.trim()} onclick={responderJugador}>Responder</button>
-        </div>
-        {#if codigoRespuesta}
-          <span class="nota">Pásale este código:</span>
-          <textarea class="codigo" rows="3" readonly value={codigoRespuesta} onfocus={(e) => e.currentTarget.select()}></textarea>
-          <div class="fila">
-            <button type="button" class="btn-secundario" onclick={() => copiar(codigoRespuesta)}>{copiado === codigoRespuesta ? "¡Copiado!" : "Copiar respuesta"}</button>
-          </div>
-        {/if}
-      </div>
-    {/if}
 
     <!-- Enlace -->
     <div class="seccion">
@@ -327,6 +316,11 @@
             >
               <span class="punto">●</span> {j.nombre}
             </button>
+            {#if j.conectado && j.via}
+              <span class="via" class:directo={j.via === "directo"} title={ayuda(j.via === "directo" ? "Conectado directo (peer to peer)" : "Conectado por el respaldo (túnel, dirección propia o red local)")}>
+                {sala.estado.respaldo.tipo === "Lan" ? "Red local" : j.via === "directo" ? "Directo" : "Respaldo"}
+              </span>
+            {/if}
             <div class="fichas">
               {#each j.fichas as id (id)}
                 <span class="ficha">
@@ -425,6 +419,8 @@
   }
   .nombre-jugador .punto { color: #52525b; }
   .nombre-jugador.conectado .punto { color: #22c55e; }
+  .via { font-size: 10px; padding: 1px 6px; border-radius: 8px; background: #422006; color: #fbbf24; }
+  .via.directo { background: #052e16; color: #4ade80; }
   .fichas { display: flex; gap: 3px; flex-wrap: wrap; flex: 1; }
   .ficha { background: #14532d; color: #bbf7d0; border-radius: 3px; padding: 1px 4px; font-size: 10px; display: flex; gap: 3px; align-items: center; }
   .ficha button { background: none; border: none; color: #86efac; cursor: pointer; font-size: 9px; padding: 0; }
@@ -434,10 +430,6 @@
   .opcion { display: flex; align-items: center; gap: 6px; font-size: 12px; cursor: pointer; }
   .nota.aviso { color: #fbbf24; }
   .subopciones { display: flex; flex-direction: column; gap: 3px; margin-left: 22px; }
-  textarea.codigo {
-    padding: 6px 8px; border-radius: 4px; background: #09090b; border: 1px solid #3f3f46; color: #e4e4e7;
-    font: 11px monospace; word-break: break-all; resize: vertical;
-  }
   .input-texto.input-puerto { width: 80px; flex: none; }
 
   .fantasma {
