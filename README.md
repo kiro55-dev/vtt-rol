@@ -1,6 +1,6 @@
-Este es un proyecto para facilitar hacer rol (no necesariamente D&D) online, quiero que sea fácil de usar, código abierto, funcione a través de la red sin servidores.
+Este es un proyecto para facilitar hacer rol (100% independiente de que sea DND u otro) online, quiero que sea fácil de usar, código abierto, funcione a través de la red sin servidores en la medida de posible.
 
-La idea es una aplicación donde todo lo que hay en la pantalla es mera información visual de apoyo, con el objetivo de que no exista una mecánica de un rol en concreto sin implementar y que por culpa de eso no puedas actuar en consecuencia.
+La idea es una aplicación donde todo lo que hay en la pantalla es mera información visual de apoyo, con el objetivo de que no exista una mecánica de un rol en concreto sin implementar y que por culpa de eso no puedas actuar en consecuencia. Tus datos se guardan completamente local y evidentemente no tienes limitaciones de uso más allá del almacenamiento del ordenador.
 
 Existe un banco de zonas y mapas, de manera análoga es como si cada zona fuese una cajón donde dentro tienes guardado varios mapas y sacas el que quiera, pudiendo alternar, borrar, renombrar y reordenar cuando quieras. Arrastrando una imagen desde fuera del programa se crea el mapa de la zona activa, o si arrastras una imagen a un mapa ya creado se sustituye la imagen asiganda.
 
