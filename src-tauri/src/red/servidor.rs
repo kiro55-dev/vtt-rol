@@ -896,6 +896,40 @@ mod tests {
         assert!(matches!(aviso, AvisoTablero::RecorridoBorrado { .. }), "y el último estado (borrado) es el último que ve");
     }
 
+    /// Cada recorrido llega marcado con QUIEN lo hizo (lo pone el host, no el cliente) y con su color, para que cada
+    /// pantalla guarde una flecha por persona y se vean todas a la vez.
+    #[tokio::test]
+    async fn el_host_marca_de_quien_es_cada_recorrido_sin_fiarse_del_cliente() {
+        let sala = sala_con_app("srv_recorrido_de").await;
+        let (mut ana, id_ana, _) = entrar(&sala, "Ana").await;
+        let (mut luis, id_luis, _) = entrar(&sala, "Luis").await;
+        poner_fichas(&sala, id_ana);
+        vaciar(&mut ana).await;
+        vaciar(&mut luis).await;
+
+        let recorrido = |color: [u8; 3], jugador: u16| MensajeCliente::Aviso {
+            aviso: serde_json::from_value(json!({ "Recorrido": { "id_mapa": 1, "casillas": [{ "x": 0, "y": 0 }, { "x": 1, "y": 0 }], "color": color, "jugador": jugador } }))
+                .unwrap(),
+        };
+        // Ana dice que el recorrido es de otro (99): no vale, Luis lo ve como de Ana, con su color
+        mandar(&mut ana, &recorrido([10, 20, 30], 99)).await;
+        let MensajeHost::Aviso { aviso } = leer(&mut luis).await else { panic!("Luis no vio el recorrido de Ana") };
+        assert!(matches!(aviso, AvisoTablero::Recorrido { jugador, color: [10, 20, 30], .. } if jugador == id_ana), "{aviso:?}");
+        // La pantalla del host también lo recibe marcado
+        assert!(
+            sala.eventos.lock().unwrap().iter().any(|(e, p)| e == "aviso-tablero" && p["Recorrido"]["jugador"] == id_ana && p["Recorrido"]["color"][0] == 10),
+            "el host lo ve como de Ana"
+        );
+        // Y a la inversa: Ana ve el de Luis como de Luis (a la vez, cada pantalla guarda una por persona)
+        mandar(&mut luis, &recorrido([200, 0, 0], 0)).await;
+        let MensajeHost::Aviso { aviso } = leer(&mut ana).await else { panic!("Ana no vio el recorrido de Luis") };
+        assert!(matches!(aviso, AvisoTablero::Recorrido { jugador, color: [200, 0, 0], .. } if jugador == id_luis), "{aviso:?}");
+        // Quitarlo también va marcado
+        mandar(&mut ana, &MensajeCliente::Aviso { aviso: serde_json::from_value(json!({ "RecorridoBorrado": { "id_mapa": 1, "jugador": 99 } })).unwrap() }).await;
+        let MensajeHost::Aviso { aviso } = leer(&mut luis).await else { panic!("Luis no vio el borrado") };
+        assert!(matches!(aviso, AvisoTablero::RecorridoBorrado { jugador, .. } if jugador == id_ana), "{aviso:?}");
+    }
+
     #[tokio::test]
     async fn el_arrastre_como_aviso_sin_respuesta_llega_a_los_demas_y_el_de_una_ficha_ajena_no() {
         let sala = sala_con_app("srv_aviso").await;

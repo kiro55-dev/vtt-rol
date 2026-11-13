@@ -10,11 +10,13 @@
   import VentanaParametros from "./VentanaParametros.svelte";
   import VentanaPartidas from "./VentanaPartidas.svelte";
   import VentanaSala from "./VentanaSala.svelte";
+  import VentanaColorFlecha from "./VentanaColorFlecha.svelte";
   import { sala } from "$lib/sala.svelte";
   import { esJugador } from "$lib/modo";
 
   let parametrosAbierto = $state(false);
   let partidasAbierto = $state(false);
+  let colorAbierto = $state(false);
 
   // Más opciones de configuración se añaden aquí
   const opcionesHost = $derived([
@@ -54,7 +56,12 @@
     texto: ajustesVista.tutoriales ? "Quitar tutoriales" : "Mostrar tutoriales",
     accion: () => ajustesVista.alternarTutoriales()
   });
-  const opciones = $derived(esJugador ? [opcionTutoriales] : [...opcionesHost, opcionTutoriales]);
+  // El color de mi flecha y de mi ping en el tablero: cada uno el suyo (host y jugadores)
+  const opcionColor = {
+    texto: "Color de mi flecha…",
+    accion: () => (colorAbierto = true)
+  };
+  const opciones = $derived(esJugador ? [opcionColor, opcionTutoriales] : [...opcionesHost, opcionColor, opcionTutoriales]);
 </script>
 
 <aside class="panel-izquierdo">
@@ -82,6 +89,10 @@
 
 {#if sala.ventanaAbierta}
   <VentanaSala />
+{/if}
+
+{#if colorAbierto}
+  <VentanaColorFlecha onCerrar={() => (colorAbierto = false)} />
 {/if}
 
 <style>

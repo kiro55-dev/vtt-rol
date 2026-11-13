@@ -807,14 +807,16 @@ impl Red {
         }
     }
 
-    /// Ping o recorrido de un jugador: lo ven el host y los demás jugadores (no él, que ya lo dibujó).
+    /// Ping o recorrido de un jugador: lo ven el host y los demás jugadores (no él, que ya lo dibujó). El recorrido
+    /// sale marcado con quien lo hizo (`con_jugador`), sin fiarse de lo que mande el cliente.
     pub(crate) fn reenviar_aviso(&self, de: IdJugador, aviso: &AvisoTablero) {
+        let aviso = aviso.clone().con_jugador(de);
         if let Some(s) = self.dentro().as_ref() {
             for (_, c) in s.conexiones.iter().filter(|(id, _)| **id != de) {
                 let _ = c.enviar.send(MensajeHost::Aviso { aviso: aviso.clone() });
             }
         }
-        self.emitir("aviso-tablero", serde_json::to_value(aviso).unwrap_or_default());
+        self.emitir("aviso-tablero", serde_json::to_value(&aviso).unwrap_or_default());
     }
 
     /// Lo que ha subido `jugador` en esta sala.

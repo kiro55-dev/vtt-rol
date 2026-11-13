@@ -127,7 +127,7 @@ describe("conexión del jugador: pedirle acciones al host", () => {
     const { c, ws } = await conectado();
     const antes = ws.enviados.filter((m) => m.tipo === "Pedir").length;
     const { avisoRecorrido, avisoRecorridoBorrado } = await import("$lib/avisosTablero");
-    const a = avisoRecorrido(1, [{ x: 1, y: 1 }, { x: 2, y: 1 }]);
+    const a = avisoRecorrido(1, [{ x: 1, y: 1 }, { x: 2, y: 1 }], [10, 20, 30]);
     const b = avisoRecorridoBorrado(1);
     await expect(c.responder("avisar_tablero", { aviso: a })).resolves.toBeNull();
     await expect(c.responder("avisar_tablero", { aviso: b })).resolves.toBeNull();

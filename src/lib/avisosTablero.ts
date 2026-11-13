@@ -8,11 +8,14 @@
 import { invoke } from "$lib/backend";
 import { listen } from "$lib/backend";
 import type { Casilla } from "$lib/partida.svelte";
+import type { ColorMarca } from "$lib/colorMarca";
 
 export type AvisoTablero =
-  | { Ping: { id_mapa: number; casilla: Casilla } }
-  | { Recorrido: { id_mapa: number; casillas: Casilla[] } }
-  | { RecorridoBorrado: { id_mapa: number } }
+  /** `color`: el de quien lo hace (los avisos de antes no lo traen: verde) */
+  | { Ping: { id_mapa: number; casilla: Casilla; color?: ColorMarca } }
+  /** `jugador`: de quién es (0 = el host); lo pone el host al reenviarla, lo que mande el cliente no vale */
+  | { Recorrido: { id_mapa: number; casillas: Casilla[]; color?: ColorMarca; jugador?: number } }
+  | { RecorridoBorrado: { id_mapa: number; jugador?: number } }
   /** Las instancias que el emisor tiene con el foco (no va ligado a un mapa) */
   | { Foco: { ids_instancias: number[] } }
   /** Alguien arrastra estas fichas y ahora pasan por esas casillas (centro de cada una); la posición real se guarda al soltar */
@@ -27,9 +30,9 @@ export interface PiezaArrastrada {
 
 export const EVENTO_AVISO = "aviso-tablero";
 
-export const avisoPing = (id_mapa: number, casilla: Casilla): AvisoTablero => ({ Ping: { id_mapa, casilla } });
-export const avisoRecorrido = (id_mapa: number, casillas: readonly Casilla[]): AvisoTablero => ({
-  Recorrido: { id_mapa, casillas: [...casillas] }
+export const avisoPing = (id_mapa: number, casilla: Casilla, color: ColorMarca): AvisoTablero => ({ Ping: { id_mapa, casilla, color: [...color] } });
+export const avisoRecorrido = (id_mapa: number, casillas: readonly Casilla[], color: ColorMarca): AvisoTablero => ({
+  Recorrido: { id_mapa, casillas: [...casillas], color: [...color] }
 });
 export const avisoRecorridoBorrado = (id_mapa: number): AvisoTablero => ({ RecorridoBorrado: { id_mapa } });
 /**

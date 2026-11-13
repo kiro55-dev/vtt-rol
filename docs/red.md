@@ -123,7 +123,7 @@ https://kiro55-dev.github.io/OpenRoll/#t=…&s=…&k=…
     aparte para no retrasar al juego) y `arrastre` (**sin orden ni reintentos**: el arrastre en vivo; si se pierde uno,
     el siguiente lo sustituye). Con la conexión directa se arma un `Transporte` y corre el **mismo `atender`**: saludo,
     contraseña, permisos y topes son los mismos que por el túnel.
-  - **Protocolo 7** (el 8 añade `OfertaDirecta`, ver arriba): `MensajeCliente::Aviso { aviso }` (el arrastre del jugador, sin respuesta ni cola) y
+  - **Protocolo 7** (el 8 añade `OfertaDirecta`, ver arriba; el 9, el color y el `jugador` de los avisos de ping y recorrido del tablero): `MensajeCliente::Aviso { aviso }` (el arrastre del jugador, sin respuesta ni cola) y
     `AvisoTablero::Arrastre`/`ArrastreFin` con un número `n` creciente por pantalla; `arrastreAjeno` ignora uno más
     viejo que el último visto (y un `Arrastre` retrasado justo tras soltar). Por el WebSocket todo va por el único canal.
   - El host contesta en cuanto tiene el primer candidato público (`srflx`) + 300 ms, o a los 1,5 s, sin esperar a que

@@ -203,15 +203,40 @@ pub struct PiezaArrastrada {
     pub casilla: Casilla,
 }
 
+/// El color de las marcas de cada persona (rojo, verde, azul). El de antes de que cada uno tuviera el suyo: el verde de la flecha.
+pub type ColorMarca = [u8; 3];
+
+pub fn color_verde() -> ColorMarca {
+    [34, 197, 94]
+}
+
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 pub enum AvisoTablero {
-    /// Clic central: onda sobre una casilla.
-    Ping { id_mapa: u16, casilla: Casilla },
+    /// Clic central: onda sobre una casilla, del color de quien la hace.
+    Ping {
+        id_mapa: u16,
+        casilla: Casilla,
+        #[serde(default = "color_verde")]
+        color: ColorMarca,
+    },
     /// Arrastre con el botón derecho: casillas desde la de salida hasta la actual.
-    /// Se envía de nuevo cada vez que cambia.
-    Recorrido { id_mapa: u16, casillas: Vec<Casilla> },
-    /// El recorrido ya no se muestra (el emisor hizo otro clic).
-    RecorridoBorrado { id_mapa: u16 },
+    /// Se envía de nuevo cada vez que cambia. `color`: el de quien la dibuja. `jugador`: de quién es (0 = el host); lo
+    /// pone SIEMPRE el host al reenviarla (`con_jugador`), lo que mande el cliente no vale: así cada pantalla guarda una
+    /// flecha por persona y se ven todas a la vez.
+    Recorrido {
+        id_mapa: u16,
+        casillas: Vec<Casilla>,
+        #[serde(default = "color_verde")]
+        color: ColorMarca,
+        #[serde(default)]
+        jugador: u16,
+    },
+    /// El recorrido ya no se muestra (el emisor hizo otro clic). `jugador`: el de quien lo quita (lo pone el host).
+    RecorridoBorrado {
+        id_mapa: u16,
+        #[serde(default)]
+        jugador: u16,
+    },
     /// Las instancias que el emisor tiene con el foco ahora (vacío = ninguna). Sustituye al anterior.
     /// No va ligado a un mapa.
     Foco { ids_instancias: Vec<u16> },
@@ -240,7 +265,7 @@ impl AvisoTablero {
         match self {
             Self::Ping { id_mapa, .. }
             | Self::Recorrido { id_mapa, .. }
-            | Self::RecorridoBorrado { id_mapa }
+            | Self::RecorridoBorrado { id_mapa, .. }
             | Self::Arrastre { id_mapa, .. }
             | Self::ArrastreFin { id_mapa, .. } => Some(*id_mapa),
             Self::Foco { .. } => None,
@@ -256,6 +281,16 @@ impl AvisoTablero {
         } else {
             Err("El foco nombra una instancia que no existe".into())
         }
+    }
+
+    /// El mismo aviso, marcado como de `jugador` (en los de recorrido; el resto no cambia). Lo usa el host al reenviar
+    /// lo que manda un jugador, para que nadie pueda hacerse pasar por otro.
+    pub fn con_jugador(mut self, de: u16) -> Self {
+        match &mut self {
+            Self::Recorrido { jugador, .. } | Self::RecorridoBorrado { jugador, .. } => *jugador = de,
+            _ => {}
+        }
+        self
     }
 
     /// Comprueba que el aviso tiene sentido en ese mapa (casillas dentro y recorrido razonable).
@@ -483,18 +518,18 @@ mod tests {
     #[test]
     fn los_avisos_se_validan_contra_el_mapa() {
         let m = mapa_de_prueba();
-        let ping = |x, y| AvisoTablero::Ping { id_mapa: 3, casilla: c(x, y) };
+        let ping = |x, y| AvisoTablero::Ping { id_mapa: 3, casilla: c(x, y), color: color_verde() };
         assert!(ping(19, 9).validar(&m).is_ok());
         assert!(ping(20, 0).validar(&m).is_err());
         assert!(ping(0, 10).validar(&m).is_err());
 
-        let recorrido = |v: Vec<Casilla>| AvisoTablero::Recorrido { id_mapa: 3, casillas: v };
+        let recorrido = |v: Vec<Casilla>| AvisoTablero::Recorrido { id_mapa: 3, casillas: v, color: color_verde(), jugador: 0 };
         assert!(recorrido(vec![c(0, 0), c(1, 0)]).validar(&m).is_ok());
         assert!(recorrido(vec![]).validar(&m).is_err());
         assert!(recorrido(vec![c(0, 0), c(20, 0)]).validar(&m).is_err());
         assert!(recorrido(vec![c(0, 0); MAX_CASILLAS_RECORRIDO + 1]).validar(&m).is_err());
 
-        assert!(AvisoTablero::RecorridoBorrado { id_mapa: 3 }.validar(&m).is_ok());
+        assert!(AvisoTablero::RecorridoBorrado { id_mapa: 3, jugador: 0 }.validar(&m).is_ok());
 
         let pieza = |id, x, y| PiezaArrastrada { id_instancia: id, casilla: c(x, y) };
         let arrastre = |v: Vec<PiezaArrastrada>| AvisoTablero::Arrastre { id_mapa: 3, piezas: v, n: 1 };
@@ -526,13 +561,26 @@ mod tests {
     #[test]
     fn el_formato_de_los_avisos_es_estable() {
         // Es lo que viajará por la red y lo que espera el front: no cambiarlo sin cambiar src/lib/avisosTablero.ts
-        let ping = AvisoTablero::Ping { id_mapa: 3, casilla: c(4, 5) };
+        let ping = AvisoTablero::Ping { id_mapa: 3, casilla: c(4, 5), color: [1, 2, 3] };
         let json = serde_json::to_string(&ping).unwrap();
-        assert_eq!(json, r#"{"Ping":{"id_mapa":3,"casilla":{"x":4,"y":5}}}"#);
+        assert_eq!(json, r#"{"Ping":{"id_mapa":3,"casilla":{"x":4,"y":5},"color":[1,2,3]}}"#);
         assert_eq!(serde_json::from_str::<AvisoTablero>(&json).unwrap(), ping);
 
         let borrado: AvisoTablero = serde_json::from_str(r#"{"RecorridoBorrado":{"id_mapa":3}}"#).unwrap();
-        assert_eq!(borrado, AvisoTablero::RecorridoBorrado { id_mapa: 3 });
+        assert_eq!(borrado, AvisoTablero::RecorridoBorrado { id_mapa: 3, jugador: 0 });
+        // Los avisos de antes de los colores (sin `color` ni `jugador`) siguen valiendo: verde y del host
+        let viejo: AvisoTablero = serde_json::from_str(r#"{"Recorrido":{"id_mapa":3,"casillas":[{"x":0,"y":0}]}}"#).unwrap();
+        assert_eq!(viejo, AvisoTablero::Recorrido { id_mapa: 3, casillas: vec![c(0, 0)], color: color_verde(), jugador: 0 });
+        let viejo_ping: AvisoTablero = serde_json::from_str(r#"{"Ping":{"id_mapa":3,"casilla":{"x":4,"y":5}}}"#).unwrap();
+        assert_eq!(viejo_ping, AvisoTablero::Ping { id_mapa: 3, casilla: c(4, 5), color: color_verde() });
+        // Un color fuera de 0–255 no entra
+        assert!(serde_json::from_str::<AvisoTablero>(r#"{"Ping":{"id_mapa":3,"casilla":{"x":4,"y":5},"color":[1,2,300]}}"#).is_err());
+        // El host marca de quién es (solo en los de recorrido)
+        let r = AvisoTablero::Recorrido { id_mapa: 3, casillas: vec![c(0, 0)], color: [9, 9, 9], jugador: 77 };
+        assert!(matches!(r.con_jugador(2), AvisoTablero::Recorrido { jugador: 2, color: [9, 9, 9], .. }));
+        assert!(matches!(AvisoTablero::RecorridoBorrado { id_mapa: 3, jugador: 5 }.con_jugador(2), AvisoTablero::RecorridoBorrado { jugador: 2, .. }));
+        let p = AvisoTablero::Ping { id_mapa: 3, casilla: c(0, 0), color: [1, 1, 1] };
+        assert_eq!(p.clone().con_jugador(2), p, "el ping no lleva jugador");
 
         let arrastre = AvisoTablero::Arrastre { id_mapa: 3, piezas: vec![PiezaArrastrada { id_instancia: 7, casilla: c(4, 5) }], n: 9 };
         let json = serde_json::to_string(&arrastre).unwrap();

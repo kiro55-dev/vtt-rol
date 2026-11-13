@@ -23,20 +23,21 @@ beforeEach(async () => {
 describe("avisos del tablero", () => {
   it("el formato es el que serializa Rust", () => {
     // Mismos JSON que comprueba el test de tablero.rs
-    expect(lib.avisoPing(3, { x: 4, y: 5 })).toEqual({ Ping: { id_mapa: 3, casilla: { x: 4, y: 5 } } });
+    expect(lib.avisoPing(3, { x: 4, y: 5 }, [1, 2, 3])).toEqual({ Ping: { id_mapa: 3, casilla: { x: 4, y: 5 }, color: [1, 2, 3] } });
+    expect(lib.avisoRecorrido(3, [{ x: 0, y: 0 }], [9, 8, 7])).toEqual({ Recorrido: { id_mapa: 3, casillas: [{ x: 0, y: 0 }], color: [9, 8, 7] } });
     expect(lib.avisoRecorridoBorrado(3)).toEqual({ RecorridoBorrado: { id_mapa: 3 } });
     expect(lib.avisoFoco([4, 7])).toEqual({ Foco: { ids_instancias: [4, 7] } });
   });
 
   it("el recorrido enviado es una copia: seguir moviendo el ratón no lo cambia", () => {
     const casillas = [{ x: 0, y: 0 }];
-    const aviso = lib.avisoRecorrido(1, casillas) as any;
+    const aviso = lib.avisoRecorrido(1, casillas, [0, 0, 0]) as any;
     casillas.push({ x: 1, y: 0 });
     expect(aviso.Recorrido.casillas).toHaveLength(1);
   });
 
   it("enviar llama al comando de Rust con el aviso", () => {
-    const aviso = lib.avisoPing(2, { x: 1, y: 1 });
+    const aviso = lib.avisoPing(2, { x: 1, y: 1 }, [0, 0, 0]);
     lib.enviarAviso(aviso);
     expect(invoke).toHaveBeenCalledWith("avisar_tablero", { aviso });
   });
@@ -55,7 +56,7 @@ describe("avisos del tablero", () => {
     const dejar = lib.alRecibirAviso((a) => recibidos.push(a));
     await new Promise((r) => setTimeout(r, 0));
 
-    const ping = lib.avisoPing(1, { x: 2, y: 3 });
+    const ping = lib.avisoPing(1, { x: 2, y: 3 }, [0, 0, 0]);
     escuchar({ payload: ping });
     expect(recibidos).toEqual([ping]);
 

@@ -5,6 +5,7 @@
 // estas mismas funciones).
 import type { Casilla } from "$lib/partida.svelte";
 import { centroDe, mundoAPantalla, type Camara, type RejillaTablero } from "$lib/tablero";
+import { COLOR_VERDE, rgbCss, type ColorMarca } from "$lib/colorMarca";
 
 // ---------------------------------------------------------------------------
 // Ping
@@ -12,6 +13,8 @@ import { centroDe, mundoAPantalla, type Camara, type RejillaTablero } from "$lib
 
 /** Duración total de un ping (ms). */
 export const DURACION_PING_MS = 1000;
+/** El amarillo del ping de antes de que cada uno tuviera su color. */
+const COLOR_PING: ColorMarca = [250, 204, 21];
 // Dos ondas que crecen desde el centro de la casilla; la segunda sale un poco después.
 const ONDAS = [0, 0.25];
 const DURACION_ONDA = 0.75; // fracción del total
@@ -21,6 +24,8 @@ const RADIO_CASILLAS = 1.5;
 export interface Ping {
   casilla: Casilla;
   inicio: number; // performance.now()
+  /** El color de quien lo hizo (si no, el amarillo de siempre). */
+  color?: ColorMarca;
 }
 
 /** Radio (0..1 del máximo) y opacidad de una onda; null si aún no ha salido o ya terminó. */
@@ -41,6 +46,7 @@ export function dibujarPing(ctx: CanvasRenderingContext2D, cam: Camara, rejilla:
   const p = mundoAPantalla(cam, centro.x, centro.y);
   const radioMax = RADIO_CASILLAS * Math.max(rejilla.anchoCasilla, rejilla.altoCasilla) * cam.zoom;
   const grosor = Math.max(2, Math.min(6, radioMax * 0.06));
+  const color = ping.color ?? COLOR_PING;
 
   ctx.save();
   for (const retraso of ONDAS) {
@@ -49,17 +55,17 @@ export function dibujarPing(ctx: CanvasRenderingContext2D, cam: Camara, rejilla:
     ctx.globalAlpha = o.alfa;
     ctx.beginPath();
     ctx.arc(p.x, p.y, Math.max(1, o.radio * radioMax), 0, Math.PI * 2);
-    ctx.fillStyle = "rgba(250, 204, 21, 0.15)";
+    ctx.fillStyle = rgbCss(color, 0.15);
     ctx.fill();
     ctx.lineWidth = grosor;
-    ctx.strokeStyle = "rgb(250, 204, 21)";
+    ctx.strokeStyle = rgbCss(color);
     ctx.stroke();
   }
   // Punto central que se apaga durante todo el ping
   ctx.globalAlpha = Math.max(0, 1 - progreso);
   ctx.beginPath();
   ctx.arc(p.x, p.y, grosor * 1.5, 0, Math.PI * 2);
-  ctx.fillStyle = "rgb(250, 204, 21)";
+  ctx.fillStyle = rgbCss(color);
   ctx.fill();
   ctx.restore();
 }
@@ -68,13 +74,17 @@ export function dibujarPing(ctx: CanvasRenderingContext2D, cam: Camara, rejilla:
 // Recorrido
 // ---------------------------------------------------------------------------
 
-const VERDE = "rgb(34, 197, 94)";
-
 /**
  * Flecha que une los centros de las casillas del recorrido, con la casilla de salida marcada y el
  * número de casillas recorridas junto a la punta.
  */
-export function dibujarRecorrido(ctx: CanvasRenderingContext2D, cam: Camara, rejilla: RejillaTablero, recorrido: readonly Casilla[]) {
+export function dibujarRecorrido(
+  ctx: CanvasRenderingContext2D,
+  cam: Camara,
+  rejilla: RejillaTablero,
+  recorrido: readonly Casilla[],
+  color: ColorMarca = COLOR_VERDE
+) {
   if (recorrido.length === 0) return;
   const casillaPx = Math.min(rejilla.anchoCasilla, rejilla.altoCasilla) * cam.zoom;
   const puntos = recorrido.map((c) => {
@@ -87,7 +97,7 @@ export function dibujarRecorrido(ctx: CanvasRenderingContext2D, cam: Camara, rej
   // Casilla de salida
   const salida = recorrido[0];
   const esquina = mundoAPantalla(cam, salida.x * rejilla.anchoCasilla, salida.y * rejilla.altoCasilla);
-  ctx.fillStyle = "rgba(250, 204, 21, 0.55)";
+  ctx.fillStyle = rgbCss(color, 0.4);
   ctx.fillRect(esquina.x, esquina.y, rejilla.anchoCasilla * cam.zoom, rejilla.altoCasilla * cam.zoom);
 
   if (puntos.length > 1) {
@@ -123,8 +133,8 @@ export function dibujarRecorrido(ctx: CanvasRenderingContext2D, cam: Camara, rej
     triangulo();
     ctx.stroke();
 
-    ctx.strokeStyle = VERDE;
-    ctx.fillStyle = VERDE;
+    ctx.strokeStyle = rgbCss(color);
+    ctx.fillStyle = rgbCss(color);
     ctx.lineWidth = grosor;
     trazar();
     ctx.stroke();

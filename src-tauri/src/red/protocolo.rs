@@ -28,7 +28,7 @@ use crate::tablero_general::modelos::Jugador;
 use crate::tablero_general::tablero::AvisoTablero;
 
 /// Súbelo cuando cambie cualquier mensaje.
-pub const VERSION_PROTOCOLO: u32 = 8;
+pub const VERSION_PROTOCOLO: u32 = 9;
 
 /// Primer byte de un trozo binario: de una imagen que baja (host → jugador) o que sube (jugador → host).
 pub const TROZO_BAJADA: u8 = 1;
@@ -155,8 +155,8 @@ mod tests {
             json(&MensajeHost::Identificate { pide_contrasena: true, error: None }),
             r#"{"tipo":"Identificate","pide_contrasena":true}"#
         );
-        let aviso = MensajeHost::Aviso { aviso: AvisoTablero::Ping { id_mapa: 1, casilla: Casilla { x: 2, y: 3 } } };
-        assert_eq!(json(&aviso), r#"{"tipo":"Aviso","aviso":{"Ping":{"id_mapa":1,"casilla":{"x":2,"y":3}}}}"#);
+        let aviso = MensajeHost::Aviso { aviso: AvisoTablero::Ping { id_mapa: 1, casilla: Casilla { x: 2, y: 3 }, color: [4, 5, 6] } };
+        assert_eq!(json(&aviso), r#"{"tipo":"Aviso","aviso":{"Ping":{"id_mapa":1,"casilla":{"x":2,"y":3},"color":[4,5,6]}}}"#);
         // Un cambio vacío no lleva campos
         assert_eq!(json(&MensajeHost::Cambios { cambios: Cambios::default() }), r#"{"tipo":"Cambios","cambios":{}}"#);
         // Ida y vuelta

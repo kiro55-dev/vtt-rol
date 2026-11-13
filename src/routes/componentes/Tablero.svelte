@@ -16,6 +16,8 @@
     fichasDelMapa, fichaEnPunto, fichasEnRectangulo, imagenDe, dibujarFicha, dibujarDestino, dibujarFormas, rectanguloFicha
   } from '$lib/fichasTablero';
   import { dibujarPing, dibujarRecorrido, pingVivo } from '$lib/marcasTablero';
+  import { ajustesVista } from '$lib/ajustesVista.svelte';
+  import { RecorridosAjenos } from '$lib/recorridosAjenos';
   import {
     alRecibirAviso, enviarAviso, avisoPing, avisoRecorrido, avisoRecorridoBorrado, avisoArrastre, avisoArrastreFin
   } from '$lib/avisosTablero';
@@ -67,9 +69,10 @@
   /** @type {import("$lib/partida.svelte").Casilla[]} */
   let recorrido = $state.raw([]);
   let midiendo = false;
-  // Recorrido de otro jugador, recibido por aviso
-  /** @type {import("$lib/partida.svelte").Casilla[]} */
-  let recorridoAjeno = $state.raw([]);
+  // Las flechas de los demás (una por persona, cada una de su color), recibidas por aviso. `versionAjenos` avisa al
+  // pintado de que cambiaron.
+  const recorridosAjenos = new RecorridosAjenos();
+  let versionAjenos = $state(0);
 
   // Pings en curso (clic central). No es reactivo: los anima el bucle de pintado mientras duren.
   /** @type {import("$lib/marcasTablero").Ping[]} */
@@ -355,8 +358,8 @@
       const p = puntoDelMapa(e);
       const casilla = casillaEn(casillas, p.x, p.y);
       if (casilla) {
-        lanzarPing(casilla);
-        if (idMapa() !== null) enviarAviso(avisoPing(idMapa(), casilla));
+        lanzarPing(casilla, ajustesVista.colorFlecha);
+        if (idMapa() !== null) enviarAviso(avisoPing(idMapa(), casilla, ajustesVista.colorFlecha));
       }
     }
     pulsacionCentral = null;
@@ -415,7 +418,7 @@
     recorrido = casillas;
     const id = idMapa();
     if (id === null) return;
-    recorridoPendiente = casillas.length ? avisoRecorrido(id, casillas) : avisoRecorridoBorrado(id);
+    recorridoPendiente = casillas.length ? avisoRecorrido(id, casillas, ajustesVista.colorFlecha) : avisoRecorridoBorrado(id);
     if (!casillas.length) return enviarRecorridoPendiente();
     if (relojRecorrido) return; // ya hay un envío programado: llevará el último estado
     const espera = Math.max(0, MIN_ENTRE_RECORRIDOS_MS - (performance.now() - ultimoEnvioRecorrido));
@@ -426,20 +429,21 @@
   /** @param {import("$lib/avisosTablero").AvisoTablero} aviso */
   function alLlegarAviso(aviso) {
     if ('Ping' in aviso) {
-      if (aviso.Ping.id_mapa === idMapa()) lanzarPing(aviso.Ping.casilla);
-    } else if ('Recorrido' in aviso) {
-      if (aviso.Recorrido.id_mapa === idMapa()) recorridoAjeno = aviso.Recorrido.casillas;
-    } else if ('RecorridoBorrado' in aviso) {
-      if (aviso.RecorridoBorrado.id_mapa === idMapa()) recorridoAjeno = [];
+      if (aviso.Ping.id_mapa === idMapa()) lanzarPing(aviso.Ping.casilla, aviso.Ping.color);
+    } else if ('Recorrido' in aviso || 'RecorridoBorrado' in aviso) {
+      if (recorridosAjenos.recibir(aviso, idMapa())) versionAjenos++;
     } else if ('Arrastre' in aviso || 'ArrastreFin' in aviso) {
       arrastreAjeno.recibir(aviso); // solo se dibuja la de este mapa (`arrastreAjeno.de`)
     }
     // `Foco` lo atiende +page.svelte (lo ven también «Fichas activas» y la lista de parámetros)
   }
 
-  /** @param {import("$lib/partida.svelte").Casilla} casilla */
-  function lanzarPing(casilla) {
-    pings.push({ casilla, inicio: performance.now() });
+  /**
+   * @param {import("$lib/partida.svelte").Casilla} casilla
+   * @param {import("$lib/colorMarca").ColorMarca} [color] el de quien lo hizo
+   */
+  function lanzarPing(casilla, color) {
+    pings.push({ casilla, inicio: performance.now(), color });
     marcasPendientes = true;
     programar();
   }
@@ -558,7 +562,8 @@
       mapaDeLasMarcas = id;
       arrastreAjeno.limpiar();
       recorrido = [];
-      recorridoAjeno = [];
+      recorridosAjenos.limpiar();
+      versionAjenos++;
       pings.length = 0;
       midiendo = false;
     });
@@ -710,7 +715,7 @@
 
   // Depende de la cámara, del tamaño del tablero, de las casillas y del recorrido.
   $effect(() => {
-    void [cam, ancho, alto, dpr, casillas, recorrido, recorridoAjeno, recuadro];
+    void [cam, ancho, alto, dpr, casillas, recorrido, versionAjenos, ajustesVista.colorFlecha, recuadro];
     marcasPendientes = true;
     programar();
   });
@@ -718,8 +723,8 @@
   function pintarMarcas() {
     const ctx = prepararCanvas(canvasMarcas, ancho, alto, dpr);
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0); // en px de pantalla
-    dibujarRecorrido(ctx, cam, casillas, recorridoAjeno);
-    dibujarRecorrido(ctx, cam, casillas, recorrido);
+    for (const f of recorridosAjenos.lista()) dibujarRecorrido(ctx, cam, casillas, f.casillas, f.color);
+    dibujarRecorrido(ctx, cam, casillas, recorrido, ajustesVista.colorFlecha);
     if (recuadro) dibujarRecuadro(ctx, recuadro.desde, recuadro.hasta);
 
     const ahora = performance.now();

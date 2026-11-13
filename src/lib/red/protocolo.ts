@@ -5,7 +5,7 @@
 import type { AvisoTablero } from "$lib/avisosTablero";
 import type { DefinicionParametro, Entidad, Instancia, Mapa, Zona } from "$lib/partida.svelte";
 
-export const VERSION_PROTOCOLO = 8;
+export const VERSION_PROTOCOLO = 9;
 
 export interface Jugador {
   id: number;
