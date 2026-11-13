@@ -223,7 +223,11 @@
           <span class="nota">Por túnel: no se ofrece la conexión directa.</span>
         {/if}
         {#if sala.estado.senal}
-          <span class="nota">Intercambio automático de la conexión directa: relés conectados {sala.estado.senal.reles_conectados} de {sala.estado.senal.reles_total}.</span>
+          {#if sala.estado.senal.reles_total === 0}
+            <span class="nota aviso">Ningún relé de Nostr responde: la conexión directa se negocia solo por el túnel (sin plan B).</span>
+          {:else}
+            <span class="nota">La conexión directa se negocia por el túnel; plan B si no responde: relés de Nostr conectados {sala.estado.senal.reles_conectados} de {sala.estado.senal.reles_total}.</span>
+          {/if}
         {/if}
       {/if}
     </div>

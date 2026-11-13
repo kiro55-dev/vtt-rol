@@ -57,22 +57,36 @@ https://kiro55-dev.github.io/OpenRoll/#t=…&s=…&k=…
 - **Conexión directa (peer to peer, WebRTC)**: la forma principal «Peer to peer» (con respaldo Cloudflare o tu
   dirección propia). El jugador habla **directo** con el host, sin pasar por ningún servidor; el respaldo es el
   WebSocket de siempre, para quien tenga una red que no lo permita (NAT estricto) o no quiera. Librería del host:
-  `webrtc` 0.21.1 (por qué esta: ver «Por qué webrtc-rs», abajo). Los dos se ponen de acuerdo **solos**, por relés de Nostr.
+  `webrtc` 0.21.1 (por qué esta: ver «Por qué webrtc-rs», abajo). Los dos se ponen de acuerdo **solos**: por el servidor del host y, con Cloudflare, por relés de Nostr como plan B.
   - **Cómo se conecta** (el jugador no toca nada): si el enlace lleva la huella (`&f=…`) y el navegador puede (WebRTC,
-    WebCrypto y una página https), `conexion.svelte.ts` intenta lo directo: abre los canales, publica su oferta en los
-    relés (`src/lib/red/senal.ts`) y espera la respuesta del host (hasta 10 s); si llega, comprueba la huella y espera a
-    que el host hable (hasta 12 s). **Cualquier fallo o tiempo agotado → entra por el respaldo sin pedir nada** (relés
-    caídos, NAT estricto, navegador sin WebRTC, reloj mal puesto…). Si la directa se cae en pleno juego, se sigue por el
-    respaldo.
-  - **Señalización por relés de Nostr** (`red/senal.rs` ↔ `senal.ts`): el contenido es el MISMO código cifrado de más
+    WebCrypto y una página https), `conexion.svelte.ts` intenta lo directo: abre los canales y negocia **por el servidor del host** (el WebSocket del
+    túnel o de su dirección, un mensaje `OfertaDirecta` antes del saludo; **2 s** para abrir el WebSocket y **2,5 s** para la respuesta, contados desde que se envía la oferta, así una conexión lenta no se come el margen del host). Con la respuesta comprueba
+    la huella y espera a que el host hable (**6 s**). Nunca se prueban servidor y relés a la vez, para no contar la IP a
+    un tercero sin necesidad. Qué pasa si algo falla:
+    - **El servidor no responde** (o dice que no): entra **ya por el respaldo** (sin esperar) y, si el enlace trae relés
+      (solo con Cloudflare), **en segundo plano** los prueba (`#mejoraPorReles`, `src/lib/red/senal.ts`, hasta 6 s) cuando
+      está dentro; si el host contesta por ahí y la directa habla, se **cambia sola** (como una reconexión: se ve
+      «Reconectando…» un instante). Sin token guardado (ventana privada) no se cambia: pediría el nombre otra vez.
+    - **Se negoció pero la directa no abre** (NAT estricto…): entra por el respaldo y se recuerda 30 min (la próxima
+      visita entra directa por el respaldo, sin esperar ni probar relés).
+    - Navegador sin WebRTC, reloj mal puesto…: entra por el respaldo.
+    Si la directa se cae en pleno juego, se sigue por el respaldo y se prueba volver a ella en segundo plano (abajo).
+  - **Negociación por el servidor** (protocolo 8): tras el `Reto` y antes del `Hola`, el navegador manda
+    `OfertaDirecta { codigo }` (el código cifrado de abajo) y el host contesta `RespuestaDirecta { codigo }` o
+    `OfertaDirectaError { error }` (`servidor::atender`; una por conexión; el navegador cierra y usa la directa).
+    Pasa por `Red::responder_oferta`, que aplica el tope de 6 ofertas por minuto compartido con los relés. Con «Túnel» o
+    en red local el host contesta que no ofrece conexión directa. **Con tu propia dirección solo hay esta vía**: la página
+    la sirve el propio host por esa dirección, así que si no responde ni carga la página y los relés no servirían de nada
+    (no se prueban relés, el enlace no lleva `r`, y ningún tercero ve tu IP). Con Cloudflare la página viene de GitHub Pages:
+    si el túnel rápido (sin garantías de servicio) se cae, los relés siguen permitiendo lo directo.
+  - **Señalización por relés de Nostr** (plan B, solo con Cloudflare; `red/senal.rs` ↔ `senal.ts`): el contenido es el MISMO código cifrado de más
     abajo (no hay segundo cifrado) dentro de un evento efímero (kind 27184, que los relés reenvían y no guardan),
     firmado con una clave Schnorr nueva por evento. Las etiquetas con las que se encuentran salen del secreto del
     enlace (HMAC-SHA256, «oferta» y «respuesta»; la respuesta lleva además la etiqueta `x` con el `n` de la oferta). El
-    host (`senal::arrancar`, al abrir la sala en peer to peer) escucha en `senal::RELES` (una tarea por relé, reconecta
-    con espera de 1 s a 60 s) y contesta con `webrtc::responder_con`. Topes: 6 ofertas por minuto, eventos ≤ 32 KiB,
-    `created_at` a ±2 min, y el mismo evento (llega por varios relés) una vez, además de los de abajo. La lista de relés
-    es una constante en Rust y en TS (a cambiar a la vez, como el protocolo); se eligió con
-    pruebas con relés reales (ver «Relés de Nostr», abajo): los relés públicos cambian sus reglas. Con «Generar enlace
+    host (`senal::arrancar`, al abrir la sala en peer to peer) escucha en los relés que eligió (una tarea por relé,
+    reconecta con espera de 1 s a 60 s) y contesta con `webrtc::responder_con`. Topes: 6 ofertas por minuto, eventos ≤ 32 KiB,
+    `created_at` a ±2 min, y el mismo evento (llega por varios relés) una vez, además de los de abajo. Los relés
+    **no son fijos**: ver «Relés de Nostr», abajo. Con «Generar enlace
     nuevo» la escucha se rehace (las etiquetas cambian con el secreto). El TLS de los relés usa un proveedor de rustls
     explícito (`ring`): en el proceso conviven `aws-lc-rs` (reqwest) y `ring` (webrtc), y el «por defecto» entraría en
     pánico. Rust y TS comparten un vector fijo (id y firma del evento, etiquetas).
@@ -109,7 +123,7 @@ https://kiro55-dev.github.io/OpenRoll/#t=…&s=…&k=…
     aparte para no retrasar al juego) y `arrastre` (**sin orden ni reintentos**: el arrastre en vivo; si se pierde uno,
     el siguiente lo sustituye). Con la conexión directa se arma un `Transporte` y corre el **mismo `atender`**: saludo,
     contraseña, permisos y topes son los mismos que por el túnel.
-  - **Protocolo 7**: `MensajeCliente::Aviso { aviso }` (el arrastre del jugador, sin respuesta ni cola) y
+  - **Protocolo 7** (el 8 añade `OfertaDirecta`, ver arriba): `MensajeCliente::Aviso { aviso }` (el arrastre del jugador, sin respuesta ni cola) y
     `AvisoTablero::Arrastre`/`ArrastreFin` con un número `n` creciente por pantalla; `arrastreAjeno` ignora uno más
     viejo que el último visto (y un `Arrastre` retrasado justo tras soltar). Por el WebSocket todo va por el único canal.
   - El host contesta en cuanto tiene el primer candidato público (`srflx`) + 300 ms, o a los 1,5 s, sin esperar a que
@@ -332,18 +346,33 @@ jugador en Chrome y Firefox, mismo PC y otra red real). La elegida es **`webrtc`
 
 ## Relés de Nostr
 
-La lista `senal::RELES` (y su copia en `src/lib/red/senal.ts`) sale de probar relés públicos reales: publicar un evento
-efímero (kind 27184) de ~3 KB con una clave nueva y comprobar que otra conexión lo recibe por su etiqueta. Probados el
-2026-11-13, desde la red del desarrollador:
+Los relés públicos cambian sus reglas (piden pago o NIP-05, no aceptan este tipo de evento, no reenvían, caen…), así que
+**no hay una lista fija**: el host **comprueba cuáles funcionan al abrir la sala**.
 
-- **Funcionaron:** `relay.snort.social` (58 ms de entrega), `relay.primal.net` (92 ms), `nostr.oxtr.dev` (155 ms) y
-  `offchain.pub` (195 ms).
-- **No sirvieron:** `relay.damus.io`, `nos.lol` y `nostr.mom` no entregaron el evento; `purplepag.es` lo rechaza
-  («kind not allowed»); `relay.nostr.band`, `nostr.wine`, `relay.nostr.bg`, `nostr-pub.wellorder.net`,
-  `relay.mostr.pub` y `relay.current.fyi` no conectaron.
+- `senal::CANDIDATOS`: unos diez relés públicos. Al abrir la sala (`Red::iniciar_senal`, con el paso «Comprobando los
+  relés de Nostr…») se prueban todos a la vez (`senal::elegir_de`): una conexión se suscribe a una etiqueta nueva, otra
+  publica un evento efímero de ~3 KB y se espera el `OK` del relé y que la primera lo reciba (6 s como mucho). Se queda
+  con los **4 primeros que pasan** (los más rápidos; normalmente tarda ~1 s en total).
+- Esos relés se guardan en `SalaAbierta.reles` y **viajan en el enlace**: `&r=relay.primal.net,nostr.oxtr.dev,…` (sin
+  `wss://`). El jugador usa exactamente los que el host comprobó (`enlace.reles`; `enlace.ts` solo admite nombres de
+  dominio, hasta 6). Un enlace sin `r` no usa relés.
+- **Si ninguno pasa la prueba**, lo directo se sigue ofreciendo por el túnel (sin plan B): el enlace lleva `f` pero no `r`.
+  La ventana enseña «relés conectados 0 de 0».
+- Con «Generar enlace nuevo» se rehace la escucha con los mismos relés (no se vuelve a probar).
+- **Solo con Cloudflare.** Con tu propia dirección no se prueban ni se usan relés (ver «Negociación por el servidor»).
+- Los relés se prueban cada vez que se abre la sala, no antes: no hay nada que mantener a mano. Para añadir candidatos,
+  basta con ponerlos en `CANDIDATOS` (`wss://host`, sin ruta).
 
-Los relés públicos cambian sus reglas: si la conexión directa deja de ir, lo primero que hay que revisar es esta lista.
-Hay un test que no corre por defecto y comprueba que la escucha del host llega a conectar con los relés reales
+Un sondeo de 25 relés públicos (2026-11-13, desde la red del desarrollador) dio este panorama, que explica por qué hace
+falta probarlos:
+
+- **Funcionaron (5 de 25):** `relay.snort.social`, `relay.primal.net`, `nostr.oxtr.dev`, `offchain.pub` y
+  `nostr.sathoarder.com`.
+- **Rechazaron el evento:** pedían NIP-05 (`nostr.einundzwanzig.space`, `relay.nostrplebs.com`), no admiten ese tipo
+  (`purplepag.es`, `relay.nostr.wirednet.jp`) o no lo reenviaban (`relay.damus.io`, `nos.lol`, `nostr.mom`…).
+- **No conectaron:** una docena de relés (caídos, o sin TLS válido).
+
+Hay un test que no corre por defecto y prueba con los relés reales que la elección y la escucha del host funcionan
 (`cargo test reles_reales -- --ignored`).
 
 ## Lo que falta

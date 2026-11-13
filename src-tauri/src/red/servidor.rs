@@ -132,8 +132,24 @@ pub(crate) async fn atender(red: Arc<Red>, transporte: Transporte) {
     if enviar(&tx, &MensajeHost::Reto { reto: reto.clone() }).await.is_err() {
         return;
     }
-    let Ok(Some(MensajeCliente::Hola { version, sala, secreto, prueba })) = timeout(TIEMPO_SALUDO, recibir(&mut rx)).await else {
-        return rechazar(&tx, "Saludo no válido").await;
+    // Antes del Hola, el navegador puede pedir (una vez) la conexión directa: `OfertaDirecta` → `RespuestaDirecta`. Es la
+    // negociación por el servidor del host (el túnel o su dirección); el código va cifrado con el secreto del enlace.
+    let mut ofrecida = false;
+    let (version, sala, secreto, prueba) = loop {
+        match timeout(TIEMPO_SALUDO, recibir(&mut rx)).await {
+            Ok(Some(MensajeCliente::Hola { version, sala, secreto, prueba })) => break (version, sala, secreto, prueba),
+            Ok(Some(MensajeCliente::OfertaDirecta { codigo })) if !ofrecida => {
+                ofrecida = true;
+                let m = match red.responder_oferta(&codigo).await {
+                    Ok(codigo) => MensajeHost::RespuestaDirecta { codigo },
+                    Err(error) => MensajeHost::OfertaDirectaError { error },
+                };
+                if enviar(&tx, &m).await.is_err() {
+                    return;
+                }
+            }
+            _ => return rechazar(&tx, "Saludo no válido").await,
+        }
     };
     if version != VERSION_PROTOCOLO {
         return rechazar(&tx, "Versión distinta de la del host: recarga la página").await;

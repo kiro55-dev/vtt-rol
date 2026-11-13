@@ -28,7 +28,7 @@ import { esJugador } from "$lib/modo";
 import { claveAlmacen, leerEnlace, urlImagen, urlWebSocket, type Enlace } from "./enlace";
 import { ImagenesRed, claveImagen } from "./imagenesRed";
 import { porWebSocket, type OyentesTransporte, type TransporteCliente } from "./transporte";
-import { pedirRespuesta } from "./senal";
+import { pedirRespuesta, pedirRespuestaPorServidor } from "./senal";
 import { crearDirecto, soportaDirecto, type Directo } from "./webrtc";
 import { VERSION_PROTOCOLO, type Jugador, type MensajeCliente, type MensajeHost, type VistaJugador } from "./protocolo";
 import { aplicarCambios, partesCambiadas, PETICIONES, responder, separarMiniatura, vistaVacia } from "./replica";
@@ -49,7 +49,9 @@ export type EstadoConexion =
 
 const REINTENTAR_DURANTE_MS = 60_000;
 /** Con la respuesta del host ya usada, lo que se espera a que la conexión directa hable antes de pasar al respaldo. */
-const TIEMPO_ABRIR_DIRECTO_MS = 12_000;
+const TIEMPO_ABRIR_DIRECTO_MS = 6000;
+/** Si el servidor del host no negoció lo directo, los relés se prueban en segundo plano a los pocos instantes de entrar. */
+const ESPERA_RELES_MS = 500;
 /** Tras un fallo de lo directo, no se vuelve a intentar al entrar durante este tiempo (se entra ya por el respaldo). */
 const RECORDAR_FALLO_MS = 30 * 60_000;
 /** Tras caerse una directa que había funcionado: cuándo se prueba a volver a ella (en segundo plano, 3 intentos). */
@@ -134,6 +136,8 @@ export class Conexion {
   #huboDirecta = false;
   /** Intentos de volver a lo directo desde la última caída. */
   #mejoras = 0;
+  /** El servidor no negoció lo directo y el enlace trae relés: se prueban en segundo plano (una vez) al estar dentro. */
+  #mejoraPorReles = false;
   #relojMejora: ReturnType<typeof setTimeout> | null = null;
   #mejorando: AbortController | null = null;
   /** Tras caerse la directa, solo se reconecta por el respaldo. */
@@ -396,8 +400,10 @@ export class Conexion {
   }
 
   /**
-   * La conexión directa, sola: abre los canales, intercambia los códigos con el host por los relés (`senal.ts`) y espera
-   * a que hable. Si algo falla o se agota el tiempo, entra por el respaldo sin pedir nada al jugador.
+   * La conexión directa, sola: abre los canales, intercambia los códigos con el host POR SU SERVIDOR (2,5 s como mucho) y
+   * espera a que hable. Si el servidor no negocia, entra ya por el respaldo y, en segundo plano, prueba con los relés
+   * (si el enlace los trae) para cambiarse solo; si negoció y la directa no se abre, entra por el respaldo y lo recuerda.
+   * Nunca se prueban a la vez: así no se cuenta la IP a un tercero cuando no hace falta.
    */
   async #intentarDirecto() {
     const intento = new AbortController();
@@ -405,14 +411,21 @@ export class Conexion {
     this.#huboMensaje = false;
     this.estado = { tipo: "conectando" };
     const vale = () => this.#intento === intento;
+    let negociado = false;
     try {
       const d = await crearDirecto(this.enlace, this.#oyentes());
       if (!vale()) return d.transporte.cerrar();
       this.#directo = d;
       this.#t = d.transporte;
-      const respuesta = await pedirRespuesta({ secreto: this.enlace.secreto, codigoOferta: d.codigo, n: d.n, cancelar: intento.signal });
+      const respuesta = await pedirRespuestaPorServidor({
+        secreto: this.enlace.secreto,
+        url: urlWebSocket(this.enlace),
+        codigoOferta: d.codigo,
+        cancelar: intento.signal
+      });
       if (!vale()) return;
       await d.usarRespuesta(respuesta); // comprueba que el certificado es el del enlace
+      negociado = true;
       this.#porDirecto = true;
       const abrio =
         this.#huboMensaje ||
@@ -426,11 +439,37 @@ export class Conexion {
       this.#huboDirecta = true;
       anotarFallo(this.enlace.sala, false);
     } catch {
-      if (vale()) {
-        anotarFallo(this.enlace.sala, true); // la próxima vez se entra ya por el respaldo, sin esperar
-        this.conectarPorRespaldo();
+      if (!vale()) return;
+      if (negociado) {
+        // Se pusieron de acuerdo y aun así no abrió (NAT estricto…): la próxima vez se entra ya por el respaldo
+        anotarFallo(this.enlace.sala, true);
+      } else if ((this.enlace.reles ?? []).length > 0) {
+        this.#mejoraPorReles = true; // el servidor no negoció: los relés, en segundo plano
       }
+      this.conectarPorRespaldo();
+      if (this.#mejoraPorReles) this.#programarMejora();
     }
+  }
+
+  /**
+   * Pone de acuerdo con el host la conexión directa EN SEGUNDO PLANO (volver a lo directo tras una caída): primero por su
+   * SERVIDOR (el túnel o su dirección, antes del saludo) y, si no responde, por los relés de Nostr (solo con Cloudflare).
+   * Devuelve el código de la respuesta.
+   */
+  async #negociar(d: Directo, cancelar: AbortSignal): Promise<string> {
+    try {
+      return await pedirRespuestaPorServidor({ secreto: this.enlace.secreto, url: urlWebSocket(this.enlace), codigoOferta: d.codigo, cancelar });
+    } catch (e) {
+      if (cancelar.aborted) throw e;
+    }
+    return this.#negociarPorReles(d, cancelar);
+  }
+
+  /** Lo mismo, pero solo por los relés de Nostr del enlace (los trae únicamente el de Cloudflare). */
+  async #negociarPorReles(d: Directo, cancelar: AbortSignal): Promise<string> {
+    const reles = this.enlace.reles ?? [];
+    if (reles.length === 0) throw "Sin relés para ponerse de acuerdo";
+    return pedirRespuesta({ secreto: this.enlace.secreto, codigoOferta: d.codigo, n: d.n, reles, cancelar });
   }
 
   #cancelarMejora() {
@@ -440,11 +479,18 @@ export class Conexion {
     this.#mejorando = null;
   }
 
-  /** Programa el próximo intento de volver a lo directo (solo si esta sesión ya habló por la directa). */
+  /**
+   * Programa el próximo intento en segundo plano: los relés tras fallar el servidor (una vez, enseguida) o, si esta sesión
+   * ya habló por la directa y se cayó, volver a ella (a los 30 s, 2 min y 5 min).
+   */
   #programarMejora() {
-    if (this.#final || this.#porDirecto || !this.#huboDirecta || this.#mejoras >= ESPERAS_MEJORA_MS.length) return;
+    if (this.#final || this.#porDirecto) return;
+    let espera: number;
+    if (this.#mejoraPorReles) espera = ESPERA_RELES_MS;
+    else if (this.#huboDirecta && this.#mejoras < ESPERAS_MEJORA_MS.length) espera = ESPERAS_MEJORA_MS[this.#mejoras];
+    else return;
     if (this.#relojMejora) clearTimeout(this.#relojMejora);
-    this.#relojMejora = setTimeout(() => void this.#mejorarADirecto(), ESPERAS_MEJORA_MS[this.#mejoras]);
+    this.#relojMejora = setTimeout(() => void this.#mejorarADirecto(), espera);
   }
 
   /**
@@ -458,12 +504,15 @@ export class Conexion {
     if (this.estado.tipo !== "dentro") return this.#programarMejora();
     // Sin token guardado (p. ej. ventana privada) el cambio pediría el nombre otra vez: no se intenta
     if (!leerToken(this.enlace.sala)) return;
-    this.#mejoras++;
+    const porReles = this.#mejoraPorReles; // una sola vez: el servidor ya falló al entrar
+    this.#mejoraPorReles = false;
+    if (!porReles) this.#mejoras++;
     const intento = new AbortController();
     this.#mejorando = intento;
     const vale = () => this.#mejorando === intento && !this.#final;
     let directo: Directo | null = null;
     let cambiado = false;
+    let negociado = false;
     try {
       let habla!: (b: boolean) => void;
       const hablo = new Promise<boolean>((ok) => (habla = ok));
@@ -473,9 +522,10 @@ export class Conexion {
       );
       directo = await crearDirecto(this.enlace, dif.oyentes);
       if (!vale()) throw "cancelado";
-      const respuesta = await pedirRespuesta({ secreto: this.enlace.secreto, codigoOferta: directo.codigo, n: directo.n, cancelar: intento.signal });
+      const respuesta = await (porReles ? this.#negociarPorReles(directo, intento.signal) : this.#negociar(directo, intento.signal));
       if (!vale()) throw "cancelado";
       await directo.usarRespuesta(respuesta); // comprueba el certificado del host
+      negociado = true;
       const reloj = setTimeout(() => habla(false), TIEMPO_ABRIR_DIRECTO_MS);
       const abrio = await hablo;
       clearTimeout(reloj);
@@ -497,6 +547,8 @@ export class Conexion {
       dif.activar();
     } catch {
       if (!cambiado) directo?.transporte.cerrar();
+      // Se pusieron de acuerdo y no abrió, y nunca ha habido directa: es que aquí no puede ser (se recuerda)
+      if (negociado && !cambiado && !this.#huboDirecta && vale()) anotarFallo(this.enlace.sala, true);
       if (vale()) this.#programarMejora();
     } finally {
       if (this.#mejorando === intento) this.#mejorando = null;

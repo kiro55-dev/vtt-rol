@@ -28,7 +28,7 @@ use crate::tablero_general::modelos::Jugador;
 use crate::tablero_general::tablero::AvisoTablero;
 
 /// Súbelo cuando cambie cualquier mensaje.
-pub const VERSION_PROTOCOLO: u32 = 7;
+pub const VERSION_PROTOCOLO: u32 = 8;
 
 /// Primer byte de un trozo binario: de una imagen que baja (host → jugador) o que sube (jugador → host).
 pub const TROZO_BAJADA: u8 = 1;
@@ -45,6 +45,10 @@ pub enum MensajeCliente {
         #[serde(default)]
         prueba: Option<String>,
     },
+    /// ANTES del saludo (tras el `Reto`): la oferta de la conexión directa, el código cifrado de `codigo.rs`. El host
+    /// contesta con `RespuestaDirecta` (o `OfertaDirectaError`) y el saludo sigue; el navegador suele cerrar y usar la
+    /// directa. Solo una por conexión.
+    OfertaDirecta { codigo: String },
     Unirse {
         nombre: String,
         #[serde(default)]
@@ -121,6 +125,9 @@ pub enum MensajeHost {
     /// La subida `id` se guardó: su ruta ("imagenes/…") para ponerla en la ficha.
     SubidaOk { id: u32, ruta: String },
     SubidaError { id: u32, error: String },
+    /// La respuesta del host a `OfertaDirecta`: su código cifrado (con la huella de su certificado).
+    RespuestaDirecta { codigo: String },
+    OfertaDirectaError { error: String },
 }
 
 #[cfg(test)]

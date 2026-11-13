@@ -5,7 +5,7 @@
 import type { AvisoTablero } from "$lib/avisosTablero";
 import type { DefinicionParametro, Entidad, Instancia, Mapa, Zona } from "$lib/partida.svelte";
 
-export const VERSION_PROTOCOLO = 7;
+export const VERSION_PROTOCOLO = 8;
 
 export interface Jugador {
   id: number;
@@ -53,6 +53,8 @@ export interface Cambios {
 
 export type MensajeCliente =
   | { tipo: "Hola"; version: number; sala: string; secreto: string; prueba?: string }
+  /** ANTES del saludo: la oferta de la conexión directa (el código cifrado de `codigo.ts`). Una por conexión. */
+  | { tipo: "OfertaDirecta"; codigo: string }
   | { tipo: "Unirse"; nombre: string; contrasena?: string }
   /** Una acción del jugador: `peticion` es `{ cmd, ...args }` (un comando de la lista blanca del host). */
   | { tipo: "Pedir"; id: number; peticion: Record<string, unknown> }
@@ -78,4 +80,7 @@ export type MensajeHost =
   | { tipo: "ImagenCabecera"; id: number; mime: string; tam: number }
   | { tipo: "ImagenError"; id: number; error: string }
   | { tipo: "SubidaOk"; id: number; ruta: string }
-  | { tipo: "SubidaError"; id: number; error: string };
+  | { tipo: "SubidaError"; id: number; error: string }
+  /** La respuesta del host a `OfertaDirecta`: su código cifrado (con la huella de su certificado). */
+  | { tipo: "RespuestaDirecta"; codigo: string }
+  | { tipo: "OfertaDirectaError"; error: string };

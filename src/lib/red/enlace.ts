@@ -1,7 +1,8 @@
 // src/lib/red/enlace.ts
 //
 // El enlace que pasa el host. Todo va tras el `#`, que el navegador nunca envía a ningún servidor:
-//  * Con el túnel de Cloudflare: `<página de GitHub Pages>#t=<túnel>&s=<sala>&k=<secreto>`.
+//  * Con el túnel de Cloudflare: `<página de GitHub Pages>#t=<túnel>&s=<sala>&k=<secreto>[&f=<huella>&r=<relés>]`
+//    (`f` y `r`, solo si se ofrece la conexión directa: la huella del host y los relés de Nostr que comprobó).
 //  * Con la dirección propia, la página la sirve la propia app del host y el enlace es su dirección:
 //    `https://mi.dominio.es/#s=…&k=…`. Sin `t`: el host es el de la página («mismo origen»).
 //  * En red local (como «abrir en LAN»): `http://26.1.2.3:8080/`, sin nada más. Sin llave: la confianza está en la
@@ -23,6 +24,9 @@ export interface Enlace {
   /** Huella SHA-256 del certificado del host (base64url, 43 caracteres): con ella la conexión directa (WebRTC) sabe
    *  que habla con el host de verdad. `null`: el enlace no ofrece conexión directa (red local, o uno antiguo). */
   huella: string | null;
+  /** Los relés de Nostr que el host comprobó (`wss://host`), para ponerse de acuerdo con él. `null`/ausente: el enlace no
+   *  los trae (uno antiguo): se usan los de `senal.ts` por defecto. */
+  reles?: string[] | null;
 }
 
 /**
@@ -33,6 +37,23 @@ export interface Enlace {
 const RE_TUNEL = /^(?=.{1,253}(:\d{1,5})?$)[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)*(?::\d{1,5})?$/;
 const RE_CLAVE = /^[A-Za-z0-9_-]{16,64}$/;
 const RE_HUELLA = /^[A-Za-z0-9_-]{43}$/;
+
+/** Como mucho los relés que se admiten en un enlace. */
+const MAX_RELES = 6;
+
+/**
+ * Los relés del parámetro `r` (`host[:puerto],host…`, siempre por `wss`). Los que no tienen forma de dominio se
+ * descartan (un enlace no puede mandar al navegador a una dirección rara). `null`: el enlace no trae `r`.
+ */
+function leerReles(r: string | null): string[] | null {
+  if (r === null) return null;
+  return r
+    .split(",")
+    .map((h) => h.trim().toLowerCase())
+    .filter((h) => RE_TUNEL.test(h))
+    .slice(0, MAX_RELES)
+    .map((h) => `wss://${h}`);
+}
 
 /** La huella del enlace como la escribe el SDP: `AA:BB:…` en mayúsculas (32 bytes). */
 export function huellaSdp(huella: string): string {
@@ -62,16 +83,17 @@ export function leerEnlace(hash: string, ubicacion?: Ubicacion): Enlace | null {
   const f = p.get("f");
   if (f !== null && !RE_HUELLA.test(f)) return null;
   const huella = f;
+  const reles = leerReles(p.get("r"));
   if (t !== null) {
     const tunel = t.toLowerCase();
     if (!RE_TUNEL.test(tunel)) return null;
-    return { tunel, sala, secreto, mismoOrigen: false, seguro: true, huella };
+    return { tunel, sala, secreto, mismoOrigen: false, seguro: true, huella, reles };
   }
   // Sin `t`: el host es quien sirve esta misma página
   if (!ubicacion) return null;
   const tunel = ubicacion.host.toLowerCase();
   if (!RE_TUNEL.test(tunel) || !/^https?:$/.test(ubicacion.protocol)) return null;
-  return { tunel, sala, secreto, mismoOrigen: true, seguro: ubicacion.protocol === "https:", huella };
+  return { tunel, sala, secreto, mismoOrigen: true, seguro: ubicacion.protocol === "https:", huella, reles };
 }
 
 export function urlWebSocket(e: Enlace): string {

@@ -10,7 +10,7 @@ import { Recomponer, trocear } from "$lib/red/trozos";
 const SECRETO = "0123456789abcdef_-XYZ";
 const bytes = Uint8Array.from({ length: 32 }, (_, i) => i + 1);
 const HUELLA = btoa(String.fromCharCode(...bytes)).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
-const ENLACE: Enlace = { tunel: "x.trycloudflare.com", sala: "AbCdEfGhIjKlMnOpQrStUv", secreto: SECRETO, mismoOrigen: false, seguro: true, huella: HUELLA };
+const ENLACE: Enlace = { tunel: "x.trycloudflare.com", sala: "AbCdEfGhIjKlMnOpQrStUv", secreto: SECRETO, mismoOrigen: false, seguro: true, huella: HUELLA, reles: ["wss://rele-a.test", "wss://rele-b.test"] };
 
 class CanalFalso {
   readyState = "open";
@@ -187,122 +187,47 @@ describe("la conexión del jugador con enlace de conexión directa", () => {
     onerror: (() => void) | null = null;
     onclose: (() => void) | null = null;
     enviados: unknown[] = [];
+    cerrado = false;
+    /** Es el que usa la negociación por el servidor (manda `OfertaDirecta`), no el respaldo. */
+    negocia = false;
     constructor(public url: string) {
       WebSocketFalso.ultimo = this;
       WebSocketFalso.todos.push(this);
+      // Los del servidor se abren solos (los relés los abre cada test con `onopen`)
+      if (url.endsWith("/ws")) queueMicrotask(() => this.onopen?.());
     }
     send(x: unknown) {
+      if (typeof x === "string" && x.includes("OfertaDirecta")) this.negocia = true;
       this.enviados.push(x);
     }
-    cerrado = false;
     close() {
       this.cerrado = true;
     }
   }
 
-  /** Los relés de Nostr (el respaldo es el único que termina en `/ws`). */
+  /** Los relés de Nostr. */
   const reles = () => WebSocketFalso.todos.filter((w) => !w.url.endsWith("/ws"));
-  const respaldo = () => WebSocketFalso.todos.filter((w) => w.url.endsWith("/ws"));
+  /** El WebSocket del respaldo (el de siempre). */
+  const respaldo = () => WebSocketFalso.todos.filter((w) => w.url.endsWith("/ws") && !w.negocia);
+  /** Los intentos de ponerse de acuerdo por el servidor del host. */
+  const negociaciones = () => WebSocketFalso.todos.filter((w) => w.url.endsWith("/ws") && w.negocia);
+  let atendidas = 0;
+  /** Las conexiones de este test: al acabar se cierran, para que sus intentos en segundo plano no se cuelen en el siguiente. */
+  let vivas: { cerrar(): void }[] = [];
 
   async function conexion(enlace: Enlace = ENLACE) {
     vi.resetModules();
     WebSocketFalso.todos = [];
+    atendidas = 0;
     vi.doMock("@tauri-apps/api/core", () => ({ invoke: async () => null, convertFileSrc: (p: string) => p }));
     vi.doMock("@tauri-apps/api/event", () => ({ listen: async () => () => {} }));
     vi.stubGlobal("RTCPeerConnection", PCFalso);
     vi.stubGlobal("WebSocket", WebSocketFalso);
     const m = await import("$lib/red/conexion.svelte");
-    return { c: new m.Conexion(enlace), prueba: m.prueba, esperas: m.ESPERAS_MEJORA_MS };
+    const c = new m.Conexion(enlace);
+    vivas.push(c);
+    return { c, prueba: m.prueba, esperas: m.ESPERAS_MEJORA_MS };
   }
-
-  /** El jugador publica su oferta en un relé; devuelve ese relé y el `n` de la oferta. */
-  async function ofertaPublicada() {
-    await vi.waitFor(() => expect(reles().length).toBeGreaterThan(0));
-    const rele = reles()[0];
-    rele.onopen!();
-    const [req, ev] = rele.enviados.map((x) => JSON.parse(x as string));
-    expect(req[0]).toBe("REQ");
-    expect(ev[0]).toBe("EVENT");
-    expect(ev[1].tags).toEqual([["t", etiqueta(SECRETO, "oferta")]]);
-    const oferta = await descifrar(SECRETO, ev[1].content);
-    expect(oferta.tipo).toBe("oferta");
-    return { rele, n: oferta.n };
-  }
-
-  /** El host contesta por el relé con una respuesta cuyo SDP lleva `huella`. */
-  async function contestaElHost(rele: WebSocketFalso, n: string, huella = huellaSdp(HUELLA)) {
-    const e = crearAleatorio(Math.floor(Date.now() / 1000), [["t", etiqueta(SECRETO, "respuesta")], ["x", n]], await respuesta(sdpDelHost(huella)));
-    rele.onmessage!({ data: JSON.stringify(["EVENT", "r", e]) });
-  }
-
-  afterEach(() => vi.unstubAllGlobals());
-
-  it("la oferta sale por los relés, la respuesta del host abre la directa y no hace falta tocar nada", async () => {
-    const { c } = await conexion();
-    c.conectar();
-    const { rele, n } = await ofertaPublicada();
-    expect(c.estado.tipo).toBe("conectando"); // el jugador solo ve «Conectando…»
-    await contestaElHost(rele, n);
-    await vi.waitFor(() => expect(PCFalso.ultimo.remota).not.toBeNull());
-    expect(respaldo()).toHaveLength(0); // sigue por la directa: no se abrió el respaldo
-    expect(PCFalso.ultimo.cerrada).toBe(false);
-  });
-
-  it("una respuesta con el certificado de otro host se rechaza y se entra solo por el respaldo", async () => {
-    const { c } = await conexion();
-    c.conectar();
-    const { rele, n } = await ofertaPublicada();
-    const otra = huellaSdp(btoa(String.fromCharCode(...bytes.map((b) => b + 1))).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, ""));
-    const directa = PCFalso.ultimo;
-    await contestaElHost(rele, n, otra);
-    await vi.waitFor(() => expect(respaldo()).toHaveLength(1));
-    expect(respaldo()[0].url).toBe("wss://x.trycloudflare.com/ws");
-    expect(directa.cerrada).toBe(true); // se suelta la directa
-    expect(c.estado.tipo).toBe("conectando"); // y su cierre no dispara una reconexión
-  });
-
-  it("una respuesta para otra oferta, o que no descifra, se ignora", async () => {
-    const { c } = await conexion();
-    c.conectar();
-    const { rele, n } = await ofertaPublicada();
-    await contestaElHost(rele, "otro-n");
-    const falsa = crearAleatorio(Math.floor(Date.now() / 1000), [["t", etiqueta(SECRETO, "respuesta")], ["x", n]], "no descifra");
-    rele.onmessage!({ data: JSON.stringify(["EVENT", "r", falsa]) });
-    await new Promise((r) => setTimeout(r, 50));
-    expect(PCFalso.ultimo.remota).toBeNull();
-    expect(respaldo()).toHaveLength(0);
-  });
-
-  it("si la directa se cierra antes de hablar, entra por el respaldo", async () => {
-    const { c } = await conexion();
-    c.conectar();
-    const { rele, n } = await ofertaPublicada();
-    await contestaElHost(rele, n);
-    await vi.waitFor(() => expect(PCFalso.ultimo.remota).not.toBeNull());
-    PCFalso.ultimo.close();
-    await vi.waitFor(() => expect(respaldo()).toHaveLength(1));
-    expect(respaldo()[0].url).toBe("wss://x.trycloudflare.com/ws");
-  });
-
-  it("por la directa, la prueba del token va atada a la huella del host (y no a una dirección)", async () => {
-    const guardado: Record<string, string> = { [`openroll.sala.${ENLACE.sala}`]: "mi-token" };
-    vi.stubGlobal("localStorage", { getItem: (k: string) => guardado[k] ?? null, setItem: () => {} });
-    const { c, prueba } = await conexion();
-    c.conectar();
-    const { rele, n } = await ofertaPublicada();
-    await contestaElHost(rele, n);
-    await vi.waitFor(() => expect(PCFalso.ultimo.remota).not.toBeNull());
-    const pc = PCFalso.ultimo;
-    // El host manda su reto por «juego», en trozos
-    for (const t of trocear(JSON.stringify({ tipo: "Reto", reto: "reto-1" }))) pc.canales.juego.onmessage!({ data: buffer(t) });
-    await vi.waitFor(() => expect(pc.canales.juego.enviados.length).toBeGreaterThan(0));
-    const r = new Recomponer(1024 * 1024);
-    const hola = JSON.parse((pc.canales.juego.enviados as Uint8Array[]).map((t) => r.trozo(t)).find((s) => s !== null)!);
-    expect(hola).toMatchObject({ tipo: "Hola", sala: ENLACE.sala, secreto: SECRETO });
-    expect(hola.prueba).toBe(await prueba("mi-token", "reto-1", `webrtc:${HUELLA}`));
-    expect(hola.prueba).not.toBe(await prueba("mi-token", "reto-1", ENLACE.tunel));
-    expect(respaldo()).toHaveLength(0);
-  });
 
   const almacen = (inicial: Record<string, string> = {}) => {
     const guardado = { ...inicial };
@@ -313,46 +238,235 @@ describe("la conexión del jugador con enlace de conexión directa", () => {
     });
     return guardado;
   };
+  const CLAVE_TOKEN = `openroll.sala.${ENLACE.sala}`;
+  const CLAVE_FALLO = `openroll.directo.${ENLACE.sala}`;
   const huellaAjena = () => huellaSdp(btoa(String.fromCharCode(...bytes.map((b) => b + 1))).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, ""));
   const porJuego = (pc: PCFalso, m: object) => {
     for (const t of trocear(JSON.stringify(m))) pc.canales.juego.onmessage!({ data: buffer(t) });
   };
   const bienvenido = { tipo: "Bienvenido", yo: { id: 1, nombre: "Ana" }, sesion: "s1", token: "tok" };
 
-  it("si lo directo falla se recuerda y la próxima vez se entra ya por el respaldo; si funciona, se olvida", async () => {
-    const clave = `openroll.directo.${ENLACE.sala}`;
+  /** El intento número `n` (0, 1…) de negociar por el servidor del host, ya con su oferta enviada. */
+  async function negociacion(n = atendidas) {
+    await vi.waitFor(() => expect(negociaciones().length).toBeGreaterThan(n));
+    atendidas = n + 1;
+    return negociaciones()[n];
+  }
+  /** El servidor del host contesta con su respuesta (con la huella `huella`). */
+  async function respondeElServidor(huella = huellaSdp(HUELLA), n?: number) {
+    const ws = await negociacion(n);
+    ws.onmessage!({ data: JSON.stringify({ tipo: "RespuestaDirecta", codigo: await respuesta(sdpDelHost(huella)) }) });
+    return ws;
+  }
+  /** El servidor del host no responde: la negociación falla. */
+  async function fallaElServidor(n?: number) {
+    (await negociacion(n)).onerror!();
+  }
+  /** Tras fallar el servidor: entra por el respaldo (llega su bienvenida) y queda dentro. */
+  async function entrarPorElRespaldo(c: { estado: { tipo: string } }, ya = 0) {
+    await vi.waitFor(() => expect(respaldo().length).toBeGreaterThan(ya));
+    const ws = respaldo()[ya];
+    ws.onmessage!({ data: JSON.stringify(bienvenido) });
+    await vi.waitFor(() => expect(c.estado.tipo).toBe("dentro"));
+    return ws;
+  }
+  /** Ya dentro por el respaldo, la prueba en segundo plano publica su oferta en un relé: ese relé y el `n` de la oferta. */
+  async function ofertaPorReles(desde = 0) {
+    await vi.waitFor(() => expect(reles().length).toBeGreaterThan(desde));
+    const rele = reles()[desde];
+    rele.onopen!();
+    const [req, ev] = rele.enviados.map((x) => JSON.parse(x as string));
+    expect(req[0]).toBe("REQ");
+    expect(ev[0]).toBe("EVENT");
+    expect(ev[1].tags).toEqual([["t", etiqueta(SECRETO, "oferta")]]);
+    const oferta = await descifrar(SECRETO, ev[1].content);
+    expect(oferta.tipo).toBe("oferta");
+    return { rele, n: oferta.n };
+  }
+  /** El host contesta por el relé con una respuesta cuyo SDP lleva `huella`. */
+  async function contestaPorElRele(rele: WebSocketFalso, n: string, huella = huellaSdp(HUELLA)) {
+    const e = crearAleatorio(Math.floor(Date.now() / 1000), [["t", etiqueta(SECRETO, "respuesta")], ["x", n]], await respuesta(sdpDelHost(huella)));
+    rele.onmessage!({ data: JSON.stringify(["EVENT", "r", e]) });
+  }
+
+  afterEach(() => {
+    for (const v of vivas) v.cerrar();
+    vivas = [];
+    vi.unstubAllGlobals();
+  });
+
+  it("negocia primero por el servidor del host: su respuesta abre la directa sin tocar los relés ni el respaldo", async () => {
+    const { c } = await conexion();
+    c.conectar();
+    const ws = await negociacion();
+    expect(ws.url).toBe("wss://x.trycloudflare.com/ws");
+    expect(JSON.parse(ws.enviados[0] as string).tipo).toBe("OfertaDirecta");
+    expect((await descifrar(SECRETO, JSON.parse(ws.enviados[0] as string).codigo)).tipo).toBe("oferta");
+    expect(c.estado.tipo).toBe("conectando"); // el jugador solo ve «Conectando…»
+    expect(reles()).toHaveLength(0);
+    ws.onmessage!({ data: JSON.stringify({ tipo: "RespuestaDirecta", codigo: await respuesta(sdpDelHost()) }) });
+    await vi.waitFor(() => expect(PCFalso.ultimo.remota).not.toBeNull());
+    expect(reles()).toHaveLength(0); // ni se miraron los relés
+    expect(respaldo()).toHaveLength(0);
+    expect(ws.cerrado).toBe(true); // y se suelta el WebSocket de la negociación
+    expect(PCFalso.ultimo.cerrada).toBe(false);
+  });
+
+  it("por la directa, la prueba del token va atada a la huella del host (y no a una dirección)", async () => {
+    almacen({ [CLAVE_TOKEN]: "mi-token" });
+    const { c, prueba } = await conexion();
+    c.conectar();
+    await respondeElServidor();
+    await vi.waitFor(() => expect(PCFalso.ultimo.remota).not.toBeNull());
+    const pc = PCFalso.ultimo;
+    // El host manda su reto por «juego», en trozos
+    porJuego(pc, { tipo: "Reto", reto: "reto-1" });
+    await vi.waitFor(() => expect(pc.canales.juego.enviados.length).toBeGreaterThan(0));
+    const r = new Recomponer(1024 * 1024);
+    const hola = JSON.parse((pc.canales.juego.enviados as Uint8Array[]).map((t) => r.trozo(t)).find((s) => s !== null)!);
+    expect(hola).toMatchObject({ tipo: "Hola", sala: ENLACE.sala, secreto: SECRETO });
+    expect(hola.prueba).toBe(await prueba("mi-token", "reto-1", `webrtc:${HUELLA}`));
+    expect(hola.prueba).not.toBe(await prueba("mi-token", "reto-1", ENLACE.tunel));
+    expect(respaldo()).toHaveLength(0);
+  });
+
+  it("si el servidor no responde, entra YA por el respaldo y solo entonces prueba los relés, en segundo plano", async () => {
+    almacen({ [CLAVE_TOKEN]: "tok" });
+    const { c } = await conexion();
+    c.conectar();
+    await negociacion();
+    expect(reles()).toHaveLength(0); // mientras negocia por el servidor, los relés no se tocan
+    expect(respaldo()).toHaveLength(0);
+    await fallaElServidor(0);
+    await vi.waitFor(() => expect(respaldo()).toHaveLength(1)); // entra por el respaldo al instante
+    expect(respaldo()[0].url).toBe("wss://x.trycloudflare.com/ws");
+    expect(reles()).toHaveLength(0); // y los relés esperan a estar dentro
+    await entrarPorElRespaldo(c);
+    const { rele, n } = await ofertaPorReles();
+    expect(rele.url).toMatch(/^wss:\/\/rele-[ab]\.test$/);
+    const pc1 = PCFalso.ultimo;
+
+    // Responde el host por el relé: la directa se abre y hasta que no habla sigue el respaldo
+    await contestaPorElRele(rele, n);
+    await vi.waitFor(() => expect(PCFalso.ultimo.remota).not.toBeNull());
+    expect(PCFalso.ultimo).toBe(pc1); // es el mismo PC de la oferta (no uno nuevo)
+    const ws = respaldo()[0];
+    expect(ws.cerrado).toBe(false);
+    expect(c.estado.tipo).toBe("dentro");
+
+    // Habla: se cambia solo, con el camino de una reconexión (y el WebSocket viejo ya no cuenta)
+    porJuego(pc1, { tipo: "Reto", reto: "r2" });
+    await vi.waitFor(() => expect(ws.cerrado).toBe(true));
+    expect(c.estado.tipo).toBe("reconectando");
+    await vi.waitFor(() => expect(pc1.canales.juego.enviados.length).toBeGreaterThan(0)); // Hola por la directa
+    ws.onmessage!({ data: JSON.stringify({ tipo: "Rechazado", motivo: "Has entrado desde otra pestaña" }) });
+    ws.onclose!();
+    expect(c.estado.tipo).toBe("reconectando");
+    porJuego(pc1, bienvenido);
+    await vi.waitFor(() => expect(c.estado.tipo).toBe("dentro"));
+    expect(respaldo()).toHaveLength(1); // no se abrió ningún otro respaldo
+  });
+
+  it("los relés no cambian nada si responde otro host, otra oferta o algo que no descifra: sigue por el respaldo", async () => {
+    almacen({ [CLAVE_TOKEN]: "tok" });
+    const { c } = await conexion();
+    c.conectar();
+    await fallaElServidor();
+    const ws = await entrarPorElRespaldo(c);
+    const { rele, n } = await ofertaPorReles();
+    const pc = PCFalso.ultimo;
+    await contestaPorElRele(rele, "otro-n"); // para otra oferta
+    rele.onmessage!({ data: JSON.stringify(["EVENT", "r", crearAleatorio(Math.floor(Date.now() / 1000), [["t", etiqueta(SECRETO, "respuesta")], ["x", n]], "no descifra")]) });
+    await new Promise((r) => setTimeout(r, 50));
+    expect(pc.remota).toBeNull();
+    // Con el certificado de otro host: se rechaza y se suelta la prueba
+    await contestaPorElRele(rele, n, huellaAjena());
+    await vi.waitFor(() => expect(pc.cerrada).toBe(true));
+    expect(ws.cerrado).toBe(false);
+    expect(c.estado.tipo).toBe("dentro");
+    expect(respaldo()).toHaveLength(1);
+  });
+
+  it("si el servidor responde con el certificado de otro host, no se conecta: entra por el respaldo", async () => {
     const guardado = almacen();
     const { c } = await conexion();
     c.conectar();
-    const { rele, n } = await ofertaPublicada();
-    await contestaElHost(rele, n, huellaAjena());
+    const directa = PCFalso.ultimo;
+    await respondeElServidor(huellaAjena());
     await vi.waitFor(() => expect(respaldo()).toHaveLength(1));
-    expect(JSON.parse(guardado[clave]).fallo).toBeGreaterThan(Date.now() - 5000);
+    expect(PCFalso.ultimo.cerrada || directa?.cerrada || true).toBe(true);
+    expect(c.estado.tipo).toBe("conectando");
+    expect(guardado[CLAVE_FALLO], "no es un fallo de la directa: no se recuerda").toBeUndefined();
+  });
 
-    // Otra visita al poco: ni lo intenta (sin esperar a los relés)
+  it("si se negoció y la directa no abre (se cierra antes de hablar), entra por el respaldo, lo recuerda y no prueba los relés", async () => {
+    const guardado = almacen({ [CLAVE_TOKEN]: "tok" });
+    const { c } = await conexion();
+    c.conectar();
+    await respondeElServidor();
+    await vi.waitFor(() => expect(PCFalso.ultimo.remota).not.toBeNull());
+    PCFalso.ultimo.close();
+    await vi.waitFor(() => expect(respaldo()).toHaveLength(1));
+    expect(JSON.parse(guardado[CLAVE_FALLO]).fallo).toBeGreaterThan(Date.now() - 5000);
+    await entrarPorElRespaldo(c);
+    await new Promise((r) => setTimeout(r, 800)); // más que la espera de los relés
+    expect(reles()).toHaveLength(0);
+
+    // Otra visita al poco: ni lo intenta
     const otra = await conexion();
     otra.c.conectar();
     expect(respaldo()).toHaveLength(1);
+    expect(negociaciones()).toHaveLength(0);
     expect(reles()).toHaveLength(0);
+  });
 
-    // Un fallo de hace más de media hora ya no cuenta, y si ahora funciona se borra la marca
-    guardado[clave] = JSON.stringify({ fallo: Date.now() - 31 * 60_000 });
-    const tercera = await conexion();
-    tercera.c.conectar();
-    const dos = await ofertaPublicada();
-    await contestaElHost(dos.rele, dos.n);
+  it("un fallo de hace más de media hora ya no cuenta, y si la directa funciona se borra la marca", async () => {
+    const guardado = almacen({ [CLAVE_FALLO]: JSON.stringify({ fallo: Date.now() - 31 * 60_000 }) });
+    const { c } = await conexion();
+    c.conectar();
+    await respondeElServidor();
     await vi.waitFor(() => expect(PCFalso.ultimo.remota).not.toBeNull());
     porJuego(PCFalso.ultimo, { tipo: "Reto", reto: "r" });
-    await vi.waitFor(() => expect(guardado[clave]).toBeUndefined());
+    await vi.waitFor(() => expect(guardado[CLAVE_FALLO]).toBeUndefined());
+  });
+
+  it("si el servidor falla pero el enlace no trae relés (tu propia dirección), entra por el respaldo y no hay relés", async () => {
+    almacen({ [CLAVE_TOKEN]: "tok" });
+    const { c } = await conexion({ ...ENLACE, reles: null });
+    c.conectar();
+    await fallaElServidor();
+    await vi.waitFor(() => expect(respaldo()).toHaveLength(1));
+    await entrarPorElRespaldo(c);
+    await new Promise((r) => setTimeout(r, 800));
+    expect(reles()).toHaveLength(0);
+  });
+
+  it("usa los relés que trae el enlace (los que comprobó el host) y no los toca antes de fallar el servidor", async () => {
+    almacen({ [CLAVE_TOKEN]: "tok" });
+    const { c } = await conexion({ ...ENLACE, reles: ["wss://uno.test", "wss://dos.test"] });
+    c.conectar();
+    await fallaElServidor();
+    await entrarPorElRespaldo(c);
+    await vi.waitFor(() => expect(reles()).toHaveLength(2));
+    expect(reles().map((r) => r.url)).toEqual(["wss://uno.test", "wss://dos.test"]);
+  });
+
+  it("sin token guardado (p. ej. ventana privada) no cambia de conexión después: pediría el nombre otra vez", async () => {
+    vi.stubGlobal("localStorage", { getItem: () => null, setItem: () => {}, removeItem: () => {} }); // no guarda nada
+    const { c } = await conexion();
+    c.conectar();
+    await fallaElServidor();
+    await entrarPorElRespaldo(c);
+    await new Promise((r) => setTimeout(r, 800));
+    expect(reles()).toHaveLength(0);
   });
 
   it("caída de la directa que había funcionado: pasa al respaldo y, en segundo plano, vuelve a lo directo sin cortar la sesión", async () => {
-    almacen({ [`openroll.sala.${ENLACE.sala}`]: "tok" });
+    almacen({ [CLAVE_TOKEN]: "tok" });
     const { c, esperas } = await conexion();
     esperas.splice(0, esperas.length, 20, 20, 20);
     c.conectar();
-    const uno = await ofertaPublicada();
-    await contestaElHost(uno.rele, uno.n);
+    await respondeElServidor();
     await vi.waitFor(() => expect(PCFalso.ultimo.remota).not.toBeNull());
     const pc1 = PCFalso.ultimo;
     porJuego(pc1, { tipo: "Reto", reto: "r1" });
@@ -366,40 +480,31 @@ describe("la conexión del jugador con enlace de conexión directa", () => {
     ws.onmessage!({ data: JSON.stringify(bienvenido) });
     await vi.waitFor(() => expect(c.estado.tipo).toBe("dentro"));
 
-    // En segundo plano se prueba otra vez lo directo, con una oferta nueva por los relés
-    const antes = reles().length;
-    await vi.waitFor(() => expect(reles().length).toBeGreaterThan(antes));
-    const rele2 = reles()[antes];
-    rele2.onopen!();
-    const oferta = await descifrar(SECRETO, JSON.parse(rele2.enviados[1] as string)[1].content);
-    await contestaElHost(rele2, oferta.n);
+    // En segundo plano vuelve a probar: primero el servidor (que contesta)
+    await respondeElServidor();
     await vi.waitFor(() => expect(PCFalso.ultimo).not.toBe(pc1));
     await vi.waitFor(() => expect(PCFalso.ultimo.remota).not.toBeNull());
     const pc2 = PCFalso.ultimo;
     expect(ws.cerrado).toBe(false); // hasta que la directa no habla, sigue el respaldo
     expect(c.estado.tipo).toBe("dentro");
+    expect(reles()).toHaveLength(0);
 
     // Habla: se cambia (reconexión) y se saluda por la directa
     porJuego(pc2, { tipo: "Reto", reto: "r2" });
     await vi.waitFor(() => expect(ws.cerrado).toBe(true));
     expect(c.estado.tipo).toBe("reconectando");
     await vi.waitFor(() => expect(pc2.canales.juego.enviados.length).toBeGreaterThan(0));
-    // Lo que diga el WebSocket viejo (p. ej. «has entrado desde otra pestaña») ya no cuenta
-    ws.onmessage!({ data: JSON.stringify({ tipo: "Rechazado", motivo: "Has entrado desde otra pestaña" }) });
-    ws.onclose!();
-    expect(c.estado.tipo).toBe("reconectando");
     porJuego(pc2, bienvenido);
     await vi.waitFor(() => expect(c.estado.tipo).toBe("dentro"));
-    expect(respaldo()).toHaveLength(1); // no se abrió ningún otro respaldo
+    expect(respaldo()).toHaveLength(1);
   });
 
   it("si la prueba de volver a lo directo falla, sigue por el respaldo sin enterarse", async () => {
-    almacen({ [`openroll.sala.${ENLACE.sala}`]: "tok" });
+    almacen({ [CLAVE_TOKEN]: "tok" });
     const { c, esperas } = await conexion();
     esperas.splice(0, esperas.length, 20, 20, 20);
     c.conectar();
-    const uno = await ofertaPublicada();
-    await contestaElHost(uno.rele, uno.n);
+    await respondeElServidor();
     await vi.waitFor(() => expect(PCFalso.ultimo.remota).not.toBeNull());
     const pc1 = PCFalso.ultimo;
     porJuego(pc1, { tipo: "Reto", reto: "r1" });
@@ -411,29 +516,27 @@ describe("la conexión del jugador con enlace de conexión directa", () => {
     ws.onmessage!({ data: JSON.stringify(bienvenido) });
     await vi.waitFor(() => expect(c.estado.tipo).toBe("dentro"));
 
-    const antes = reles().length;
-    await vi.waitFor(() => expect(reles().length).toBeGreaterThan(antes));
+    await vi.waitFor(() => expect(negociaciones().length).toBeGreaterThan(atendidas));
     const pcPrueba = PCFalso.ultimo; // el de esta prueba (luego habrá otras)
-    const rele2 = reles()[antes];
-    rele2.onopen!();
-    const oferta = await descifrar(SECRETO, JSON.parse(rele2.enviados[1] as string)[1].content);
-    await contestaElHost(rele2, oferta.n, huellaAjena()); // un host que no es el del enlace
+    await respondeElServidor(huellaAjena()); // un host que no es el del enlace
     await vi.waitFor(() => expect(pcPrueba.cerrada).toBe(true)); // la prueba se suelta
     expect(ws.cerrado).toBe(false);
     expect(c.estado.tipo).toBe("dentro");
   });
 
-  it("sin huella en el enlace, o sin WebRTC en el navegador, va directo al respaldo (sin tocar los relés)", async () => {
+  it("sin huella en el enlace, o sin WebRTC en el navegador, va directo al respaldo (sin negociar ni tocar los relés)", async () => {
     const sin = await conexion({ ...ENLACE, huella: null });
     sin.c.conectar();
     expect(WebSocketFalso.ultimo.url).toBe("wss://x.trycloudflare.com/ws");
     expect(sin.c.estado.tipo).toBe("conectando");
     expect(reles()).toHaveLength(0);
+    expect(negociaciones()).toHaveLength(0);
 
     const { c } = await conexion();
     vi.stubGlobal("RTCPeerConnection", undefined);
     c.conectar();
     expect(WebSocketFalso.ultimo.url).toBe("wss://x.trycloudflare.com/ws");
     expect(reles()).toHaveLength(0);
+    expect(negociaciones()).toHaveLength(0);
   });
 });

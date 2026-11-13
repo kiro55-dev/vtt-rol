@@ -2,7 +2,7 @@
 // que comparte con Rust) y la espera de la respuesta del host por varios relés.
 import { describe, expect, it } from "vitest";
 import { cifrar } from "$lib/red/codigo";
-import { KIND, RELES, crear, crearAleatorio, etiqueta, firmaValida, idValido, leerEvento, pedirRespuesta } from "$lib/red/senal";
+import { KIND, crear, crearAleatorio, etiqueta, firmaValida, idValido, leerEvento, pedirRespuesta, pedirRespuestaPorServidor } from "$lib/red/senal";
 
 const SECRETO = "0123456789abcdef_-XYZ";
 
@@ -43,10 +43,6 @@ describe("eventos y etiquetas", () => {
     expect(leerEvento(JSON.stringify(["EVENT", "s", { ...e, content: "x".repeat(70_000) }]))).toBeNull();
   });
 
-  it("hay relés por defecto, todos wss", () => {
-    expect(RELES.length).toBeGreaterThanOrEqual(3);
-    expect(RELES.every((r) => r.startsWith("wss://"))).toBe(true);
-  });
 });
 
 class Rele {
@@ -54,6 +50,7 @@ class Rele {
   onopen: (() => void) | null = null;
   onmessage: ((e: { data: unknown }) => void) | null = null;
   onerror: (() => void) | null = null;
+  onclose: (() => void) | null = null;
   enviados: string[] = [];
   cerrado = false;
   constructor(public url: string) {
@@ -139,5 +136,86 @@ describe("pedirRespuesta", () => {
     const buena = await respuestaPara("uno");
     r.onmessage!({ data: JSON.stringify(["EVENT", "r", buena]) });
     await expect(p).resolves.toBe(buena.content);
+  });
+});
+
+describe("pedirRespuestaPorServidor (la negociación por el servidor del host)", () => {
+  const preparar = async () => {
+    Rele.todos = [];
+    const codigoOferta = await cifrar(SECRETO, { tipo: "oferta", sdp: "v=0", t: Date.now(), n: "uno" });
+    return { secreto: SECRETO, url: "wss://host.test/ws", codigoOferta, crearWebSocket: (u: string) => new Rele(u) as unknown as WebSocket };
+  };
+  const respuesta = (tipo: "respuesta" | "oferta" = "respuesta") => cifrar(SECRETO, { tipo, sdp: "v=0", t: Date.now(), n: "r" });
+
+  it("manda OfertaDirecta al abrir y devuelve el código de la respuesta, soltando el WebSocket", async () => {
+    const o = await preparar();
+    const p = pedirRespuestaPorServidor({ ...o, topeMs: 2000 });
+    const ws = Rele.todos[0];
+    expect(ws.url).toBe("wss://host.test/ws");
+    ws.onopen!();
+    expect(JSON.parse(ws.enviados[0])).toEqual({ tipo: "OfertaDirecta", codigo: o.codigoOferta });
+    // Lo primero que manda el host es el reto: se ignora
+    ws.onmessage!({ data: JSON.stringify({ tipo: "Reto", reto: "r" }) });
+    const r = await respuesta();
+    ws.onmessage!({ data: JSON.stringify({ tipo: "RespuestaDirecta", codigo: r }) });
+    await expect(p).resolves.toBe(r);
+    expect(ws.cerrado).toBe(true);
+  });
+
+  it("falla con un texto si el host dice que no, no conecta, se cierra, no contesta o se cancela", async () => {
+    const o = await preparar();
+    let p = pedirRespuestaPorServidor({ ...o, topeMs: 2000 });
+    Rele.todos[0].onmessage!({ data: JSON.stringify({ tipo: "OfertaDirectaError", error: "Esta sala no ofrece conexión directa" }) });
+    await expect(p).rejects.toBe("Esta sala no ofrece conexión directa");
+
+    p = pedirRespuestaPorServidor({ ...o, topeMs: 2000 });
+    Rele.todos[1].onerror!();
+    await expect(p).rejects.toBe("No se pudo conectar con el servidor");
+
+    p = pedirRespuestaPorServidor({ ...o, topeMs: 2000 });
+    Rele.todos[2].onclose!();
+    await expect(p).rejects.toBe("El servidor cerró la conexión");
+
+    p = pedirRespuestaPorServidor({ ...o, topeMs: 2000 });
+    Rele.todos[3].onmessage!({ data: JSON.stringify({ tipo: "Rechazado", motivo: "Versión distinta" }) });
+    await expect(p).rejects.toBe("Versión distinta");
+
+    // Abre pero no contesta: salta la espera de la respuesta
+    const lento = pedirRespuestaPorServidor({ ...o, topeMs: 40 });
+    Rele.todos[Rele.todos.length - 1].onopen!();
+    await expect(lento).rejects.toBe("El servidor no ha contestado");
+    // Ni abre: salta la espera de la conexión
+    await expect(pedirRespuestaPorServidor({ ...o, topeConexionMs: 40 })).rejects.toBe("El servidor no ha abierto la conexión");
+
+    const ctl = new AbortController();
+    p = pedirRespuestaPorServidor({ ...o, topeMs: 2000, cancelar: ctl.signal });
+    ctl.abort();
+    await expect(p).rejects.toBe("Cancelado");
+    await expect(pedirRespuestaPorServidor({ ...o, cancelar: AbortSignal.abort() })).rejects.toBe("Cancelado");
+    await expect(pedirRespuestaPorServidor({ ...o, crearWebSocket: () => { throw new Error("no"); } })).rejects.toBe("No se pudo conectar con el servidor");
+  });
+
+  it("no se fía de una respuesta que no descifra con el secreto de la sala o que es una oferta", async () => {
+    const o = await preparar();
+    const p = pedirRespuestaPorServidor({ ...o, topeMs: 150 });
+    const ws = Rele.todos[0];
+    ws.onmessage!({ data: JSON.stringify({ tipo: "RespuestaDirecta", codigo: "no descifra" }) });
+    ws.onmessage!({ data: JSON.stringify({ tipo: "RespuestaDirecta", codigo: await respuesta("oferta") }) });
+    ws.onmessage!({ data: new ArrayBuffer(4) });
+    ws.onmessage!({ data: "no es json" });
+    ws.onopen!();
+    await expect(p).rejects.toBe("El servidor no ha contestado");
+  });
+
+  it("el tiempo de la respuesta cuenta desde que se envía la oferta, no desde que se pidió la conexión", async () => {
+    const o = await preparar();
+    const p = pedirRespuestaPorServidor({ ...o, topeConexionMs: 1000, topeMs: 200 });
+    const ws = Rele.todos[0];
+    await new Promise((r) => setTimeout(r, 120)); // conectar tardó: más que la respuesta, menos que el tope de conexión
+    ws.onopen!();
+    await new Promise((r) => setTimeout(r, 120)); // otros 120 ms: en total 240 > 200, pero la respuesta lleva solo 120
+    const r = await respuesta();
+    ws.onmessage!({ data: JSON.stringify({ tipo: "RespuestaDirecta", codigo: r }) });
+    await expect(p).resolves.toBe(r);
   });
 });

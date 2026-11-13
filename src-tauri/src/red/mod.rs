@@ -146,6 +146,9 @@ struct SalaAbierta {
     respaldo: config::Respaldo,
     /// «Solo respaldo» al abrirla: sin conexión directa (ver `config::ConfigRed`).
     solo_respaldo: bool,
+    /// Los relés de Nostr elegidos al abrirla (los que pasaron la prueba, `senal::elegir_reles`): van en el enlace como
+    /// `r`. Vacío = ninguno: no se ofrece lo directo.
+    reles: Vec<String>,
     /// En red local: las IPs de este equipo al abrir la sala (cada una con su enlace).
     lan: Vec<config::DireccionLan>,
     /// Códigos de la conexión directa ya usados (su `n`): no se aceptan dos veces. Los últimos 256.
@@ -158,6 +161,10 @@ impl SalaAbierta {
     /// El fragmento del enlace (tras el `#`) con la identidad de la sala.
     fn fragmento(&self) -> String {
         match self.huella() {
+            // `r`: los relés que el host comprobó (solo con Cloudflare, y si alguno pasó la prueba)
+            Some(f) if !self.reles.is_empty() => {
+                format!("s={}&k={}&f={f}&r={}", self.sala.id, self.sala.secreto, senal::reles_para_enlace(&self.reles))
+            }
             Some(f) => format!("s={}&k={}&f={f}", self.sala.id, self.sala.secreto),
             None => format!("s={}&k={}", self.sala.id, self.sala.secreto),
         }
@@ -173,7 +180,9 @@ impl SalaAbierta {
         self.p2p() && !self.solo_respaldo
     }
 
-    /// La huella del certificado de la conexión directa, si se ofrece (va en el enlace como `f`).
+    /// La huella del certificado de la conexión directa, si se ofrece (va en el enlace como `f`): hace falta que sea
+    /// peer to peer y que no sea «Túnel». Se negocia por el servidor del host (el túnel o su dirección) y, solo con
+    /// Cloudflare, por los relés si el túnel no responde.
     fn huella(&self) -> Option<String> {
         if self.directa() { self.sala.huella() } else { None }
     }
@@ -264,6 +273,8 @@ pub struct Red {
     sin_identificar: std::sync::atomic::AtomicUsize,
     /// Conexiones directas (WebRTC) a medio hacer: ofertas contestadas cuyos canales aún no se han abierto.
     peers_a_medias: std::sync::atomic::AtomicUsize,
+    /// Ofertas de conexión directa atendidas por minuto, vengan por donde vengan (el WebSocket o los relés).
+    tope_ofertas: Mutex<senal::Tope>,
 }
 
 /// Una plaza de conexión sin identificar; se libera sola al soltarla.
@@ -330,6 +341,7 @@ impl Red {
             limpiador: Mutex::new(None),
             sin_identificar: std::sync::atomic::AtomicUsize::new(0),
             peers_a_medias: std::sync::atomic::AtomicUsize::new(0),
+            tope_ofertas: Mutex::new(senal::Tope::nuevo(senal::OFERTAS_POR_MINUTO)),
         }
     }
 
@@ -444,7 +456,14 @@ impl Red {
                 respaldo: s.respaldo.clone(),
                 enlaces: if matches!(s.fase, Fase::Abierta) { s.enlaces() } else { Vec::new() },
                 pagina_incluida: pagina::incluida(),
-                senal: s.senal.as_ref().map(|x| EstadoSenal { reles_conectados: x.conectados(), reles_total: x.total() }),
+                // Con la sala abierta y lo directo ofrecido: cuántos relés; 0 de 0 = ninguno pasó la prueba
+                senal: match s.senal.as_ref() {
+                    Some(x) => Some(EstadoSenal { reles_conectados: x.conectados(), reles_total: x.total() }),
+                    None if s.directa() && matches!(s.respaldo, config::Respaldo::Cloudflare) && matches!(s.fase, Fase::Abierta) => {
+                        Some(EstadoSenal { reles_conectados: 0, reles_total: 0 })
+                    }
+                    None => None,
+                },
                 solo_respaldo: s.solo_respaldo,
             },
             None => EstadoSala {
@@ -516,6 +535,7 @@ impl Red {
                 respaldo: respaldo.clone(),
                 lan: Vec::new(),
                 solo_respaldo,
+                reles: Vec::new(),
                 codigos_vistos: VecDeque::new(),
                 senal: None,
             });
@@ -566,11 +586,10 @@ impl Red {
         // Dirección propia: la pone el host (su dominio, su túnel...); aquí solo se escucha en su puerto
         if let config::Respaldo::Propio { url, .. } = &respaldo {
             let direccion = config::direccion_de_url(url)?;
-            self.con_sala(generacion, |s| {
-                s.tunel = Some(direccion);
-                s.fase = Fase::Abierta;
-            });
-            self.iniciar_senal(generacion);
+            self.con_sala(generacion, |s| s.tunel = Some(direccion));
+            // Primero se eligen los relés (van en el enlace) y solo entonces se da la sala por abierta
+            self.iniciar_senal(generacion, None).await;
+            self.con_sala(generacion, |s| s.fase = Fase::Abierta);
             self.avisar();
             return Ok(());
         }
@@ -596,41 +615,57 @@ impl Red {
         self.con_sala(generacion, |s| {
             s.proceso_tunel = proceso.take();
             s.tunel = Some(direccion);
-            s.fase = Fase::Abierta;
         });
         // Si se cerró mientras tanto, `proceso` sigue aquí y se mata al soltarlo (kill_on_drop)
         drop(proceso);
-        self.iniciar_senal(generacion);
+        self.iniciar_senal(generacion, None).await;
+        self.con_sala(generacion, |s| s.fase = Fase::Abierta);
         self.avisar();
         Ok(())
     }
 
-    /// Empieza a escuchar las ofertas de los jugadores en los relés de Nostr (peer to peer). Si ya había una
-    /// escucha, se sustituye (y la vieja se para). Hay que llamarla dentro de un runtime de tokio. En los tests no se
-    /// toca la red de verdad.
-    fn iniciar_senal(self: &Arc<Self>, generacion: u64) {
+    /// Elige los relés de Nostr (los candidatos que pasan la prueba) y empieza a escuchar en ellos las ofertas de los
+    /// jugadores (peer to peer). `reutilizar`: los relés ya elegidos (al rehacer la escucha con un enlace nuevo no se
+    /// vuelve a probar). Sin ningún relé que funcione no se ofrece lo directo: el enlace sale sin `f` y todos entran por
+    /// el respaldo. No marca la sala como abierta: lo hace quien llama, cuando el enlace ya está completo. En los tests
+    /// no se toca la red de verdad.
+    async fn iniciar_senal(self: &Arc<Self>, generacion: u64, reutilizar: Option<Vec<String>>) {
+        // Los relés son solo el plan B del túnel de Cloudflare (por si no responde). Con tu propia dirección la
+        // negociación va por ella: si no responde, tampoco carga la página, y los relés no servirían de nada. Y sin
+        // conexión directa (red local o «Túnel») no hay nada que negociar.
+        let con_reles = |s: &SalaAbierta| s.generacion == generacion && s.directa() && matches!(s.respaldo, config::Respaldo::Cloudflare);
+        if !self.dentro().as_ref().is_some_and(con_reles) {
+            return;
+        }
         if cfg!(test) {
+            self.con_sala(generacion, |s| s.reles = vec!["wss://rele.prueba".to_string()]);
             return;
         }
-        // Sin conexión directa (red local o «solo respaldo») no hay nada que escuchar
-        if !self.dentro().as_ref().is_some_and(|s| s.generacion == generacion && s.directa()) {
-            return;
-        }
-        let reles: Vec<String> = senal::RELES.iter().map(|r| r.to_string()).collect();
-        match senal::arrancar(self, &reles, true) {
-            // Si la sala ya no es la de esta apertura, `s` se suelta aquí y la escucha se para
-            Ok(s) => {
-                self.con_sala(generacion, |sala| sala.senal = Some(s));
+        let reles = match reutilizar {
+            Some(r) => r,
+            None => {
+                self.con_sala(generacion, |s| {
+                    s.fase = Fase::Preparando { paso: "Comprobando los relés de Nostr…".into(), progreso: None }
+                });
+                self.avisar();
+                senal::elegir_reles().await
             }
-            Err(e) => eprintln!("No se pudo empezar la señalización por relés: {e}"),
-        }
+        };
+        let senal = if reles.is_empty() { None } else { senal::arrancar(self, &reles).map_err(|e| eprintln!("No se pudo empezar la señalización por relés: {e}")).ok() };
+        // Si la sala ya no es la de esta apertura, `senal` se suelta aquí y la escucha se para
+        self.con_sala(generacion, |s| {
+            s.reles = reles;
+            s.senal = senal;
+        });
     }
 
-    /// Tras cambiar el enlace: las etiquetas de los relés salen del secreto, así que la escucha se rehace.
-    pub fn reiniciar_senal(self: &Arc<Self>) {
-        let generacion = self.dentro().as_ref().filter(|s| s.directa() && matches!(s.fase, Fase::Abierta)).map(|s| s.generacion);
-        if let Some(g) = generacion {
-            self.iniciar_senal(g);
+    /// Tras cambiar el enlace: las etiquetas de los relés salen del secreto, así que la escucha se rehace (con los
+    /// mismos relés).
+    pub async fn reiniciar_senal(self: &Arc<Self>) {
+        let datos = self.dentro().as_ref().filter(|s| s.directa() && matches!(s.fase, Fase::Abierta)).map(|s| (s.generacion, s.reles.clone()));
+        if let Some((g, reles)) = datos {
+            self.iniciar_senal(g, Some(reles)).await;
+            self.avisar();
         }
     }
 
@@ -895,6 +930,23 @@ impl Red {
             || self.dentro().as_ref().is_some_and(|s| s.origenes_propios().iter().any(|o| o.eq_ignore_ascii_case(origen)))
     }
 
+    /// Contesta la oferta de conexión directa de un jugador (su código cifrado), venga por donde venga: el WebSocket
+    /// del servidor (`OfertaDirecta`, antes del saludo) o los relés de Nostr. Con un tope por minuto para todas.
+    ///
+    /// Devuelve un futuro «en caja»: `responder_con` lanza la atención del jugador (`atender`), que a su vez llama a esta
+    /// función, y sin la caja el compilador no puede resolver ese tipo recursivo.
+    pub(crate) fn responder_oferta(self: &Arc<Self>, codigo: &str) -> futures_util::future::BoxFuture<'static, Result<String, String>> {
+        let red = self.clone();
+        let codigo = codigo.to_string();
+        Box::pin(async move {
+            if !bloquear(&red.tope_ofertas).permitir() {
+                return Err("Demasiadas ofertas seguidas: prueba en un momento".to_string());
+            }
+            // En los tests no se pregunta a ningún servidor STUN
+            webrtc::responder_con(&red, &codigo, !cfg!(test)).await
+        })
+    }
+
     /// Carpeta de la partida de la sala abierta.
     fn dir_sala(&self) -> Option<PathBuf> {
         self.dentro().as_ref().map(|s| s.dir.clone())
@@ -923,6 +975,7 @@ impl Red {
             respaldo: config::Respaldo::Cloudflare,
             lan: Vec::new(),
             solo_respaldo: false,
+            reles: vec!["wss://rele.prueba".to_string()],
             codigos_vistos: VecDeque::new(),
             senal: None,
         });
@@ -949,6 +1002,7 @@ impl Red {
             respaldo: config::Respaldo::Cloudflare,
             lan: Vec::new(),
             solo_respaldo: false,
+            reles: Vec::new(),
             codigos_vistos: VecDeque::new(),
             senal: None,
         });
@@ -995,7 +1049,9 @@ mod tests {
         assert!(enlace.starts_with("https://mesa.mi-dominio.es/#s="), "{enlace}");
         assert!(!enlace.contains("t="), "{enlace}");
         // Peer to peer: lleva la huella del certificado de la conexión directa, que se guarda en sala.json
-        let huella = enlace.split("&f=").nth(1).expect("lleva la huella").to_string();
+        let huella = enlace.split("&f=").nth(1).expect("lleva la huella").split('&').next().unwrap().to_string();
+        assert!(!enlace.contains("&r="), "con tu dirección propia no hay relés: se negocia por ella: {enlace}");
+        assert!(e.senal.is_none(), "ni escucha en relés");
         assert_eq!(huella.len(), 43);
         assert_eq!(SalaGuardada::leer_o_crear(&red.almacen.dir()).unwrap().huella().as_deref(), Some(huella.as_str()));
         red.regenerar_enlace().unwrap();
@@ -1018,7 +1074,7 @@ mod tests {
         let e = red.estado(&EstadoPartida::default());
         let enlace = e.enlace.clone().unwrap();
         assert!(enlace.contains("#t=prueba.local&s="), "{enlace}");
-        assert_eq!(enlace.split("&f=").nth(1).map(str::len), Some(43), "Cloudflare también ofrece lo directo: {enlace}");
+        assert_eq!(enlace.split("&f=").nth(1).and_then(|x| x.split('&').next()).map(str::len), Some(43), "Cloudflare también ofrece lo directo: {enlace}");
         assert!(!e.solo_respaldo);
         assert!(red.dentro().as_ref().unwrap().direcciones().iter().any(|d| d.starts_with("webrtc:")));
         assert!(red.datos_directo().is_ok());
@@ -1030,6 +1086,20 @@ mod tests {
         assert!(e.solo_respaldo);
         assert!(!red.dentro().as_ref().unwrap().direcciones().iter().any(|d| d.starts_with("webrtc:")));
         assert!(red.datos_directo().unwrap_err().contains("no ofrece conexión directa"));
+        red.cerrar();
+    }
+
+    /// Si ningún relé pasó la prueba, lo directo se sigue ofreciendo (por el túnel), solo que sin plan B.
+    #[tokio::test]
+    async fn sin_ningun_rele_que_funcione_se_ofrece_lo_directo_solo_por_el_tunel() {
+        let red = red_en("red_sin_reles");
+        red.abrir_local().await;
+        red.dentro().as_mut().unwrap().reles.clear();
+        let e = red.estado(&EstadoPartida::default());
+        let enlace = e.enlace.unwrap();
+        assert!(enlace.contains("&f=") && !enlace.contains("&r="), "sigue ofreciendo lo directo, por el túnel: {enlace}");
+        assert_eq!(e.senal, Some(EstadoSenal { reles_conectados: 0, reles_total: 0 }), "la ventana lo enseña: 0 de 0");
+        assert!(red.dentro().as_ref().unwrap().direcciones().iter().any(|d| d.starts_with("webrtc:")));
         red.cerrar();
     }
 

@@ -17,7 +17,8 @@ describe("enlace", () => {
       secreto: K,
       mismoOrigen: false,
       seguro: true,
-      huella: null
+      huella: null,
+      reles: null
     });
   });
 
@@ -30,6 +31,18 @@ describe("enlace", () => {
     }
   });
 
+  it("lee los relés que el host comprobó (`r`), solo los que tienen forma de dominio, y sin `r` es `null`", () => {
+    const F = "A".repeat(43);
+    const con = (r: string) => leerEnlace(`#t=casa.trycloudflare.com&s=${S}&k=${K}&f=${F}&r=${r}`)?.reles;
+    expect(con("relay.primal.net,nostr.oxtr.dev:8443")).toEqual(["wss://relay.primal.net", "wss://nostr.oxtr.dev:8443"]);
+    expect(con("RELAY.Primal.NET")).toEqual(["wss://relay.primal.net"]);
+    // Nada que cambie adónde va la conexión: esquemas, rutas, usuarios, espacios…
+    expect(con("wss://a.b,a.b/ruta,u@a.b,a b,,127.0.0.1.:x")).toEqual([]);
+    expect(con("a.b,c.d,e.f,g.h,i.j,k.l,m.n,o.p")).toHaveLength(6);
+    expect(leerEnlace(`#s=${S}&k=${K}&f=${F}&r=a.b`, { host: "x.es", protocol: "https:" })?.reles).toEqual(["wss://a.b"]);
+    expect(leerEnlace(`#t=casa.trycloudflare.com&s=${S}&k=${K}&f=${F}`)?.reles, "un enlace antiguo no trae r").toBeNull();
+  });
+
   it("la huella del enlace se pasa a la forma del SDP (AA:BB:…)", () => {
     // 32 bytes 0x00..0x1f en base64url
     const bytes = Uint8Array.from({ length: 32 }, (_, i) => i);
@@ -39,7 +52,7 @@ describe("enlace", () => {
 
   it("sin `t`, el host es quien sirve la página (dirección propia o red local), con su esquema", () => {
     const propia = leerEnlace(`#s=${S}&k=${K}`, { host: "kirem-2.tail12739.ts.net", protocol: "https:" })!;
-    expect(propia).toEqual({ tunel: "kirem-2.tail12739.ts.net", sala: S, secreto: K, mismoOrigen: true, seguro: true, huella: null });
+    expect(propia).toEqual({ tunel: "kirem-2.tail12739.ts.net", sala: S, secreto: K, mismoOrigen: true, seguro: true, huella: null, reles: null });
     expect(urlWebSocket(propia)).toBe("wss://kirem-2.tail12739.ts.net/ws");
     expect(urlImagen(propia, "SES", "imagenes/a.png")).toBe("/imagen?ruta=imagenes%2Fa.png&sesion=SES");
 

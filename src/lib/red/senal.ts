@@ -1,6 +1,8 @@
 // src/lib/red/senal.ts
 //
-// Señalización AUTOMÁTICA de la conexión directa por relés públicos de Nostr (espejo de src-tauri/src/red/senal.rs).
+// Cómo se ponen de acuerdo el jugador y el host para la conexión directa. Primero por el SERVIDOR del host (el túnel o su
+// dirección: `pedirRespuestaPorServidor`, un mensaje `OfertaDirecta` antes del saludo) y, solo si no responde y el enlace
+// trae relés (Cloudflare), por relés públicos de Nostr (`pedirRespuesta`; espejo de src-tauri/src/red/senal.rs).
 // El jugador publica su oferta (el código cifrado de `codigo.ts`) en unos relés y espera la respuesta del host por el
 // mismo camino. Los relés solo ven bultos opacos: el contenido va cifrado con el secreto del enlace, la etiqueta con la
 // que se encuentran sale de ese secreto, y el navegador rechaza una respuesta cuyo certificado no sea el del enlace.
@@ -15,11 +17,9 @@ import { descifrar } from "./codigo";
 
 export const KIND = 27184;
 
-/** Relés por los que se intercambian las ofertas. Hay que cambiarlos a la vez en `src-tauri/src/red/senal.rs`. */
-export const RELES = ["wss://relay.snort.social", "wss://relay.primal.net", "wss://nostr.oxtr.dev", "wss://offchain.pub"];
 
 /** Lo que se espera la respuesta del host antes de pasar al respaldo. */
-export const TOPE_RESPUESTA_MS = 10_000;
+export const TOPE_RESPUESTA_MS = 6000;
 
 export interface Evento {
   id: string;
@@ -81,6 +81,99 @@ export function leerEvento(texto: string): Evento | null {
   }
 }
 
+/**
+ * Dos esperas separadas, para que una conexión lenta no se coma el margen de la respuesta:
+ *  - abrir el WebSocket del servidor del host: si no abre en este tiempo, el servidor no está disponible;
+ *  - la respuesta del host, contada DESDE QUE SE ENVÍA LA OFERTA: él tarda hasta ~1,8 s en prepararla (espera al primer
+ *    candidato público, 1,5 s como mucho + gracia) más la ida y vuelta.
+ * En total, lo normal es 1–2 s; lo peor, 4,5 s (solo si el servidor tarda en abrir).
+ */
+export const TOPE_CONEXION_SERVIDOR_MS = 2000;
+export const TOPE_SERVIDOR_MS = 2500;
+
+export interface OpcionesServidor {
+  secreto: string;
+  /** El WebSocket del host (`wss://…/ws`, el mismo del respaldo). */
+  url: string;
+  /** Mi oferta, ya cifrada. */
+  codigoOferta: string;
+  /** Lo que se espera la respuesta una vez enviada la oferta. */
+  topeMs?: number;
+  /** Lo que se espera a que abra el WebSocket. */
+  topeConexionMs?: number;
+  /** Para los tests. */
+  crearWebSocket?: (url: string) => WebSocket;
+  cancelar?: AbortSignal;
+}
+
+/**
+ * Manda la oferta por el WebSocket del servidor del host, antes del saludo, y devuelve el código de su respuesta. Lanza un
+ * texto si no conecta, no contesta a tiempo o el host dice que no (p. ej. no ofrece conexión directa). El código aún hay
+ * que validarlo (huella).
+ */
+export function pedirRespuestaPorServidor(o: OpcionesServidor): Promise<string> {
+  const abrir = o.crearWebSocket ?? ((u: string) => new WebSocket(u));
+  return new Promise<string>((ok, mal) => {
+    let acabado = false;
+    let ws: WebSocket | null = null;
+    const terminar = (f: () => void) => {
+      if (acabado) return;
+      acabado = true;
+      clearTimeout(relojConexion);
+      clearTimeout(relojRespuesta);
+      o.cancelar?.removeEventListener("abort", alCancelar);
+      try {
+        ws?.close();
+      } catch {
+        // ya cerrado
+      }
+      f();
+    };
+    const alCancelar = () => terminar(() => mal("Cancelado"));
+    let relojRespuesta: ReturnType<typeof setTimeout> | undefined;
+    const relojConexion = setTimeout(() => terminar(() => mal("El servidor no ha abierto la conexión")), o.topeConexionMs ?? TOPE_CONEXION_SERVIDOR_MS);
+    if (o.cancelar?.aborted) return alCancelar();
+    o.cancelar?.addEventListener("abort", alCancelar);
+    try {
+      ws = abrir(o.url);
+    } catch {
+      return terminar(() => mal("No se pudo conectar con el servidor"));
+    }
+    const socket = ws;
+    socket.onopen = () => {
+      // Abierta: ya no cuenta lo lento que fue conectar; ahora corre el tiempo de la respuesta
+      clearTimeout(relojConexion);
+      relojRespuesta = setTimeout(() => terminar(() => mal("El servidor no ha contestado")), o.topeMs ?? TOPE_SERVIDOR_MS);
+      socket.send(JSON.stringify({ tipo: "OfertaDirecta", codigo: o.codigoOferta }));
+    };
+    socket.onmessage = (m) => {
+      if (acabado || typeof m.data !== "string") return;
+      let v: { tipo?: string; codigo?: unknown; error?: unknown; motivo?: unknown };
+      try {
+        v = JSON.parse(m.data);
+      } catch {
+        return;
+      }
+      if (v.tipo === "RespuestaDirecta" && typeof v.codigo === "string") {
+        const codigo = v.codigo;
+        // Solo vale si descifra con el secreto de la sala y es una respuesta
+        descifrar(o.secreto, codigo).then(
+          (c) => {
+            if (c.tipo === "respuesta") terminar(() => ok(codigo));
+          },
+          () => {}
+        );
+      } else if (v.tipo === "OfertaDirectaError") {
+        terminar(() => mal(String(v.error)));
+      } else if (v.tipo === "Rechazado") {
+        terminar(() => mal(String(v.motivo)));
+      }
+    };
+    socket.onerror = () => terminar(() => mal("No se pudo conectar con el servidor"));
+    socket.onclose = () => terminar(() => mal("El servidor cerró la conexión"));
+  });
+}
+
 export interface OpcionesPedir {
   secreto: string;
   /** Mi oferta, ya cifrada (el código de `codigo.ts`). */
@@ -100,7 +193,7 @@ export interface OpcionesPedir {
  * oferta). Lanza un texto si se agota el tiempo o no hay ningún relé. El código aún hay que validarlo (huella).
  */
 export function pedirRespuesta(o: OpcionesPedir): Promise<string> {
-  const reles = o.reles ?? RELES;
+  const reles = o.reles ?? [];
   const abrir = o.crearWebSocket ?? ((u: string) => new WebSocket(u));
   const etiquetaRespuesta = etiqueta(o.secreto, "respuesta");
   const oferta = crearAleatorio(Math.floor(Date.now() / 1000), [["t", etiqueta(o.secreto, "oferta")]], o.codigoOferta);

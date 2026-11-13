@@ -29,25 +29,40 @@ use tokio::sync::{broadcast, mpsc};
 use tokio::task::JoinHandle;
 use tokio_tungstenite::tungstenite::protocol::WebSocketConfig;
 use tokio_tungstenite::tungstenite::Message;
-use tokio_tungstenite::{connect_async_tls_with_config, Connector};
+use tokio_tungstenite::{connect_async_tls_with_config, Connector, MaybeTlsStream, WebSocketStream};
 
 use crate::red::codigo::{self, MAX_CODIGO};
-use crate::red::webrtc;
 use crate::red::Red;
 
 /// El tipo de evento (efímero). No es el 24242 de Blossom.
 pub const KIND: u32 = 27184;
 
-/// Relés por los que se intercambian las ofertas (los que funcionaron al probarlos: docs/red.md, «Relés de Nostr»). Hay que
-/// cambiarlos a la vez aquí y en `src/lib/red/senal.ts`, como la versión del protocolo.
-pub const RELES: [&str; 4] = ["wss://relay.snort.social", "wss://relay.primal.net", "wss://nostr.oxtr.dev", "wss://offchain.pub"];
+/// Relés candidatos. Al abrir la sala el host PRUEBA cuáles funcionan de verdad (`elegir_reles`) y se queda con los más
+/// rápidos; esos van en el enlace (`&r=`), así el jugador usa exactamente los mismos. Los públicos cambian sus reglas
+/// (pago, NIP-05, tipos de evento…), por eso no se fijan: solo tienen que ser `wss://host` sin ruta ni puerto raro.
+pub const CANDIDATOS: [&str; 10] = [
+    "wss://relay.snort.social",
+    "wss://relay.primal.net",
+    "wss://nostr.oxtr.dev",
+    "wss://offchain.pub",
+    "wss://nostr.sathoarder.com",
+    "wss://relay.damus.io",
+    "wss://nos.lol",
+    "wss://nostr.mom",
+    "wss://nostr.bitcoiner.social",
+    "wss://relay.orangepill.dev",
+];
+/// Con cuántos relés se queda el host (los primeros que pasan la prueba).
+pub const CUANTOS_RELES: usize = 4;
+/// Cada prueba de un relé (conectar, suscribirse, publicar y recibirlo) tiene este tiempo.
+const TIEMPO_PRUEBA: Duration = Duration::from_secs(6);
 
 /// Un evento no puede ocupar más (lo que llega de un relé y lo que se publica).
 const MAX_EVENTO: usize = 32 * 1024;
 /// El `created_at` de una oferta no puede alejarse más de esto de la hora del host.
 const MARGEN_SEGUNDOS: u64 = 120;
 /// Ofertas que el host atiende por minuto, de cualquier relé (el resto se tira sin gastar nada).
-const OFERTAS_POR_MINUTO: usize = 6;
+pub(crate) const OFERTAS_POR_MINUTO: usize = 6;
 /// Eventos ya vistos que se recuerdan (el mismo evento llega por varios relés).
 const VISTOS: usize = 256;
 const TIEMPO_CONECTAR: Duration = Duration::from_secs(10);
@@ -153,17 +168,17 @@ fn ahora_s() -> u64 {
 }
 
 /// Un cubo sencillo: como mucho `max` por minuto.
-struct Tope {
+pub(crate) struct Tope {
     marcas: VecDeque<Instant>,
     max: usize,
 }
 
 impl Tope {
-    fn nuevo(max: usize) -> Self {
+    pub(crate) fn nuevo(max: usize) -> Self {
         Tope { marcas: VecDeque::new(), max }
     }
 
-    fn permitir(&mut self) -> bool {
+    pub(crate) fn permitir(&mut self) -> bool {
         let ahora = Instant::now();
         while self.marcas.front().is_some_and(|t| ahora.duration_since(*t) > Duration::from_secs(60)) {
             self.marcas.pop_front();
@@ -229,6 +244,16 @@ fn peticion_ofertas(etiqueta_oferta: &str) -> String {
     json!(["REQ", "ofertas", { "kinds": [KIND], "#t": [etiqueta_oferta], "since": ahora_s().saturating_sub(MARGEN_SEGUNDOS) }]).to_string()
 }
 
+/// Abre el WebSocket (con TLS si es `wss://`) a un relé, con tiempo máximo.
+async fn abrir_ws(url: &str) -> Result<WebSocketStream<MaybeTlsStream<tokio::net::TcpStream>>, String> {
+    let config = WebSocketConfig::default().max_message_size(Some(MAX_EVENTO * 2)).max_frame_size(Some(MAX_EVENTO * 2));
+    let (ws, _) = tokio::time::timeout(TIEMPO_CONECTAR, connect_async_tls_with_config(url, Some(config), false, Some(conector()?)))
+        .await
+        .map_err(|_| "no conecta a tiempo".to_string())?
+        .map_err(|e| e.to_string())?;
+    Ok(ws)
+}
+
 /// Una conexión con un relé, de principio a fin: se suscribe y reparte lo que llega; publica lo que le dicen.
 async fn sesion(
     url: &str,
@@ -237,14 +262,7 @@ async fn sesion(
     salida: &mut broadcast::Receiver<Arc<Evento>>,
     conectados: &AtomicUsize,
 ) -> Result<(), String> {
-    let config = WebSocketConfig::default().max_message_size(Some(MAX_EVENTO * 2)).max_frame_size(Some(MAX_EVENTO * 2));
-    let (mut ws, _) = tokio::time::timeout(
-        TIEMPO_CONECTAR,
-        connect_async_tls_with_config(url, Some(config), false, Some(conector()?)),
-    )
-    .await
-    .map_err(|_| "no conecta a tiempo".to_string())?
-    .map_err(|e| e.to_string())?;
+    let mut ws = abrir_ws(url).await?;
     ws.send(Message::Text(peticion_ofertas(etiqueta_oferta).into())).await.map_err(|e| e.to_string())?;
     conectados.fetch_add(1, Ordering::Relaxed);
     let resultado = async {
@@ -289,6 +307,96 @@ async fn sesion(
     resultado
 }
 
+// ---------------------------------------------------------------------------
+// Elegir relés: probarlos de verdad
+// ---------------------------------------------------------------------------
+
+/// Prueba un relé como lo usará la sala: una conexión se suscribe a una etiqueta nueva, otra publica en ella un evento
+/// efímero del tamaño de una oferta, y se espera el `OK` del relé y que la primera lo reciba. Devuelve lo que tardó el
+/// evento en llegar. Muchos relés públicos fallan aquí (piden pago o NIP-05, no aceptan este tipo, no reenvían…).
+async fn probar_rele(url: &str) -> Result<Duration, String> {
+    async fn prueba(url: &str) -> Result<Duration, String> {
+        let etiqueta_prueba = hex::encode(rand::random::<[u8; 16]>());
+        let mut oyente = abrir_ws(url).await?;
+        let mut emisor = abrir_ws(url).await?;
+        let filtro = json!(["REQ", "prueba", { "kinds": [KIND], "#t": [&etiqueta_prueba], "since": ahora_s().saturating_sub(5) }]);
+        oyente.send(Message::Text(filtro.to_string().into())).await.map_err(|e| e.to_string())?;
+        // Hasta el fin de lo guardado (muchos relés lo mandan; si no, se sigue sin él)
+        let _ = tokio::time::timeout(Duration::from_millis(1500), async {
+            while let Some(Ok(m)) = oyente.next().await {
+                if matches!(&m, Message::Text(t) if t.as_str().starts_with("[\"EOSE\"")) {
+                    break;
+                }
+            }
+        })
+        .await;
+        let evento = crear_aleatorio(ahora_s(), vec![vec!["t".to_string(), etiqueta_prueba]], "x".repeat(3000))?;
+        let desde = Instant::now();
+        emisor.send(Message::Text(json!(["EVENT", &evento]).to_string().into())).await.map_err(|e| e.to_string())?;
+        let aceptado = async {
+            while let Some(m) = emisor.next().await {
+                if let Message::Text(t) = m.map_err(|e| e.to_string())? {
+                    let v: serde_json::Value = serde_json::from_str(t.as_str()).unwrap_or_default();
+                    match v[0].as_str() {
+                        Some("OK") => return if v[2].as_bool() == Some(true) { Ok(()) } else { Err(format!("lo rechaza: {}", v[3])) },
+                        Some("NOTICE") | Some("CLOSED") => return Err(format!("avisa: {}", v[1])),
+                        _ => {}
+                    }
+                }
+            }
+            Err("se cerró".to_string())
+        };
+        let recibido = async {
+            while let Some(m) = oyente.next().await {
+                if let Some(e) = leer_evento(match &m {
+                    Ok(Message::Text(t)) => t.as_str(),
+                    _ => "",
+                }) {
+                    if e.id == evento.id {
+                        return Ok(());
+                    }
+                }
+            }
+            Err("se cerró".to_string())
+        };
+        tokio::try_join!(aceptado, recibido)?;
+        Ok(desde.elapsed())
+    }
+    tokio::time::timeout(TIEMPO_PRUEBA, prueba(url)).await.map_err(|_| "no contesta a tiempo".to_string())?
+}
+
+/// De `candidatos`, los `cuantos` primeros que pasan `probar_rele` (los más rápidos). Se prueban todos a la vez y se
+/// para en cuanto hay suficientes; si no llegan, se espera a los que quedan (como mucho `TIEMPO_PRUEBA`).
+pub async fn elegir_de(candidatos: &[String], cuantos: usize) -> Vec<String> {
+    let mut tareas = tokio::task::JoinSet::new();
+    for url in candidatos {
+        let url = url.clone();
+        tareas.spawn(async move { probar_rele(&url).await.map(|_| url) });
+    }
+    let mut buenos = Vec::new();
+    while let Some(r) = tareas.join_next().await {
+        if let Ok(Ok(url)) = r {
+            buenos.push(url);
+            if buenos.len() >= cuantos {
+                break; // el resto se aborta al soltar el conjunto
+            }
+        }
+    }
+    buenos
+}
+
+/// Los relés con los que se queda el host: los candidatos que funcionan. Vacío = ninguno (todos entrarán por el respaldo).
+pub async fn elegir_reles() -> Vec<String> {
+    let candidatos: Vec<String> = CANDIDATOS.iter().map(|r| r.to_string()).collect();
+    elegir_de(&candidatos, CUANTOS_RELES).await
+}
+
+/// Los relés como van en el enlace (`&r=`): sus nombres, sin `wss://`, separados por comas. Solo los `wss://host[:puerto]`
+/// sin ruta (lo único que el navegador acepta de un enlace).
+pub fn reles_para_enlace(reles: &[String]) -> String {
+    reles.iter().filter_map(|r| r.strip_prefix("wss://")).filter(|h| !h.is_empty() && !h.contains(['/', ',', ' '])).collect::<Vec<_>>().join(",")
+}
+
 /// Mantiene la conexión con un relé: si se cae o no conecta, reintenta con espera creciente (1 s → 60 s).
 async fn mantener_rele(
     url: String,
@@ -316,12 +424,10 @@ async fn atender_ofertas(
     secreto: String,
     mut entrantes: mpsc::Receiver<Evento>,
     salida: broadcast::Sender<Arc<Evento>>,
-    stun: bool,
 ) {
     let etiqueta_oferta = etiqueta(&secreto, "oferta");
     let etiqueta_respuesta = etiqueta(&secreto, "respuesta");
     let mut vistos: VecDeque<String> = VecDeque::new();
-    let mut tope = Tope::nuevo(OFERTAS_POR_MINUTO);
     while let Some(e) = entrantes.recv().await {
         // Lo barato primero: el mismo evento llega por varios relés
         if vistos.contains(&e.id) {
@@ -331,7 +437,7 @@ async fn atender_ofertas(
         while vistos.len() > VISTOS {
             vistos.pop_front();
         }
-        if !oferta_valida(&e, &etiqueta_oferta, ahora_s()) || !tope.permitir() {
+        if !oferta_valida(&e, &etiqueta_oferta, ahora_s()) {
             continue;
         }
         let Ok(oferta) = codigo::descifrar(&secreto, &e.content) else { continue };
@@ -339,7 +445,8 @@ async fn atender_ofertas(
         let salida = salida.clone();
         let etiqueta_respuesta = etiqueta_respuesta.clone();
         tokio::spawn(async move {
-            let Ok(respuesta) = webrtc::responder_con(&red, &e.content, stun).await else { return };
+            // (El tope por minuto lo aplica `responder_oferta`, que comparte con el WebSocket)
+            let Ok(respuesta) = red.responder_oferta(&e.content).await else { return };
             let tags = vec![vec!["t".to_string(), etiqueta_respuesta], vec!["x".to_string(), oferta.n]];
             if let Ok(ev) = crear_aleatorio(ahora_s(), tags, respuesta) {
                 let _ = salida.send(Arc::new(ev));
@@ -349,8 +456,8 @@ async fn atender_ofertas(
 }
 
 /// Empieza a escuchar en `reles` las ofertas de la sala abierta (en peer to peer). Hay que llamarla dentro de un
-/// runtime de tokio. `stun = false` solo en los tests.
-pub fn arrancar(red: &Arc<Red>, reles: &[String], stun: bool) -> Result<Senal, String> {
+/// runtime de tokio.
+pub fn arrancar(red: &Arc<Red>, reles: &[String]) -> Result<Senal, String> {
     let (secreto, _) = red.datos_directo()?;
     let etiqueta_oferta = etiqueta(&secreto, "oferta");
     let (tx_entrantes, rx_entrantes) = mpsc::channel::<Evento>(64);
@@ -360,7 +467,7 @@ pub fn arrancar(red: &Arc<Red>, reles: &[String], stun: bool) -> Result<Senal, S
     for url in reles {
         tareas.push(tokio::spawn(mantener_rele(url.clone(), etiqueta_oferta.clone(), tx_entrantes.clone(), salida.subscribe(), conectados.clone())));
     }
-    tareas.push(tokio::spawn(atender_ofertas(red.clone(), secreto, rx_entrantes, salida, stun)));
+    tareas.push(tokio::spawn(atender_ofertas(red.clone(), secreto, rx_entrantes, salida)));
     Ok(Senal { total: reles.len(), conectados, tareas })
 }
 
@@ -474,12 +581,16 @@ mod tests {
 
     /// Un relé mínimo: guarda las suscripciones (`#t` y `#x`) de cada conexión y reparte los eventos a quien encajan.
     async fn rele_falso(puerto: u16) -> JoinHandle<()> {
+        rele_con(puerto, false).await
+    }
+
+    async fn rele_con(puerto: u16, rechaza: bool) -> JoinHandle<()> {
         let (tx, _) = broadcast::channel::<String>(64);
         let app = Router::new().route(
             "/",
             get(move |ws: WebSocketUpgrade| {
                 let tx = tx.clone();
-                async move { ws.on_upgrade(move |s| conexion_falsa(s, tx)) }
+                async move { ws.on_upgrade(move |s| conexion_falsa(s, tx, rechaza)) }
             }),
         );
         let listener = tokio::net::TcpListener::bind(("127.0.0.1", puerto)).await.unwrap();
@@ -488,7 +599,7 @@ mod tests {
         })
     }
 
-    async fn conexion_falsa(mut socket: WebSocket, tx: broadcast::Sender<String>) {
+    async fn conexion_falsa(mut socket: WebSocket, tx: broadcast::Sender<String>, rechaza: bool) {
         let mut rx = tx.subscribe();
         let mut subs: Vec<(String, serde_json::Value)> = Vec::new();
         loop {
@@ -497,10 +608,15 @@ mod tests {
                     let Some(Ok(Msg::Text(t))) = m else { return };
                     let Ok(v) = serde_json::from_str::<serde_json::Value>(t.as_str()) else { continue };
                     match v[0].as_str() {
-                        Some("REQ") => subs.push((v[1].as_str().unwrap_or("").to_string(), v[2].clone())),
+                        Some("REQ") => {
+                            subs.push((v[1].as_str().unwrap_or("").to_string(), v[2].clone()));
+                            let _ = socket.send(Msg::Text(json!(["EOSE", v[1]]).to_string().into())).await;
+                        }
                         Some("EVENT") => {
-                            let _ = tx.send(v[1].to_string());
-                            let _ = socket.send(Msg::Text(json!(["OK", v[1]["id"], true, ""]).to_string().into())).await;
+                            if !rechaza {
+                                let _ = tx.send(v[1].to_string());
+                            }
+                            let _ = socket.send(Msg::Text(json!(["OK", v[1]["id"], !rechaza, if rechaza { "blocked: de prueba" } else { "" }]).to_string().into())).await;
                         }
                         _ => {}
                     }
@@ -601,8 +717,10 @@ mod tests {
     async fn reles_reales_aceptan_la_escucha_del_host() {
         let red = red_de_prueba("senal_reales");
         red.abrir_local().await;
-        let reles: Vec<String> = RELES.iter().map(|r| r.to_string()).collect();
-        let senal = arrancar(&red, &reles, false).unwrap();
+        let reles = elegir_reles().await;
+        println!("relés elegidos: {reles:?}");
+        assert!(!reles.is_empty(), "ningún relé real pasó la prueba (¿sin internet, o TLS roto?)");
+        let senal = arrancar(&red, &reles).unwrap();
         for _ in 0..150 {
             if senal.conectados() >= 1 {
                 break;
@@ -611,6 +729,117 @@ mod tests {
         }
         println!("relés conectados: {} de {}", senal.conectados(), senal.total());
         assert!(senal.conectados() >= 1, "ningún relé real conectó (¿sin internet, o TLS roto?)");
+        red.cerrar();
+    }
+
+    fn puerto_libre() -> u16 {
+        std::net::TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port()
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn el_host_se_queda_solo_con_los_reles_que_pasan_la_prueba() {
+        let bueno = puerto_libre();
+        let _a = rele_falso(bueno).await;
+        let otro_bueno = puerto_libre();
+        let _b = rele_falso(otro_bueno).await;
+        let rechaza = puerto_libre();
+        let _c = rele_con(rechaza, true).await;
+        let url = |p: u16| format!("ws://127.0.0.1:{p}/");
+        let caido = url(puerto_libre()); // nadie escucha
+        let candidatos = [caido.clone(), url(rechaza), url(bueno), url(otro_bueno)];
+
+        let mut elegidos = elegir_de(&candidatos, 4).await;
+        elegidos.sort();
+        let mut esperados = vec![url(bueno), url(otro_bueno)];
+        esperados.sort();
+        assert_eq!(elegidos, esperados, "el caído y el que rechaza los eventos no valen");
+        assert_eq!(elegir_de(&candidatos, 1).await.len(), 1, "se para al tener los pedidos");
+        assert!(elegir_de(&[caido, url(rechaza)], 4).await.is_empty(), "ninguno: lista vacía");
+    }
+
+    #[test]
+    fn los_reles_van_al_enlace_sin_esquema_y_solo_si_son_wss_sin_ruta() {
+        let v = |xs: &[&str]| xs.iter().map(|x| x.to_string()).collect::<Vec<_>>();
+        assert_eq!(reles_para_enlace(&v(&["wss://a.b", "wss://c.d:8443", "ws://x.y", "wss://e.f/ruta", "wss://"])), "a.b,c.d:8443");
+        assert_eq!(reles_para_enlace(&[]), "");
+        // Los candidatos de verdad son todos `wss://host`
+        assert_eq!(reles_para_enlace(&CANDIDATOS.iter().map(|c| c.to_string()).collect::<Vec<_>>()).split(',').count(), CANDIDATOS.len());
+    }
+
+    /// La negociación por el servidor del host (WebSocket): `OfertaDirecta` antes del saludo → `RespuestaDirecta`.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn la_oferta_por_el_servidor_se_contesta_antes_del_saludo_y_solo_una_vez() {
+        use crate::red::protocolo::{MensajeCliente, MensajeHost, VERSION_PROTOCOLO};
+        use crate::red::transporte::{en_memoria, Trama};
+
+        async fn leer(t: &mut crate::red::transporte::Transporte) -> MensajeHost {
+            loop {
+                match tokio::time::timeout(Duration::from_secs(10), t.rx.recv()).await.expect("no llegó a tiempo") {
+                    Some(Trama::Texto(x)) | Some(Trama::Efimero(x)) => return serde_json::from_str(&x).unwrap(),
+                    Some(Trama::Binario(_)) => continue,
+                    None => panic!("conexión cerrada"),
+                }
+            }
+        }
+        async fn decir(t: &crate::red::transporte::Transporte, m: &MensajeCliente) {
+            t.tx.send(Trama::Texto(serde_json::to_string(m).unwrap())).await.unwrap();
+        }
+
+        let red = red_de_prueba("senal_servidor");
+        red.abrir_local().await;
+        let sala = red.sala_para_tests();
+        let huella = sala.huella().unwrap();
+        let (host, mut j) = en_memoria();
+        tokio::spawn(crate::red::servidor::atender(red.clone(), host));
+        assert!(matches!(leer(&mut j).await, MensajeHost::Reto { .. }));
+
+        // Un código que no vale: error, y el saludo sigue pudiendo hacerse
+        decir(&j, &MensajeCliente::OfertaDirecta { codigo: "no es un código".into() }).await;
+        assert!(matches!(leer(&mut j).await, MensajeHost::OfertaDirectaError { .. }));
+
+        // Una oferta buena (la de un navegador de mentira): la respuesta lleva el certificado de la sala
+        let (pc, sdp) = oferta_de_navegador().await;
+        let oferta = Contenido { tipo: "oferta".into(), sdp, t: codigo::ahora_ms(), n: "por-servidor".into() };
+        let codigo_oferta = codigo::cifrar(&sala.secreto, &oferta, [11; 12]);
+        // (la primera, la mala, ya gastó el «una por conexión»: se prueba con otra conexión)
+        let (host2, mut j2) = en_memoria();
+        tokio::spawn(crate::red::servidor::atender(red.clone(), host2));
+        assert!(matches!(leer(&mut j2).await, MensajeHost::Reto { .. }));
+        decir(&j2, &MensajeCliente::OfertaDirecta { codigo: codigo_oferta.clone() }).await;
+        let MensajeHost::RespuestaDirecta { codigo: respuesta } = leer(&mut j2).await else { panic!("sin respuesta") };
+        let r = codigo::descifrar(&sala.secreto, &respuesta).unwrap();
+        assert_eq!(r.tipo, "respuesta");
+        let hex = hex::encode(base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(&huella).unwrap()).to_uppercase();
+        let con_puntos = hex.as_bytes().chunks(2).map(|p| std::str::from_utf8(p).unwrap()).collect::<Vec<_>>().join(":");
+        assert!(r.sdp.contains(&format!("a=fingerprint:sha-256 {con_puntos}")));
+
+        // Una segunda oferta en la misma conexión no vale: se corta
+        decir(&j2, &MensajeCliente::OfertaDirecta { codigo: codigo_oferta }).await;
+        assert!(matches!(leer(&mut j2).await, MensajeHost::Rechazado { .. }));
+
+        // Y el saludo normal sigue funcionando tras una oferta (la primera conexión, con la oferta mala)
+        decir(&j, &MensajeCliente::Hola { version: VERSION_PROTOCOLO, sala: sala.id.clone(), secreto: sala.secreto.clone(), prueba: None }).await;
+        assert!(matches!(leer(&mut j).await, MensajeHost::Identificate { .. }));
+
+        let _ = pc.close().await;
+        red.cerrar();
+    }
+
+    /// Con «Túnel» (sin conexión directa) o en red local, el servidor contesta que no la ofrece.
+    #[tokio::test]
+    async fn sin_conexion_directa_el_servidor_no_acepta_ofertas() {
+        use crate::red::protocolo::{MensajeCliente, MensajeHost};
+        use crate::red::transporte::{en_memoria, Trama};
+        let red = red_de_prueba("senal_servidor_tunel");
+        red.abrir_local().await;
+        red.dentro().as_mut().unwrap().solo_respaldo = true;
+        let (host, mut j) = en_memoria();
+        tokio::spawn(crate::red::servidor::atender(red.clone(), host));
+        let _reto = j.rx.recv().await.unwrap();
+        j.tx.send(Trama::Texto(serde_json::to_string(&MensajeCliente::OfertaDirecta { codigo: "x".into() }).unwrap())).await.unwrap();
+        let Some(Trama::Texto(x)) = j.rx.recv().await else { panic!("sin respuesta") };
+        let m: MensajeHost = serde_json::from_str(&x).unwrap();
+        assert!(matches!(m, MensajeHost::OfertaDirectaError { ref error } if error.contains("no ofrece")), "{m:?}");
         red.cerrar();
     }
 
@@ -627,7 +856,7 @@ mod tests {
             l.local_addr().unwrap().port()
         };
         let url = format!("ws://127.0.0.1:{puerto}/");
-        let senal = arrancar(&red, std::slice::from_ref(&url), false).unwrap();
+        let senal = arrancar(&red, std::slice::from_ref(&url)).unwrap();
         assert_eq!((senal.conectados(), senal.total()), (0, 1));
         tokio::time::sleep(Duration::from_millis(300)).await;
         assert_eq!(senal.conectados(), 0, "sin relé no hay conexión (y no se cae nada)");

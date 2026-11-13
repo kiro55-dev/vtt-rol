@@ -50,7 +50,7 @@ pub fn guardar_config_red(config: crate::red::config::ConfigRed, state: State<'_
 pub async fn regenerar_enlace(state: State<'_, AppState>) -> Result<(), String> {
     state.red.regenerar_enlace()?;
     // Las etiquetas de los relés salen del secreto: la escucha se rehace con el enlace nuevo
-    state.red.reiniciar_senal();
+    state.red.reiniciar_senal().await;
     Ok(())
 }
 
