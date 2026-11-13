@@ -38,7 +38,7 @@ use crate::red::Red;
 /// El tipo de evento (efímero). No es el 24242 de Blossom.
 pub const KIND: u32 = 27184;
 
-/// Relés por los que se intercambian las ofertas (probados en `experimentos/fase4-nostr/RESULTADOS.md`). Hay que
+/// Relés por los que se intercambian las ofertas (los que funcionaron al probarlos: docs/red.md, «Relés de Nostr»). Hay que
 /// cambiarlos a la vez aquí y en `src/lib/red/senal.ts`, como la versión del protocolo.
 pub const RELES: [&str; 4] = ["wss://relay.snort.social", "wss://relay.primal.net", "wss://nostr.oxtr.dev", "wss://offchain.pub"];
 

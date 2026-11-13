@@ -40,7 +40,7 @@ hmac = "0.12"
 hex = "0.4.3"
 rust-embed = "8.14.0"
 if-addrs = "0.15.0"
-# Conexión directa (fase 3): WebRTC del host, elegido en experimentos/fase0-webrtc
+# Conexión directa (fase 3): WebRTC del host, elegido en docs/red.md, «Por qué webrtc-rs»
 webrtc = "0.21.1"
 rtc = "0.21.1"                     # el núcleo de webrtc-rs: el certificado DTLS de la sala
 async-trait = "0.1"

@@ -57,7 +57,7 @@ https://kiro55-dev.github.io/OpenRoll/#t=…&s=…&k=…
 - **Conexión directa (peer to peer, WebRTC)**: la forma principal «Peer to peer» (con respaldo Cloudflare o tu
   dirección propia). El jugador habla **directo** con el host, sin pasar por ningún servidor; el respaldo es el
   WebSocket de siempre, para quien tenga una red que no lo permita (NAT estricto) o no quiera. Librería del host:
-  `webrtc` 0.21.1 (elegida en `experimentos/fase0-webrtc/`). Los dos se ponen de acuerdo **solos**, por relés de Nostr.
+  `webrtc` 0.21.1 (por qué esta: ver «Por qué webrtc-rs», abajo). Los dos se ponen de acuerdo **solos**, por relés de Nostr.
   - **Cómo se conecta** (el jugador no toca nada): si el enlace lleva la huella (`&f=…`) y el navegador puede (WebRTC,
     WebCrypto y una página https), `conexion.svelte.ts` intenta lo directo: abre los canales, publica su oferta en los
     relés (`src/lib/red/senal.ts`) y espera la respuesta del host (hasta 10 s); si llega, comprueba la huella y espera a
@@ -72,7 +72,7 @@ https://kiro55-dev.github.io/OpenRoll/#t=…&s=…&k=…
     con espera de 1 s a 60 s) y contesta con `webrtc::responder_con`. Topes: 6 ofertas por minuto, eventos ≤ 32 KiB,
     `created_at` a ±2 min, y el mismo evento (llega por varios relés) una vez, además de los de abajo. La lista de relés
     es una constante en Rust y en TS (a cambiar a la vez, como el protocolo); se eligió con
-    `experimentos/fase4-nostr/probar.ts` (RESULTADOS.md): los relés públicos cambian sus reglas. Con «Generar enlace
+    pruebas con relés reales (ver «Relés de Nostr», abajo): los relés públicos cambian sus reglas. Con «Generar enlace
     nuevo» la escucha se rehace (las etiquetas cambian con el secreto). El TLS de los relés usa un proveedor de rustls
     explícito (`ring`): en el proceso conviven `aws-lc-rs` (reqwest) y `ring` (webrtc), y el «por defecto» entraría en
     pánico. Rust y TS comparten un vector fijo (id y firma del evento, etiquetas).
@@ -312,6 +312,39 @@ su pantalla relee. Las peticiones de un jugador se ejecutan **en orden**, una a 
   ya no existe se dejan como estaban.
 - **Qué controla un jugador en la pantalla:** `partida.controla(instancia)` (el host siempre; un jugador, las de las
   fichas de su banco). Oculta o desactiva lo que el host va a rechazar, pero la comprobación de verdad es la del host.
+
+## Por qué webrtc-rs
+
+Antes de migrar se compararon dos librerías de WebRTC en Rust, con una prueba aislada (host en Windows y Linux,
+jugador en Chrome y Firefox, mismo PC y otra red real). La elegida es **`webrtc` 0.21.1 (webrtc-rs)**:
+
+- Fue la única que conectó **en directo entre dos redes reales** (`srflx → srflx`, sin túnel ni relé): 410 ms para
+  conectar, 37 ms de ida y vuelta, 200 de 200 mensajes del arrastre sin pérdidas y 60 Mbit/s de bajada. `str0m`
+  funcionó igual en el mismo PC, pero desde otra red no llegó a conectar.
+- Reúne ella sola los candidatos ICE (interfaces y STUN), lleva su bucle de red y su certificado DTLS no caduca.
+  `str0m` obliga a escribir ese código de red a mano (varias IP, IPv6…), que es justo lo que no se quiere mantener.
+- Compila en Windows y Linux (en Linux, `ring` necesita compilador de C), pesa unos +4 MB en el ejecutable y todas sus
+  dependencias son de licencias permisivas, compatibles con GPL-3.0.
+- Anuncia `max-message-size` de 64 KiB y el navegador no envía más de eso a la vez: por eso los mensajes van en trozos de
+  16 KiB (`red/trozos.rs`).
+- Hallazgo: en Linux el primer intento tardaba unos 3 s porque el host esperaba a que la recogida de candidatos
+  «terminara». Ahora contesta en cuanto hay el primer candidato público (`srflx`) más 300 ms, o a los 1,5 s.
+
+## Relés de Nostr
+
+La lista `senal::RELES` (y su copia en `src/lib/red/senal.ts`) sale de probar relés públicos reales: publicar un evento
+efímero (kind 27184) de ~3 KB con una clave nueva y comprobar que otra conexión lo recibe por su etiqueta. Probados el
+2026-11-13, desde la red del desarrollador:
+
+- **Funcionaron:** `relay.snort.social` (58 ms de entrega), `relay.primal.net` (92 ms), `nostr.oxtr.dev` (155 ms) y
+  `offchain.pub` (195 ms).
+- **No sirvieron:** `relay.damus.io`, `nos.lol` y `nostr.mom` no entregaron el evento; `purplepag.es` lo rechaza
+  («kind not allowed»); `relay.nostr.band`, `nostr.wine`, `relay.nostr.bg`, `nostr-pub.wellorder.net`,
+  `relay.mostr.pub` y `relay.current.fyi` no conectaron.
+
+Los relés públicos cambian sus reglas: si la conexión directa deja de ir, lo primero que hay que revisar es esta lista.
+Hay un test que no corre por defecto y comprueba que la escucha del host llega a conectar con los relés reales
+(`cargo test reles_reales -- --ignored`).
 
 ## Lo que falta
 

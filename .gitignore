@@ -15,5 +15,3 @@ historial_personal.txt
 /build-web
 # La página del jugador que lleva dentro la app del host (bun run web:build:app)
 /build-jugador
-/experimentos/**/target
-/experimentos/**/cert-*
