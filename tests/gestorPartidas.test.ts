@@ -11,12 +11,101 @@ beforeEach(async () => {
     partidas: { actual: "A", lista: ["A", "B"] },
     recargarPartidas: vi.fn(async () => {}),
     cambiarPartida: vi.fn(async () => {}),
-    crearPartida: vi.fn(async () => {})
+    crearPartida: vi.fn(async () => {}),
+    borrarPartida: vi.fn(async () => {}),
+    renombrarPartida: vi.fn(async () => {})
   };
   tiradasFalsas = { cargar: vi.fn(async () => {}) };
   vi.doMock("$lib/partida.svelte", () => ({ partida: partidaFalsa }));
   vi.doMock("$lib/tiradas.svelte", () => ({ tiradas: tiradasFalsas }));
   ({ GestorPartidas } = await import("$lib/gestorPartidas.svelte"));
+});
+
+describe("GestorPartidas: renombrar", () => {
+  it("empezar a renombrar pone el nombre actual en el campo", () => {
+    const g = new GestorPartidas();
+    g.empezarRenombrar("B");
+    expect([g.renombrando, g.textoNuevo]).toEqual(["B", "B"]);
+  });
+
+  it("guardar cambia el nombre y cierra el campo; recarga las tiradas (son de cada partida)", async () => {
+    const g = new GestorPartidas();
+    g.empezarRenombrar("B");
+    g.textoNuevo = "  Campaña  ";
+    expect(await g.guardarRenombrado()).toBe(true);
+    expect(partidaFalsa.renombrarPartida).toHaveBeenCalledWith("B", "Campaña");
+    expect(g.renombrando).toBeNull();
+    expect(tiradasFalsas.cargar).toHaveBeenCalledOnce();
+    expect(g.error).toBe("");
+  });
+
+  it("vacío avisa y no pregunta a Rust; el mismo nombre solo cierra el campo; cancelar lo cierra sin cambiar nada", async () => {
+    const g = new GestorPartidas();
+    g.empezarRenombrar("B");
+    g.textoNuevo = "   ";
+    expect(await g.guardarRenombrado()).toBe(false);
+    expect(g.error).toContain("necesita un nombre");
+    expect(g.renombrando).toBe("B"); // sigue editando
+
+    g.textoNuevo = "B";
+    expect(await g.guardarRenombrado()).toBe(true);
+    expect(g.renombrando).toBeNull();
+    expect(partidaFalsa.renombrarPartida).not.toHaveBeenCalled();
+
+    g.empezarRenombrar("B");
+    g.cancelarRenombrar();
+    expect([g.renombrando, g.error]).toEqual([null, ""]);
+  });
+
+  it("si Rust lo rechaza (repetido, sala abierta…) se ve el motivo y el campo sigue abierto para corregirlo", async () => {
+    partidaFalsa.renombrarPartida = vi.fn(async () => {
+      throw "Ya existe una partida llamada «A»";
+    });
+    const g = new GestorPartidas();
+    g.empezarRenombrar("B");
+    g.textoNuevo = "A";
+    expect(await g.guardarRenombrado()).toBe(false);
+    expect(g.error).toContain("Ya existe");
+    expect(g.renombrando).toBe("B");
+    expect(g.ocupado).toBe(false);
+  });
+});
+
+describe("GestorPartidas: borrar", () => {
+  it("borra otra partida sin cambiar de partida", async () => {
+    const g = new GestorPartidas();
+    expect(await g.borrar("B")).toBe(true);
+    expect(partidaFalsa.borrarPartida).toHaveBeenCalledWith("B");
+    expect(partidaFalsa.cambiarPartida).not.toHaveBeenCalled();
+    expect([g.ocupado, g.error]).toEqual([false, ""]);
+  });
+
+  it("también se puede borrar la abierta: se le pide a Rust y se recargan las tiradas (la que queda es otra partida)", async () => {
+    const g = new GestorPartidas();
+    expect(await g.borrar("A")).toBe(true);
+    expect(partidaFalsa.borrarPartida).toHaveBeenCalledWith("A");
+    expect(tiradasFalsas.cargar).toHaveBeenCalledOnce();
+    expect(g.error).toBe("");
+  });
+
+  it("si Rust lo rechaza, se ve el motivo; y no admite dos borrados a la vez", async () => {
+    partidaFalsa.borrarPartida = vi.fn(async () => {
+      throw "No se pudo borrar la partida: acceso denegado";
+    });
+    const g = new GestorPartidas();
+    expect(await g.borrar("B")).toBe(false);
+    expect(g.error).toContain("acceso denegado");
+    expect(g.ocupado).toBe(false);
+
+    let terminar!: () => void;
+    partidaFalsa.borrarPartida = vi.fn(() => new Promise<void>((r) => (terminar = r)));
+    const primero = g.borrar("B");
+    expect(g.ocupado).toBe(true);
+    expect(await g.borrar("B")).toBe(false);
+    expect(partidaFalsa.borrarPartida).toHaveBeenCalledOnce();
+    terminar();
+    expect(await primero).toBe(true);
+  });
 });
 
 describe("GestorPartidas", () => {

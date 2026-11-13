@@ -94,6 +94,62 @@ pub fn crear(raiz: &Path, nombre: &str) -> Result<String, String> {
     Ok(nombre)
 }
 
+/// Borra DEFINITIVAMENTE la carpeta de una partida (sus mapas, fichas, imágenes, archivos y jugadores) y devuelve su
+/// nombre. Solo borra una carpeta que `buscar` encuentra dentro de `partidas/` (nunca una ruta que escriba quien llama).
+/// Quien llama decide si se puede (p. ej. no la que está abierta).
+pub fn borrar(raiz: &Path, nombre: &str) -> Result<String, String> {
+    let nombre = buscar(raiz, nombre).ok_or("Esa partida no existe")?;
+    fs::remove_dir_all(ruta_partida(raiz, &nombre)).map_err(|e| format!("No se pudo borrar la partida: {e}"))?;
+    Ok(nombre)
+}
+
+/// Qué haría renombrar `viejo` a `nuevo`, sin tocar el disco: `Err` si no se puede (no existe, el nombre no vale, o ya hay
+/// otra partida con ese nombre, sin distinguir mayúsculas), `Ok(None)` si no hay nada que cambiar (el mismo nombre) y
+/// `Ok(Some((viejo, nuevo)))` con los nombres definitivos. Un cambio solo de mayúsculas de la misma partida vale.
+pub fn plan_renombrado(raiz: &Path, viejo: &str, nuevo: &str) -> Result<Option<(String, String)>, String> {
+    let viejo = buscar(raiz, viejo).ok_or("Esa partida no existe")?;
+    let nuevo = validar_forma(nuevo)?;
+    if nuevo == viejo {
+        return Ok(None);
+    }
+    if buscar(raiz, &nuevo).is_some_and(|otra| otra != viejo) {
+        return Err(format!("Ya existe una partida llamada «{nuevo}»"));
+    }
+    Ok(Some((viejo, nuevo)))
+}
+
+/// Renombra la carpeta de una partida y devuelve su nombre definitivo. Si era la «última abierta», se actualiza. Quien llama
+/// decide si se puede (la abierta necesita soltar sus archivos antes). Windows tarda a veces en soltar una carpeta
+/// (antivirus, indexador): se reintenta unos instantes antes de rendirse.
+pub fn renombrar(raiz: &Path, viejo: &str, nuevo: &str) -> Result<String, String> {
+    let Some((viejo, nuevo)) = plan_renombrado(raiz, viejo, nuevo)? else {
+        return buscar(raiz, viejo).ok_or_else(|| "Esa partida no existe".to_string());
+    };
+    let (de, a) = (ruta_partida(raiz, &viejo), ruta_partida(raiz, &nuevo));
+    let mut ultimo = None;
+    for intento in 0..5 {
+        match fs::rename(&de, &a) {
+            Ok(()) => {
+                ultimo = None;
+                break;
+            }
+            Err(e) => {
+                ultimo = Some(e);
+                if intento < 4 {
+                    std::thread::sleep(std::time::Duration::from_millis(100));
+                }
+            }
+        }
+    }
+    if let Some(e) = ultimo {
+        return Err(format!("No se pudo renombrar la partida (¿algún programa tiene sus archivos abiertos?): {e}"));
+    }
+    if leer_ultima(raiz).as_deref() == Some(viejo.as_str()) {
+        guardar_ultima(raiz, &nuevo);
+    }
+    Ok(nuevo)
+}
+
 // ------------------------------------------------------------------
 // Última partida abierta
 // ------------------------------------------------------------------
@@ -189,6 +245,40 @@ mod tests {
         let d = dir_temporal(nombre);
         fs::create_dir_all(&d).unwrap();
         d
+    }
+
+    #[test]
+    fn renombrar_mueve_la_carpeta_con_todo_y_no_pisa_a_otra() {
+        let r = raiz("renombrar_partidas");
+        crear(&r, "A").unwrap();
+        crear(&r, "B").unwrap();
+        fs::write(ruta_partida(&r, "A").join("partida.json"), "{}").unwrap();
+        fs::create_dir_all(ruta_partida(&r, "A").join("archivos/entidad_1")).unwrap();
+        fs::write(ruta_partida(&r, "A").join("archivos/entidad_1/n.txt"), "hola").unwrap();
+        guardar_ultima(&r, "A");
+
+        assert_eq!(renombrar(&r, "a", "  Campaña  ").unwrap(), "Campaña", "el nombre se limpia y la que busca no distingue mayúsculas");
+        assert_eq!(listar(&r), ["B", "Campaña"]);
+        assert!(!ruta_partida(&r, "A").exists());
+        assert_eq!(fs::read_to_string(ruta_partida(&r, "Campaña").join("archivos/entidad_1/n.txt")).unwrap(), "hola");
+        assert!(ruta_partida(&r, "Campaña").join("imagenes").is_dir());
+        assert_eq!(leer_ultima(&r).as_deref(), Some("Campaña"), "la «última» sigue a la partida");
+
+        // La que no era la «última» no la toca
+        renombrar(&r, "B", "Otra").unwrap();
+        assert_eq!(leer_ultima(&r).as_deref(), Some("Campaña"));
+
+        // Nombres que no valen, que existen (también con otras mayúsculas) o que no son de ninguna partida
+        for (viejo, nuevo) in [("Otra", ""), ("Otra", "a/b"), ("Otra", "con"), ("Otra", ".."), ("Otra", "campaña"), ("Otra", "CAMPAÑA"), ("Z", "X"), ("../Otra", "X")] {
+            assert!(renombrar(&r, viejo, nuevo).is_err(), "{viejo:?} → {nuevo:?}");
+        }
+        assert_eq!(listar(&r), ["Campaña", "Otra"], "nada cambió");
+
+        // El mismo nombre no hace nada; solo cambiar mayúsculas de la misma partida sí vale
+        assert_eq!(renombrar(&r, "Otra", "Otra").unwrap(), "Otra");
+        assert_eq!(plan_renombrado(&r, "Otra", "otra").unwrap(), Some(("Otra".into(), "otra".into())));
+        assert_eq!(renombrar(&r, "Otra", "otra").unwrap(), "otra");
+        assert_eq!(listar(&r), ["Campaña", "otra"]);
     }
 
     #[test]

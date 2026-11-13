@@ -356,20 +356,50 @@ class Partida {
   /** Guarda la partida abierta y abre otra. Los errores de Rust (no se pudo guardar...) se propagan,
    *  y en ese caso nada cambia. Quien llama debe recargar también las tiradas (`tiradas.cargar()`). */
   cambiarPartida(nombre: string) {
-    return this.#alternar("abrir_partida", nombre);
+    return this.#alternar("abrir_partida", { nombre });
+  }
+
+  /**
+   * Borra PARA SIEMPRE una partida. Si es la abierta, Rust pasa antes a otra (o a una nueva vacía si era la única) y aquí
+   * se vuelve a leer todo, como al cambiar de partida (quien llama debe recargar también las tiradas). Si es otra, solo
+   * se recarga la lista.
+   */
+  async borrarPartida(nombre: string) {
+    await this.recargarPartidas().catch(() => {}); // cuál es la abierta, de verdad (no lo que se recuerde)
+    if (nombre === this.partidas.actual) return this.#alternar("borrar_partida", { nombre });
+    try {
+      await invoke("borrar_partida", { nombre });
+    } finally {
+      await this.recargarPartidas().catch(() => {});
+    }
+  }
+
+  /**
+   * Cambia el nombre de una partida. Si es OTRA, solo se vuelve a leer la lista. Si es la abierta, la ruta de su carpeta
+   * (la de sus imágenes, `obtener_dir_datos`) y las miniaturas guardadas cambian: se vuelve a leer todo como al cambiar de
+   * partida (quien llama debe recargar también las tiradas). Rust la rechaza con la sala abierta.
+   */
+  async renombrarPartida(nombre: string, nuevo: string) {
+    await this.recargarPartidas().catch(() => {}); // cuál es la abierta, de verdad
+    if (nombre === this.partidas.actual) return this.#alternar("renombrar_partida", { nombre, nuevo });
+    try {
+      await invoke("renombrar_partida", { nombre, nuevo });
+    } finally {
+      await this.recargarPartidas().catch(() => {});
+    }
   }
 
   /** Crea una partida vacía (con los parámetros de serie) y pasa a ella. */
   crearPartida(nombre: string) {
-    return this.#alternar("crear_partida", nombre);
+    return this.#alternar("crear_partida", { nombre });
   }
 
-  async #alternar(cmd: string, nombre: string) {
+  async #alternar(cmd: string, args: Record<string, unknown>) {
     // Un cambio de rejilla o de valores pendiente se escribiría en la partida nueva
     await this.guardarRejilla();
     await this.guardarValoresPendientes();
     try {
-      await invoke(cmd, { nombre });
+      await invoke(cmd, args);
     } finally {
       // Si falló, la lista puede haber cambiado (p. ej. se creó la carpeta pero no se pudo abrir)
       await this.recargarPartidas().catch(() => {});

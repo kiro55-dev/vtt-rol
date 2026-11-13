@@ -165,6 +165,12 @@ fn nombre_partida_actual(state: &AppState) -> String {
 /// delta de una partida en la carpeta de otra. Si algo falla, la partida abierta sigue como estaba.
 fn cambiar_de_partida(state: &AppState, nombre: &str) -> Result<(), String> {
     let mut est = state.lock();
+    cambiar_con_lock(state, &mut est, nombre, true)
+}
+
+/// El cuerpo de `cambiar_de_partida` con el lock del estado ya cogido por quien llama. `guardar_antes = false` solo cuando
+/// la que se deja se va a borrar (no tiene sentido guardarla).
+fn cambiar_con_lock(state: &AppState, est: &mut EstadoPartida, nombre: &str, guardar_antes: bool) -> Result<(), String> {
     let reservas = state.reservas();
     // Orden de bloqueo: `estado` y luego `borradores`. Una ficha nueva abierta tiene su id reservado
     // en ESTA partida y su carpeta de archivos en ella: no puede acompañarnos a la otra.
@@ -186,8 +192,10 @@ fn cambiar_de_partida(state: &AppState, nombre: &str) -> Result<(), String> {
 
     // 1. Se guarda la que se deja (snapshot atómico + log vacío) ANTES de tocar nada. Se sale de ella
     //    de forma normal, así que su papelera se vacía (si no, sus archivos se quedarían para siempre).
-    vaciar_papelera(&mut est, &state.almacen);
-    estado::compactar(&state.almacen, &est).map_err(|e| format!("No se pudo guardar la partida actual: {e}"))?;
+    if guardar_antes {
+        vaciar_papelera(est, &state.almacen);
+        estado::compactar(&state.almacen, est).map_err(|e| format!("No se pudo guardar la partida actual: {e}"))?;
+    }
 
     // 2. Se abre la nueva; si no se puede leer, se vuelve a la anterior (intacta en memoria)
     state.almacen.cambiar_dir(&nueva).map_err(|e| format!("No se pudo abrir la partida: {e}"))?;
@@ -214,6 +222,92 @@ fn cambiar_de_partida(state: &AppState, nombre: &str) -> Result<(), String> {
     }
 }
 
+/// Borra una partida para siempre, la abierta incluida. Con el lock del estado cogido todo el rato, para que nadie cambie
+/// de partida (ni abra la que se va a borrar) a mitad.
+///  * Otra partida distinta de la abierta: se borra su carpeta y ya (no la usa ningún jugador ni la sala, así que se puede
+///    con la sala abierta).
+///  * La abierta: primero se pasa a otra (la primera de las demás, por orden alfabético; si no hay ninguna, se crea una
+///    nueva vacía llamada «Partida 1»), SIN guardar la que se deja, y solo si eso salió bien se borra su carpeta. Se
+///    rechaza con la sala abierta (sus jugadores están en esta partida) o con una ficha nueva abierta, igual que al
+///    cambiar de partida. Si algo falla, no se borra nada.
+fn borrar_partida_en(state: &AppState, nombre: &str) -> Result<(), String> {
+    let mut est = state.lock();
+    let nombre = partidas::buscar(&state.raiz, nombre).ok_or("Esa partida no existe")?;
+    if partidas::ruta_partida(&state.raiz, &nombre) == state.almacen.dir() {
+        let otra = partidas::listar(&state.raiz).into_iter().find(|n| *n != nombre);
+        let destino = match otra {
+            Some(n) => n,
+            // Era la única: se deja una vacía para no quedarse sin partida (el nombre del que se va ya no importa)
+            None => {
+                let nueva = if nombre.eq_ignore_ascii_case(partidas::PRIMERA) { "Partida nueva" } else { partidas::PRIMERA };
+                partidas::crear(&state.raiz, nueva)?
+            }
+        };
+        let creada = otra_es_nueva(&state.raiz, &destino, &nombre);
+        if let Err(e) = cambiar_con_lock(state, &mut est, &destino, false) {
+            // No se pudo pasar a otra: la abierta sigue como estaba y se deshace lo que se creó para esto
+            if creada {
+                let _ = partidas::borrar(&state.raiz, &destino);
+            }
+            return Err(e);
+        }
+    }
+    partidas::borrar(&state.raiz, &nombre)?;
+    eprintln!("[partida] borrada «{nombre}»");
+    Ok(())
+}
+
+/// ¿`destino` se acaba de crear solo para sustituir a `borrada` (no había otra partida)? Es cierto si no era una de las que
+/// ya había: la lista solo tiene `borrada` y `destino`.
+fn otra_es_nueva(raiz: &std::path::Path, destino: &str, borrada: &str) -> bool {
+    let nombres = partidas::listar(raiz);
+    nombres.len() == 2 && nombres.iter().any(|n| n == destino) && nombres.iter().any(|n| n == borrada) && destino != borrada && {
+        // Una partida recién creada solo tiene la carpeta de imágenes: aún no tiene partida.json
+        !partidas::ruta_partida(raiz, destino).join("partida.json").exists()
+    }
+}
+
+/// Cambia el nombre de una partida (el de su carpeta). Con el lock del estado cogido todo el rato, para que nadie cambie
+/// de partida a mitad.
+///  * Otra distinta de la abierta: se renombra su carpeta y ya (no la usa nadie; vale con la sala abierta).
+///  * La abierta: se rechaza con la sala abierta (la sala guarda la ruta de la carpeta y `sala.json` vive dentro) o con una
+///    ficha nueva abierta (su carpeta de archivos cuelga de esta partida), como al cambiar de partida. Si no: se guarda, se
+///    sueltan los archivos abiertos del `Almacen`, se renombra la carpeta y se apunta el `Almacen` a la nueva. Si el
+///    renombrado falla, el `Almacen` sigue en la carpeta de antes y no se pierde nada.
+/// Lo de dentro no cambia: el juego guarda rutas relativas.
+fn renombrar_partida_en(state: &AppState, nombre: &str, nuevo: &str) -> Result<(), String> {
+    let est = state.lock();
+    let reservas = state.reservas();
+    let Some((viejo, nuevo)) = partidas::plan_renombrado(&state.raiz, nombre, nuevo)? else {
+        return Ok(()); // el mismo nombre
+    };
+    let ruta_vieja = partidas::ruta_partida(&state.raiz, &viejo);
+    if ruta_vieja != state.almacen.dir() {
+        partidas::renombrar(&state.raiz, &viejo, &nuevo)?;
+        return Ok(());
+    }
+    if !reservas.is_empty() {
+        return Err("Cierra la ficha que tienes abierta antes de renombrar la partida".into());
+    }
+    if state.red.esta_abierta() {
+        return Err("Cierra la sala antes de renombrar la partida abierta".into());
+    }
+    estado::compactar(&state.almacen, &est).map_err(|e| format!("No se pudo guardar la partida antes de renombrarla: {e}"))?;
+    state.almacen.soltar_archivos();
+    match partidas::renombrar(&state.raiz, &viejo, &nuevo) {
+        Ok(definitivo) => {
+            state.almacen.cambiar_dir(partidas::ruta_partida(&state.raiz, &definitivo)).map_err(|e| format!("No se pudo abrir la partida renombrada: {e}"))?;
+            partidas::guardar_ultima(&state.raiz, &definitivo);
+            eprintln!("[partida] «{viejo}» ahora se llama «{definitivo}»");
+            Ok(())
+        }
+        Err(e) => {
+            let _ = state.almacen.cambiar_dir(ruta_vieja); // sigue donde estaba
+            Err(e)
+        }
+    }
+}
+
 #[derive(Serialize)]
 pub struct InfoPartidas {
     pub actual: String,
@@ -229,6 +323,18 @@ pub fn obtener_partidas(state: State<'_, AppState>) -> InfoPartidas {
 #[tauri::command]
 pub async fn abrir_partida(nombre: String, state: State<'_, AppState>) -> Result<(), String> {
     cambiar_de_partida(&state, &nombre)
+}
+
+/// Cambia el nombre de una partida (la ventana de partidas).
+#[tauri::command]
+pub async fn renombrar_partida(nombre: String, nuevo: String, state: State<'_, AppState>) -> Result<(), String> {
+    renombrar_partida_en(&state, &nombre, &nuevo)
+}
+
+/// Borra PARA SIEMPRE una partida, la abierta incluida (la ventana pide confirmación antes).
+#[tauri::command]
+pub async fn borrar_partida(nombre: String, state: State<'_, AppState>) -> Result<(), String> {
+    borrar_partida_en(&state, &nombre)
 }
 
 /// Crea una partida vacía (con los parámetros de serie) y pasa a ella, guardando antes la actual.
@@ -1485,6 +1591,127 @@ mod tests_partidas {
         cambiar_de_partida(&state, "B").unwrap();
         assert_eq!(zonas(&state), [2], "lo de B también se guardó");
         assert_eq!(partidas::leer_ultima(&state.raiz).as_deref(), Some("B"));
+    }
+
+    #[test]
+    fn renombrar_otra_partida_vale_siempre_y_la_abierta_solo_con_la_sala_cerrada_y_sigue_funcionando() {
+        let state = estado_en_a("renombrar_partida");
+        procesar_delta(&state, DeltaPartida::ZonaCreada(zona(1)));
+        let dir_b = partidas::ruta_partida(&state.raiz, "B");
+        std::fs::create_dir_all(dir_b.join("archivos")).unwrap();
+        std::fs::write(dir_b.join("archivos/x.txt"), "x").unwrap();
+
+        // Otra partida se renombra incluso con la sala abierta (no es la suya)
+        state.red.abrir_sin_servidor();
+        renombrar_partida_en(&state, "B", "Campaña").unwrap();
+        assert_eq!(partidas::listar(&state.raiz), ["A", "Campaña"]);
+        assert!(!dir_b.exists() && partidas::ruta_partida(&state.raiz, "Campaña").join("archivos/x.txt").is_file());
+
+        // La abierta, no con la sala abierta ni con una ficha nueva abierta: nada se toca
+        assert!(renombrar_partida_en(&state, "A", "Principal").unwrap_err().contains("Cierra la sala"));
+        state.red.cerrar();
+        state.reservas().insert(7);
+        assert!(renombrar_partida_en(&state, "a", "Principal").unwrap_err().contains("Cierra la ficha"));
+        state.reservas().clear();
+        // Ni con nombres que no valen o que ya existen
+        for mal in ["", "a/b", "con", "campaña", ".."] {
+            assert!(renombrar_partida_en(&state, "A", mal).is_err(), "{mal:?}");
+        }
+        assert_eq!(partidas::listar(&state.raiz), ["A", "Campaña"]);
+        assert_eq!((nombre_partida_actual(&state).as_str(), zonas(&state)), ("A", vec![1]));
+
+        // La abierta se renombra: sigue siendo la abierta, con todo, y lo nuevo se escribe en SU carpeta nueva
+        renombrar_partida_en(&state, "A", "Principal").unwrap();
+        assert_eq!(nombre_partida_actual(&state), "Principal");
+        assert_eq!(zonas(&state), [1]);
+        assert_eq!(partidas::listar(&state.raiz), ["Campaña", "Principal"]);
+        let dir_nueva = partidas::ruta_partida(&state.raiz, "Principal");
+        assert!(!partidas::ruta_partida(&state.raiz, "A").exists(), "la vieja no se recrea");
+        assert!(dir_nueva.join("partida.json").is_file(), "se guardó antes de renombrar");
+        procesar_delta(&state, DeltaPartida::ZonaCreada(zona(2)));
+        assert!(std::fs::read_to_string(dir_nueva.join("deltas.jsonl")).unwrap().contains("ZonaCreada"), "el log va a la carpeta nueva");
+        assert!(!partidas::ruta_partida(&state.raiz, "A").exists(), "ni siquiera al seguir editando");
+        assert_eq!(partidas::leer_ultima(&state.raiz).as_deref(), Some("Principal"));
+
+        // Solo mayúsculas, y volver a otra y regresar: todo sigue ahí
+        renombrar_partida_en(&state, "Principal", "principal").unwrap();
+        assert_eq!(nombre_partida_actual(&state), "principal");
+        cambiar_de_partida(&state, "Campaña").unwrap();
+        cambiar_de_partida(&state, "principal").unwrap();
+        assert_eq!(zonas(&state), [1, 2]);
+        // El mismo nombre no hace nada
+        renombrar_partida_en(&state, "principal", "principal").unwrap();
+    }
+
+    #[test]
+    fn borrar_la_partida_abierta_pasa_a_otra_sin_guardar_la_borrada_y_si_era_la_unica_deja_una_nueva() {
+        let state = estado_en_a("borrar_abierta");
+        procesar_delta(&state, DeltaPartida::ZonaCreada(zona(1)));
+        cambiar_de_partida(&state, "B").unwrap();
+        procesar_delta(&state, DeltaPartida::ZonaCreada(zona(2)));
+        cambiar_de_partida(&state, "A").unwrap();
+        let dir_a = partidas::ruta_partida(&state.raiz, "A");
+        assert_eq!(nombre_partida_actual(&state), "A");
+
+        // Bloqueos de siempre: con la sala abierta, o con una ficha nueva abierta, no se toca nada
+        state.red.abrir_sin_servidor();
+        assert!(borrar_partida_en(&state, "A").unwrap_err().contains("Cierra la sala"));
+        state.red.cerrar();
+        state.reservas().insert(7);
+        assert!(borrar_partida_en(&state, "a").unwrap_err().contains("Cierra la ficha"));
+        state.reservas().clear();
+        assert!(dir_a.exists() && nombre_partida_actual(&state) == "A" && zonas(&state) == [1], "nada cambió");
+
+        // La abierta se borra: se pasa a B (con lo suyo) y la carpeta de A desaparece
+        borrar_partida_en(&state, "A").unwrap();
+        assert_eq!(nombre_partida_actual(&state), "B");
+        assert_eq!(zonas(&state), [2], "ahora es B");
+        assert_eq!(partidas::listar(&state.raiz), ["B"]);
+        assert!(!dir_a.exists());
+        assert_eq!(partidas::leer_ultima(&state.raiz).as_deref(), Some("B"));
+        // Un cambio nuevo va al log de B
+        procesar_delta(&state, DeltaPartida::ZonaCreada(zona(3)));
+        assert!(std::fs::read_to_string(partidas::ruta_partida(&state.raiz, "B").join("deltas.jsonl")).unwrap().contains("ZonaCreada"));
+
+        // Era la única: queda una vacía, con los parámetros de serie
+        borrar_partida_en(&state, "B").unwrap();
+        assert_eq!(partidas::listar(&state.raiz), ["Partida 1"]);
+        assert_eq!(nombre_partida_actual(&state), "Partida 1");
+        assert!(zonas(&state).is_empty());
+        assert_eq!(state.lock().definiciones_parametros.len(), 4);
+
+        // Y si la única se llamaba «Partida 1», la nueva usa otro nombre (no hay choque con la que se va)
+        borrar_partida_en(&state, "partida 1").unwrap();
+        assert_eq!(partidas::listar(&state.raiz), ["Partida nueva"]);
+        assert_eq!(nombre_partida_actual(&state), "Partida nueva");
+    }
+
+    #[test]
+    fn borrar_una_partida_la_quita_del_disco_y_no_acepta_lo_que_no_existe() {
+        let state = estado_en_a("borrar_partida");
+        procesar_delta(&state, DeltaPartida::ZonaCreada(zona(1)));
+        let dir_b = partidas::ruta_partida(&state.raiz, "B");
+        std::fs::create_dir_all(dir_b.join("archivos/entidad_1")).unwrap();
+        std::fs::write(dir_b.join("archivos/entidad_1/notas.txt"), "hola").unwrap();
+        assert_eq!(partidas::listar(&state.raiz), ["A", "B"]);
+
+        // Lo que no existe, o intenta salirse de `partidas/`, se rechaza sin tocar nada
+        for mala in ["C", "../A", "..", "", "B/.."] {
+            assert!(borrar_partida_en(&state, mala).is_err(), "debía rechazar {mala:?}");
+        }
+        assert_eq!(partidas::listar(&state.raiz), ["A", "B"]);
+
+        // Otra partida se borra entera (con sus archivos), con la sala abierta incluso: no es la de sus jugadores
+        state.red.abrir_sin_servidor();
+        borrar_partida_en(&state, "b").unwrap();
+        state.red.cerrar();
+        assert_eq!(partidas::listar(&state.raiz), ["A"]);
+        assert!(!dir_b.exists(), "la carpeta y todo lo de dentro desaparecieron");
+        assert!(borrar_partida_en(&state, "B").is_err(), "ya no existe");
+        // La abierta sigue funcionando
+        assert_eq!(nombre_partida_actual(&state), "A");
+        procesar_delta(&state, DeltaPartida::ZonaCreada(zona(2)));
+        assert_eq!(zonas(&state), [1, 2]);
     }
 
     #[test]

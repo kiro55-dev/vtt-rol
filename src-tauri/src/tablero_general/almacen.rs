@@ -52,6 +52,12 @@ impl Almacen {
         self.dir.read().unwrap_or_else(|e| e.into_inner()).clone()
     }
 
+    /// Suelta el archivo de deltas abierto (se vuelve a abrir solo al siguiente cambio). Hace falta antes de renombrar la
+    /// carpeta de la partida abierta: en Windows una carpeta con un archivo abierto no se puede renombrar.
+    pub fn soltar_archivos(&self) {
+        *bloquear(&self.deltas) = None;
+    }
+
     /// Pasa a trabajar con la carpeta de otra partida. Suelta el archivo de deltas abierto (si no,
     /// el siguiente cambio se escribiría en la partida anterior). Quien llama debe tener cogido el
     /// lock del estado, y haber guardado antes la partida que se deja.

@@ -8,6 +8,10 @@ import { partida } from "$lib/partida.svelte";
 import { tiradas } from "$lib/tiradas.svelte";
 
 export class GestorPartidas {
+  /** La partida que se está renombrando (su fila es un campo de texto) y el texto escrito. */
+  renombrando = $state<string | null>(null);
+  textoNuevo = $state("");
+
   /** true mientras se guarda la partida actual y se abre la otra. */
   ocupado = $state(false);
   error = $state("");
@@ -43,6 +47,50 @@ export class GestorPartidas {
   abrir(nombre: string): Promise<boolean> {
     if (nombre === partida.partidas.actual) return Promise.resolve(false);
     return this.#hacer(() => partida.cambiarPartida(nombre));
+  }
+
+  /**
+   * Borra PARA SIEMPRE una partida (la ventana ya pidió confirmación). Vale también la abierta: Rust pasa antes a otra (o a
+   * una nueva si era la única) y entonces se recargan las tiradas, que son de cada partida. Devuelve si se borró.
+   */
+  borrar(nombre: string): Promise<boolean> {
+    return this.#hacer(() => partida.borrarPartida(nombre));
+  }
+
+  /** La fila de `nombre` pasa a ser un campo con su nombre actual. */
+  empezarRenombrar(nombre: string) {
+    if (this.ocupado) return;
+    this.error = "";
+    this.renombrando = nombre;
+    this.textoNuevo = nombre;
+  }
+
+  cancelarRenombrar() {
+    this.renombrando = null;
+    this.error = "";
+  }
+
+  /** Cambia el nombre de una partida (vale también la abierta si la sala está cerrada). Devuelve si se cambió. */
+  renombrar(nombre: string, nuevo: string): Promise<boolean> {
+    return this.#hacer(() => partida.renombrarPartida(nombre, nuevo));
+  }
+
+  /** Guarda lo escrito en el campo. El mismo nombre no cambia nada; uno vacío avisa; los errores de Rust se ven. */
+  async guardarRenombrado(): Promise<boolean> {
+    const viejo = this.renombrando;
+    if (viejo === null) return false;
+    const nuevo = this.textoNuevo.trim();
+    if (!nuevo) {
+      this.error = "La partida necesita un nombre";
+      return false;
+    }
+    if (nuevo === viejo) {
+      this.renombrando = null;
+      return true;
+    }
+    const hecho = await this.renombrar(viejo, nuevo);
+    if (hecho) this.renombrando = null;
+    return hecho;
   }
 
   /** Crea la partida con el nombre escrito y pasa a ella. */

@@ -63,6 +63,25 @@ function crearBackend() {
           b.mapas = []; b.banco = []; b.instancias = [];
           return;
         }
+        case "borrar_partida": {
+          if (!b.partidas.includes(args.nombre)) throw "Esa partida no existe";
+          b.partidas = b.partidas.filter((p) => p !== args.nombre);
+          // Imita a Rust: si era la abierta, se pasa a otra (o a una nueva vacía) con sus propios datos
+          if (args.nombre === b.actual) {
+            if (b.partidas.length === 0) b.partidas.push("Partida 1");
+            b.actual = b.partidas[0];
+            b.zonas = [{ id: 9, nombre: "Otra", orden: 0 }];
+            b.mapas = []; b.banco = []; b.instancias = [];
+          }
+          return;
+        }
+        case "renombrar_partida": {
+          if (!b.partidas.includes(args.nombre)) throw "Esa partida no existe";
+          if (b.partidas.includes(args.nuevo) && args.nuevo !== args.nombre) throw "Ya existe una partida llamada «" + args.nuevo + "»";
+          b.partidas = b.partidas.map((p) => (p === args.nombre ? args.nuevo : p));
+          if (b.actual === args.nombre) b.actual = args.nuevo; // lo suyo (zonas, mapas…) no cambia
+          return;
+        }
         case "borrar_definicion_parametro": b.definiciones = b.definiciones.filter((d) => d.id !== args.id); return;
         case "reordenar_definiciones_parametros": b.definiciones.sort((x, y) => args.ids.indexOf(x.id) - args.ids.indexOf(y.id)); return;
         case "importar_imagen": return "imagenes/" + String(args.origen).split("/").pop();
@@ -365,6 +384,51 @@ describe("partidas", () => {
     await partida.crearPartida("Campaña");
     expect(partida.partidas).toEqual({ actual: "Campaña", lista: ["A", "B", "Campaña"] });
     expect(partida.definiciones).toHaveLength(1); // se volvieron a leer
+  });
+
+  it("renombrar otra partida solo cambia la lista: la abierta ni se entera", async () => {
+    const partida = await nuevoStore();
+    await partida.renombrarPartida("B", "Campaña");
+    expect(partida.partidas).toEqual({ actual: "A", lista: ["A", "Campaña"] });
+    expect(partida.zonas.map((z) => z.id)).toEqual([1, 2, 3]);
+    expect(partida.mapaActual?.id).toBe(1);
+  });
+
+  it("renombrar la abierta vuelve a leerlo todo (su carpeta cambió) y queda abierta con el nombre nuevo", async () => {
+    const partida = await nuevoStore();
+    const antes = llamadas("obtener_dir_datos").length;
+    await partida.renombrarPartida("A", "Principal");
+    expect(partida.partidas).toEqual({ actual: "Principal", lista: ["Principal", "B"] });
+    expect(llamadas("obtener_dir_datos").length).toBeGreaterThan(antes); // la ruta de las imágenes se pidió de nuevo
+    expect(partida.zonas.map((z) => z.id)).toEqual([1, 2, 3]); // lo mismo de antes: es la misma partida
+  });
+
+  it("renombrar con un nombre repetido: el error llega y nada cambia", async () => {
+    const partida = await nuevoStore();
+    await expect(partida.renombrarPartida("A", "B")).rejects.toMatch("Ya existe");
+    await expect(partida.renombrarPartida("Z", "Y")).rejects.toMatch("no existe");
+    expect(partida.partidas).toEqual({ actual: "A", lista: ["A", "B"] });
+  });
+
+  it("borrar otra partida solo quita de la lista: la abierta ni se entera", async () => {
+    const partida = await nuevoStore();
+    await partida.borrarPartida("B");
+    expect(partida.partidas).toEqual({ actual: "A", lista: ["A"] });
+    expect(partida.zonas.map((z) => z.id)).toEqual([1, 2, 3]); // lo de A sigue ahí
+    expect(partida.mapaActual?.id).toBe(1);
+  });
+
+  it("borrar la partida abierta pasa a otra: se suelta todo lo de la borrada y se vuelve a leer", async () => {
+    const partida = await nuevoStore();
+    await partida.borrarPartida("A");
+    expect(partida.partidas).toEqual({ actual: "B", lista: ["B"] });
+    expect(partida.zonas.map((z) => z.id)).toEqual([9]); // las de la otra
+    expect(partida.mapaActual).toBeNull();
+    expect(partida.instancias).toEqual([]);
+
+    // Si era la única, queda una nueva vacía
+    await partida.borrarPartida("B");
+    expect(partida.partidas).toEqual({ actual: "Partida 1", lista: ["Partida 1"] });
   });
 
   it("si Rust falla, el error llega a quien llama y la partida abierta sigue intacta", async () => {
