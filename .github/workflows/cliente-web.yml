@@ -1,4 +1,4 @@
-# Publica la app para los JUGADORES en GitHub Pages: https://kiro55-dev.github.io/vtt-rol/
+# Publica la app para los JUGADORES en GitHub Pages: https://kiro55-dev.github.io/OpenRoll/
 # Es la misma app que la del host (src/), compilada para el navegador (`bun run web:build`, OPENROLL_WEB=1):
 # sin Tauri, sus datos llegan del host por la sala (ver docs/red.md). Los enlaces de las salas apuntan aquí.
 # Se publica sola al subir cambios del front; también se puede lanzar a mano.

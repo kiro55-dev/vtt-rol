@@ -33,7 +33,7 @@ import { crearDirecto, soportaDirecto, type Directo } from "./webrtc";
 import { VERSION_PROTOCOLO, type Jugador, type MensajeCliente, type MensajeHost, type VistaJugador } from "./protocolo";
 import { aplicarCambios, partesCambiadas, PETICIONES, responder, separarMiniatura, vistaVacia } from "./replica";
 
-/** Carpeta de la página (`/vtt-rol` en GitHub Pages, vacía en desarrollo): donde vive el Service Worker. */
+/** Carpeta de la página (`/OpenRoll` en GitHub Pages, vacía en desarrollo): donde vive el Service Worker. */
 const BASE = typeof location === "undefined" ? "" : new URL(".", location.href).pathname.replace(/\/$/, "");
 /** Lo que se deja en el búfer del WebSocket al subir una imagen antes de esperar. */
 const MAX_BUFER_SUBIDA = 1024 * 1024;

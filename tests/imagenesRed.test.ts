@@ -17,7 +17,7 @@ import type { MensajeCliente } from "$lib/red/protocolo";
 function nueva() {
   const mensajes: MensajeCliente[] = [];
   const binarios: Uint8Array[] = [];
-  const red = new ImagenesRed({ mensaje: (m) => mensajes.push(m), binario: (b) => binarios.push(b), sitio: async () => {} }, "/vtt-rol");
+  const red = new ImagenesRed({ mensaje: (m) => mensajes.push(m), binario: (b) => binarios.push(b), sitio: async () => {} }, "/OpenRoll");
   const pedidas = () => mensajes.filter((m): m is Extract<MensajeCliente, { tipo: "PedirImagen" }> => m.tipo === "PedirImagen");
   /** El host manda la imagen `id` entera en trozos de `tam` bytes. */
   const mandar = (id: number, datos: Uint8Array, mime = "image/png") => {
@@ -40,7 +40,7 @@ describe("imágenes por la conexión", () => {
     const l = leerTrozo(t.buffer)!;
     expect([l.tipo, l.id, [...l.datos]]).toEqual([TROZO_BAJADA, 0x01020304, [9, 8]]);
     expect(leerTrozo(new Uint8Array([1, 2]).buffer)).toBeNull();
-    expect(claveImagen("/vtt-rol", "imagenes/a b.png", "ficha")).toBe("/vtt-rol/__imagen?ruta=imagenes%2Fa+b.png&mini=ficha");
+    expect(claveImagen("/OpenRoll", "imagenes/a b.png", "ficha")).toBe("/OpenRoll/__imagen?ruta=imagenes%2Fa+b.png&mini=ficha");
   });
 
   it("pide la imagen y la entrega entera aunque llegue en varios trozos e intercalada con otra", async () => {

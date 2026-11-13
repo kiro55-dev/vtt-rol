@@ -9,7 +9,7 @@ que la valida y la ejecuta en su Rust; el resultado llega a todos en tiempo real
 
 ```
 Navegador del jugador                                  App del host (Tauri)
-https://kiro55-dev.github.io/vtt-rol/#t=…&s=…&k=…
+https://kiro55-dev.github.io/OpenRoll/#t=…&s=…&k=…
   │  la misma app (src/), compilada para la web; el # nunca sale del navegador
   ├─ wss://xxxx.trycloudflare.com/ws ──► cloudflared ──► 127.0.0.1:<puerto>  (src-tauri/src/red/servidor.rs)
   │    (juego e imágenes por la misma conexión)                 │
@@ -197,7 +197,7 @@ https://kiro55-dev.github.io/vtt-rol/#t=…&s=…&k=…
    Pro, o publicar `build-web/` en Cloudflare Pages).
 2. En GitHub: *Settings → Pages → Build and deployment → Source: GitHub Actions*.
 3. Sube a `main`: la acción `.github/workflows/cliente-web.yml` pasa los tests, compila (`bun run web:build`, que
-   genera `build-web/` con la ruta `/vtt-rol`) y publica en `https://kiro55-dev.github.io/vtt-rol/`. Se vuelve a
+   genera `build-web/` con la ruta `/OpenRoll`) y publica en `https://kiro55-dev.github.io/OpenRoll/`. Se vuelve a
    publicar sola cuando cambia el front (también se puede lanzar a mano en *Actions*).
 
 Si la dirección cambia (otro usuario u otro nombre de repositorio), cambia `URL_CLIENTE` en

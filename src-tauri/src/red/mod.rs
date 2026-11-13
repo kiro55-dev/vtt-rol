@@ -51,7 +51,7 @@ use crate::tablero_general::tablero::AvisoTablero;
 /// `OPENROLL_URL_CLIENTE=http://localhost:5173/` y se lanza `bun run web:dev`.
 pub const URL_CLIENTE: &str = match option_env!("OPENROLL_URL_CLIENTE") {
     Some(url) => url,
-    None => "https://kiro55-dev.github.io/vtt-rol/",
+    None => "https://kiro55-dev.github.io/OpenRoll/",
 };
 
 /// Fallos de contraseña permitidos por conexión antes de echarla, y en total por minuto.
@@ -1109,7 +1109,7 @@ mod tests {
 
     #[test]
     fn el_origen_de_la_pagina_se_saca_bien() {
-        assert_eq!(origen("https://a.github.io/vtt-rol/"), "https://a.github.io");
+        assert_eq!(origen("https://a.github.io/OpenRoll/"), "https://a.github.io");
         assert_eq!(origen("http://localhost:5173/"), "http://localhost:5173");
     }
 }
