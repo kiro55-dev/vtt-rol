@@ -223,7 +223,10 @@ export class Conexion {
     if (cmd === "avisar_tablero" && "Foco" in ((args.aviso as object) ?? {})) return Promise.resolve(null);
     // El arrastre en vivo (protocolo 7): sin respuesta ni espera, y con orden propio. Por la conexión directa va por
     // el canal que no reintenta ni ordena, así una pérdida no frena nada
-    if (cmd === "avisar_tablero" && ("Arrastre" in (args.aviso as object) || "ArrastreFin" in (args.aviso as object))) {
+    // Y la flecha del recorrido (botón derecho): como `Pedir` pasaba por el límite y la cola de acciones y, al dibujar
+    // rápido, el host descartaba las últimas (y los demás se quedaban con una flecha vieja)
+    const aviso = (args.aviso ?? {}) as object;
+    if (cmd === "avisar_tablero" && ("Arrastre" in aviso || "ArrastreFin" in aviso || "Recorrido" in aviso || "RecorridoBorrado" in aviso)) {
       this.#enviar({ tipo: "Aviso", aviso: args.aviso as AvisoTablero });
       return Promise.resolve(null);
     }

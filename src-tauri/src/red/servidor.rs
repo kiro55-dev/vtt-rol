@@ -47,6 +47,8 @@ const TIEMPO_SALUDO: Duration = Duration::from_secs(15);
 const TIEMPO_IDENTIFICARSE: Duration = Duration::from_secs(180);
 /// Peticiones de un jugador esperando a hacerse. Con la cola llena se contesta «vas demasiado rápido».
 const MAX_PETICIONES_EN_COLA: usize = 64;
+/// Avisos del tablero (arrastre, recorrido) de un jugador en espera de ejecutarse, en orden. Si se llena, se tiran los nuevos.
+const MAX_AVISOS_EN_COLA: usize = 64;
 /// Mensajes para un jugador sin enviar todavía (su conexión no da abasto o no lee). Pasado esto se le corta: al
 /// reconectar recibe su vista entera, así que no pierde nada, y el host no acumula memoria por él.
 const MAX_MENSAJES_PENDIENTES: usize = 2000;
@@ -222,6 +224,17 @@ pub(crate) async fn atender(red: Arc<Red>, transporte: Transporte) {
             });
         }
     });
+    // Los avisos del tablero (arrastre en vivo, recorrido) tienen su cola, también EN ORDEN (si cada uno se ejecutara en
+    // su propio hilo podrían cruzarse y los demás se quedarían con una flecha vieja), pero aparte de las acciones: no
+    // esperan detrás de una lenta.
+    let (avisos_cola, mut avisos_pendientes) = mpsc::channel::<AvisoTablero>(MAX_AVISOS_EN_COLA);
+    let (red4, jugador4) = (red.clone(), yo.id);
+    tokio::spawn(async move {
+        while let Some(aviso) = avisos_pendientes.recv().await {
+            let r = red4.clone();
+            let _ = tokio::task::spawn_blocking(move || r.ejecutar_peticion(jugador4, peticiones::Peticion::AvisarTablero { aviso })).await;
+        }
+    });
     let mut limite = LimitePeticiones::nuevo();
     // Imágenes por esta misma conexión (ver red/imagenes.rs). Al salir se cancelan las que estén a medias.
     let bajadas = imagenes::Bajadas::default();
@@ -241,14 +254,11 @@ pub(crate) async fn atender(red: Arc<Red>, transporte: Transporte) {
             entrante = rx.recv() => match entrante {
                 // Lo que no se entiende se ignora
                 Some(Trama::Texto(t) | Trama::Efimero(t)) => match serde_json::from_str::<MensajeCliente>(&t) {
-                    // El arrastre en vivo: sin respuesta ni cola (no puede esperar detrás de una acción lenta), con
-                    // las mismas reglas que `avisar_tablero`. Si llega desordenado, lo arregla su número
+                    // El arrastre en vivo y el recorrido: sin respuesta ni espera detrás de una acción lenta, con las
+                    // mismas reglas que `avisar_tablero` y en el orden en que llegan (cola propia)
                     Ok(MensajeCliente::Aviso { aviso }) => {
                         if limite.permite() {
-                            let (r, jugador) = (red.clone(), yo.id);
-                            tokio::task::spawn_blocking(move || {
-                                let _ = r.ejecutar_peticion(jugador, peticiones::Peticion::AvisarTablero { aviso });
-                            });
+                            let _ = avisos_cola.try_send(aviso);
                         }
                     }
                     // Una acción pasa por el límite y por la cola
@@ -857,6 +867,33 @@ mod tests {
         assert!(pedir(&mut ana, 3, json!({ "cmd": "avisar_tablero", "aviso": { "Foco": { "ids_instancias": [1] } } })).await.1.is_ok());
         assert_eq!(sala.eventos.lock().unwrap().len(), antes, "el host no ve el foco");
         assert!(tokio::time::timeout(Duration::from_millis(200), luis.next()).await.is_err(), "ni los demás");
+    }
+
+    /// El recorrido de un jugador (flecha medida con el botón derecho) llega a los demás SIEMPRE EN ORDEN: la cola de
+    /// avisos de cada conexión no deja que se crucen, así el último estado es el último que ven.
+    #[tokio::test]
+    async fn el_recorrido_de_un_jugador_llega_a_los_demas_en_orden() {
+        let sala = sala_con_app("srv_recorrido").await;
+        let (mut ana, id, _) = entrar(&sala, "Ana").await;
+        let (mut luis, _, _) = entrar(&sala, "Luis").await;
+        poner_fichas(&sala, id);
+        vaciar(&mut ana).await;
+        vaciar(&mut luis).await;
+
+        let recorrido = |n: usize| {
+            let casillas: Vec<_> = (0..n).map(|i| json!({ "x": i % 4, "y": 0 })).collect();
+            MensajeCliente::Aviso { aviso: serde_json::from_value(json!({ "Recorrido": { "id_mapa": 1, "casillas": casillas } })).unwrap() }
+        };
+        for n in 1..=20 {
+            mandar(&mut ana, &recorrido(n)).await;
+        }
+        mandar(&mut ana, &MensajeCliente::Aviso { aviso: serde_json::from_value(json!({ "RecorridoBorrado": { "id_mapa": 1 } })).unwrap() }).await;
+        for n in 1..=20 {
+            let MensajeHost::Aviso { aviso } = leer(&mut luis).await else { panic!("Luis no vio el recorrido {n}") };
+            assert!(matches!(&aviso, AvisoTablero::Recorrido { casillas, .. } if casillas.len() == n), "en orden: {n} → {aviso:?}");
+        }
+        let MensajeHost::Aviso { aviso } = leer(&mut luis).await else { panic!("Luis no vio que se borraba") };
+        assert!(matches!(aviso, AvisoTablero::RecorridoBorrado { .. }), "y el último estado (borrado) es el último que ve");
     }
 
     #[tokio::test]

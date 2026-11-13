@@ -123,6 +123,18 @@ describe("conexión del jugador: pedirle acciones al host", () => {
     expect(ws.enviados.filter((m) => m.tipo === "Pedir").length).toBe(antes);
   });
 
+  it("el recorrido (flecha del botón derecho) también va como `Aviso`, no como petición con cola y respuesta", async () => {
+    const { c, ws } = await conectado();
+    const antes = ws.enviados.filter((m) => m.tipo === "Pedir").length;
+    const { avisoRecorrido, avisoRecorridoBorrado } = await import("$lib/avisosTablero");
+    const a = avisoRecorrido(1, [{ x: 1, y: 1 }, { x: 2, y: 1 }]);
+    const b = avisoRecorridoBorrado(1);
+    await expect(c.responder("avisar_tablero", { aviso: a })).resolves.toBeNull();
+    await expect(c.responder("avisar_tablero", { aviso: b })).resolves.toBeNull();
+    expect(ws.enviados.filter((m) => m.tipo === "Aviso").map((m) => m.aviso)).toEqual([a, b]);
+    expect(ws.enviados.filter((m) => m.tipo === "Pedir").length).toBe(antes);
+  });
+
   it("las lecturas no van al host: salen de la réplica, y lo que no está permitido se rechaza", async () => {
     const { c, ws } = await conectado();
     ws.recibir({

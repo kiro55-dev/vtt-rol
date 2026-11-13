@@ -337,6 +337,7 @@
     }
     if (midiendo && e.button === 2) {
       midiendo = false; // el recorrido se queda dibujado hasta el siguiente clic
+      enviarRecorridoPendiente(); // y los demás reciben ya su estado definitivo
       // Clic derecho sin arrastrar sobre una ficha: gira 90° a la derecha; con Ctrl, la pone en espejo
       const d = derechoSobreFicha;
       if (d && recorrido.length === 0 && Math.hypot(e.clientX - d.x, e.clientY - d.y) <= MOVIMIENTO_MAX_CLIC_PX) {
@@ -380,13 +381,45 @@
     return typeof mapa?.id === 'number' ? mapa.id : null;
   }
 
-  // Cambia el recorrido propio y avisa. `[]` = quitarlo.
+  // El recorrido propio se manda como mucho cada MIN_ENTRE_RECORRIDOS_MS, pero SIEMPRE se acaba mandando el último
+  // estado (al terminar el intervalo y, sin esperar, al soltar el botón): si el último se perdiera o se retrasara, los
+  // demás se quedarían con una flecha vieja. Los pasos intermedios que se saltan no importan: cada aviso es la flecha entera.
+  const MIN_ENTRE_RECORRIDOS_MS = 40;
+  /** @type {import("$lib/avisosTablero").AvisoTablero | null} */
+  let recorridoPendiente = null;
+  /** @type {ReturnType<typeof setTimeout> | null} */
+  let relojRecorrido = null;
+  let ultimoEnvioRecorrido = 0;
+
+  // Manda ya lo último que quedaba por mandar (si hay algo)
+  function enviarRecorridoPendiente() {
+    if (relojRecorrido) clearTimeout(relojRecorrido);
+    relojRecorrido = null;
+    const aviso = recorridoPendiente;
+    recorridoPendiente = null;
+    if (!aviso) return;
+    ultimoEnvioRecorrido = performance.now();
+    enviarAviso(aviso);
+  }
+
+  // Descarta lo pendiente sin mandarlo (al cambiar de mapa: ya no tiene sentido)
+  function cancelarRecorridoPendiente() {
+    if (relojRecorrido) clearTimeout(relojRecorrido);
+    relojRecorrido = null;
+    recorridoPendiente = null;
+  }
+
+  // Cambia el recorrido propio y avisa. `[]` = quitarlo (eso sí se manda enseguida).
   /** @param {import("$lib/partida.svelte").Casilla[]} casillas */
   function cambiarRecorrido(casillas) {
     recorrido = casillas;
     const id = idMapa();
     if (id === null) return;
-    enviarAviso(casillas.length ? avisoRecorrido(id, casillas) : avisoRecorridoBorrado(id));
+    recorridoPendiente = casillas.length ? avisoRecorrido(id, casillas) : avisoRecorridoBorrado(id);
+    if (!casillas.length) return enviarRecorridoPendiente();
+    if (relojRecorrido) return; // ya hay un envío programado: llevará el último estado
+    const espera = Math.max(0, MIN_ENTRE_RECORRIDOS_MS - (performance.now() - ultimoEnvioRecorrido));
+    relojRecorrido = setTimeout(enviarRecorridoPendiente, espera);
   }
 
   // Un aviso de otro jugador (llega por el evento "aviso-tablero"; ver $lib/avisosTablero)
@@ -520,6 +553,7 @@
     const id = idMapa();
     untrack(() => {
       if (id === mapaDeLasMarcas) return;
+      cancelarRecorridoPendiente(); // lo pendiente era del mapa anterior
       if (recorrido.length && mapaDeLasMarcas !== null) enviarAviso(avisoRecorridoBorrado(mapaDeLasMarcas));
       mapaDeLasMarcas = id;
       arrastreAjeno.limpiar();
