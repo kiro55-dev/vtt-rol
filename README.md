@@ -35,7 +35,7 @@ Opción peer to peer gestionado por la propia aplicación, en la cual tiene como
 disponible). Le das a abrir sala y compartes enlaces, 
 
 1B Usar tu propio respaldo
-Igual que la primera, pero el respaldo lo pones tú. Por ejemplo, con tailscale instalado, habilitar https certificates dentro de https://console.tailscale.com/admin/dns, y en una terminal ejecutar tailscale funnel http://127.0.0.1:8080 (la primera vez pedira confirmación), poner la url que se obtiene en el programa, y compartir la url que se proporciona a los jugadores y listo.
+Igual que la primera, pero el respaldo lo pones tú. Por ejemplo, con tailscale instalado, habilitar https certificates dentro de https://console.tailscale.com/admin/dns, y en una terminal ejecutar "tailscale funnel http://127.0.0.1:8080" (la primera vez pedirá confirmación), poner la url que se obtiene en el programa, y compartir la url que se proporciona a los jugadores y listo.
 
 2 Solo túnel
 Es igual que la primera, con cloudflare o el tuyo propio, pero sin ser peer to peer. Para casos en los que no quieras compartir tu ip pública por si la gente con la que juegas no es de confianza. Lo máximo que pueden llegar a hacer con tu ip pública escanearte puertos por si tienes algo abierto (de normal no vas a tener nada a no ser que hayas configurado algo por tu cuenta) o intentar hacer ataques de denegación de servicio (tampoco es normal que un jugador pueda hacer esto en primer lugar, y tus datos siempre están a salvo).
@@ -44,4 +44,4 @@ Es igual que la primera, con cloudflare o el tuyo propio, pero sin ser peer to p
 La clásica, mediante hamachi, tailscale o mi recomendación personal, radmin vpn, conectarses todo a una red local y poner ip del host más el puerto, como en minecraft. Si pide permisos de cortafuegos de la aplicación dadle a permitir o no funcionará.
 El programa te devolverá probablemente varios enlaces, en de tu red local de verdad (casa), el de radmin, u otros programas de red en caso de tenerlo, usar el que interese. Puedes considerarlo como un escaneo automático.
 
-En una tercera etapa muy lejana se pensarán cosas como "Dungeon creator", muros que tapen visibilidad, pero no tengo claro que termine de encargar con la visión del programa, ya se verá.
+En una tercera etapa se pensarán cosas como "Dungeon creator", muros que tapen visibilidad, creación de mazmorras a partir de los cuadros, etc.

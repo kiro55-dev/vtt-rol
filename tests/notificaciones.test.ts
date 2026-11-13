@@ -70,7 +70,7 @@ describe("notificaciones", () => {
 
   it("un aviso largo (una frase entera) y uno de atención se marcan como tales; los normales, no", () => {
     notificaciones.mostrar("Ana se unió a la sala");
-    notificaciones.mostrar("Actualiza OpenRoll: los jugadores no podrán entrar", 15000, { largo: true, aviso: true });
+    notificaciones.mostrar("Actualiza OpenRoll: los jugadores no podrán entrar", 6000, { largo: true, aviso: true });
     expect(notificaciones.lista.map((n) => [n.largo, n.aviso])).toEqual([
       [false, false],
       [true, true]
@@ -78,6 +78,16 @@ describe("notificaciones", () => {
     vi.advanceTimersByTime(3000);
     expect(textos()).toEqual(["Actualiza OpenRoll: los jugadores no podrán entrar"]); // y dura lo que se pidió
     vi.advanceTimersByTime(12_000);
+    expect(textos()).toEqual([]);
+  });
+
+  it("con duración null no se quita sola, lleva «x» y se cierra a mano", () => {
+    const id = notificaciones.mostrar("Hay una versión nueva", null, { largo: true });
+    notificaciones.mostrar("normal");
+    expect(notificaciones.lista.map((n) => n.cerrable)).toEqual([true, false]);
+    vi.advanceTimersByTime(3_600_000);
+    expect(textos()).toEqual(["Hay una versión nueva"]); // la normal se fue sola; esta no
+    notificaciones.quitar(id);
     expect(textos()).toEqual([]);
   });
 

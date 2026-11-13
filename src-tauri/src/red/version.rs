@@ -51,8 +51,12 @@ pub fn mas_nueva(a: &str, b: &str) -> bool {
 
 /// Qué decirle al host dados mi protocolo y mi versión y lo que publica la web. `None` si no hay nada que avisar (iguales, o
 /// la web va por detrás de la app: eso es cosa de quien publica, no del host).
-pub fn evaluar(mi_protocolo: u32, mi_app: &str, web: &VersionWeb) -> Option<AvisoVersion> {
-    if web.protocolo > mi_protocolo {
+///
+/// `jugadores_usan_la_web`: los jugadores entran por la página de GitHub Pages (túnel de Cloudflare). Solo entonces un
+/// protocolo más nuevo en la web les impide entrar y es un aviso «fuerte»; con tu propia dirección o en red local la
+/// página va dentro de la app y solo cuenta que haya una versión nueva.
+pub fn evaluar(mi_protocolo: u32, mi_app: &str, web: &VersionWeb, jugadores_usan_la_web: bool) -> Option<AvisoVersion> {
+    if jugadores_usan_la_web && web.protocolo > mi_protocolo {
         let nueva = if web.app.is_empty() { String::new() } else { format!(" (versión {})", web.app) };
         return Some(AvisoVersion {
             nivel: "fuerte",
@@ -61,7 +65,7 @@ pub fn evaluar(mi_protocolo: u32, mi_app: &str, web: &VersionWeb) -> Option<Avis
             ),
         });
     }
-    if !web.app.is_empty() && mas_nueva(&web.app, mi_app) {
+    if !web.app.is_empty() && (mas_nueva(&web.app, mi_app) || web.protocolo > mi_protocolo) {
         return Some(AvisoVersion {
             nivel: "suave",
             texto: format!("Hay una versión nueva de OpenRoll ({}); tú tienes la {mi_app}. Puedes actualizar cuando quieras.", web.app),
@@ -93,9 +97,9 @@ pub fn url_version(url_cliente: &str) -> String {
 }
 
 /// Consulta la web de los jugadores y dice si hay algo que avisar. Cualquier fallo de red: `None`.
-pub async fn comprobar(url_cliente: &str) -> Option<AvisoVersion> {
+pub async fn comprobar(url_cliente: &str, jugadores_usan_la_web: bool) -> Option<AvisoVersion> {
     let web = consultar(&url_version(url_cliente)).await.ok()?;
-    evaluar(VERSION_PROTOCOLO, env!("CARGO_PKG_VERSION"), &web)
+    evaluar(VERSION_PROTOCOLO, env!("CARGO_PKG_VERSION"), &web, jugadores_usan_la_web)
 }
 
 #[cfg(test)]
@@ -121,23 +125,32 @@ mod tests {
 
     #[test]
     fn la_web_con_un_protocolo_mas_nuevo_es_un_aviso_fuerte_y_con_solo_otra_version_suave() {
-        let fuerte = evaluar(9, "1.0.1", &web(10, "1.1.0")).unwrap();
+        let fuerte = evaluar(9, "1.0.1", &web(10, "1.1.0"), true).unwrap();
         assert_eq!(fuerte.nivel, "fuerte");
         assert!(fuerte.texto.contains("no podrán entrar") && fuerte.texto.contains("1.1.0") && fuerte.texto.contains("1.0.1"), "{}", fuerte.texto);
         // Aunque la versión de la app no diga nada, el protocolo manda
-        assert_eq!(evaluar(9, "1.0.1", &web(10, "")).unwrap().nivel, "fuerte");
+        assert_eq!(evaluar(9, "1.0.1", &web(10, ""), true).unwrap().nivel, "fuerte");
 
-        let suave = evaluar(10, "1.0.1", &web(10, "1.0.2")).unwrap();
+        let suave = evaluar(10, "1.0.1", &web(10, "1.0.2"), true).unwrap();
         assert_eq!(suave.nivel, "suave");
         assert!(suave.texto.contains("1.0.2") && suave.texto.contains("1.0.1"));
     }
 
     #[test]
+    fn sin_cloudflare_la_web_no_impide_entrar_asi_que_solo_hay_aviso_suave() {
+        // Con tu propia dirección o en red local la página va dentro de la app: el protocolo de la web da igual
+        assert_eq!(evaluar(9, "1.0.1", &web(10, ""), false), None);
+        let suave = evaluar(9, "1.0.1", &web(10, "1.1.0"), false).unwrap();
+        assert_eq!(suave.nivel, "suave");
+        assert!(!suave.texto.contains("no podrán entrar"));
+    }
+
+    #[test]
     fn si_esta_al_dia_o_la_web_va_por_detras_no_se_avisa_de_nada() {
-        assert_eq!(evaluar(10, "1.0.1", &web(10, "1.0.1")), None);
-        assert_eq!(evaluar(10, "1.0.1", &web(10, "")), None);
-        assert_eq!(evaluar(10, "1.0.2", &web(10, "1.0.1")), None, "mi app es más nueva que la web: cosa de quien publica");
-        assert_eq!(evaluar(10, "1.0.1", &web(9, "1.0.0")), None, "protocolo más viejo en la web: no es del host");
+        assert_eq!(evaluar(10, "1.0.1", &web(10, "1.0.1"), true), None);
+        assert_eq!(evaluar(10, "1.0.1", &web(10, ""), true), None);
+        assert_eq!(evaluar(10, "1.0.2", &web(10, "1.0.1"), true), None, "mi app es más nueva que la web: cosa de quien publica");
+        assert_eq!(evaluar(10, "1.0.1", &web(9, "1.0.0"), true), None, "protocolo más viejo en la web: no es del host");
     }
 
     #[test]
@@ -164,13 +177,13 @@ mod tests {
     async fn se_lee_el_version_json_de_la_web_y_se_avisa_solo_si_hace_falta() {
         let url = web_de_mentira(r#"{"protocolo": 99, "app": "9.9.9"}"#, axum::http::StatusCode::OK).await;
         assert_eq!(consultar(&url_version(&url)).await.unwrap(), web(99, "9.9.9"));
-        let aviso = comprobar(&url).await.expect("la web va por delante");
+        let aviso = comprobar(&url, true).await.expect("la web va por delante");
         assert_eq!(aviso.nivel, "fuerte");
 
         // Una web igual que la app: nada
         let igual = format!(r#"{{"protocolo": {VERSION_PROTOCOLO}, "app": "{}"}}"#, env!("CARGO_PKG_VERSION"));
         let url = web_de_mentira(Box::leak(igual.into_boxed_str()), axum::http::StatusCode::OK).await;
-        assert_eq!(comprobar(&url).await, None);
+        assert_eq!(comprobar(&url, true).await, None);
     }
 
     #[tokio::test]
@@ -182,13 +195,13 @@ mod tests {
         ] {
             let url = web_de_mentira(cuerpo, estado).await;
             assert!(consultar(&url_version(&url)).await.is_err(), "{cuerpo}");
-            assert_eq!(comprobar(&url).await, None, "{cuerpo}");
+            assert_eq!(comprobar(&url, true).await, None, "{cuerpo}");
         }
         // Demasiado grande
         let enorme: &'static str = Box::leak(format!(r#"{{"protocolo": 99, "app": "{}"}}"#, "x".repeat(MAX_BYTES)).into_boxed_str());
         let url = web_de_mentira(enorme, axum::http::StatusCode::OK).await;
         assert!(consultar(&url_version(&url)).await.is_err());
         // Sin nadie escuchando (sin red): tampoco avisa
-        assert_eq!(comprobar("http://127.0.0.1:1/").await, None);
+        assert_eq!(comprobar("http://127.0.0.1:1/", true).await, None);
     }
 }

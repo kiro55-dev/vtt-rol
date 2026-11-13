@@ -35,15 +35,14 @@ pub async fn cerrar_sala(state: State<'_, AppState>) -> Result<(), String> {
     Ok(())
 }
 
-/// ¿Los jugadores podrán entrar con la versión de esta app? Solo con Cloudflare (la página es la de GitHub Pages, que se
-/// actualiza sola): se consulta su `version.json` y, si trae un protocolo más nuevo que el de la app, o una versión nueva,
-/// se avisa. Sin red, o con otro modo de publicar, no hay aviso.
+/// ¿Hay una versión nueva de la app? Se llama al abrir la app: se consulta el `version.json` de la web de los jugadores
+/// y se avisa si trae una versión más nueva. Con Cloudflare (la página es la de GitHub Pages, que se actualiza sola)
+/// también avisa si su protocolo es más nuevo que el de la app, porque entonces los jugadores no podrían entrar. Sin
+/// red no hay aviso.
 #[tauri::command]
 pub async fn comprobar_version_web(state: State<'_, AppState>) -> Result<Option<crate::red::version::AvisoVersion>, String> {
-    if !state.red.pagina_en_github() {
-        return Ok(None);
-    }
-    Ok(crate::red::version::comprobar(crate::red::URL_CLIENTE).await)
+    let con_cloudflare = matches!(state.red.config().respaldo, crate::red::config::Respaldo::Cloudflare);
+    Ok(crate::red::version::comprobar(crate::red::URL_CLIENTE, con_cloudflare).await)
 }
 
 /// Cómo se publica la sala en este equipo (`red.json`): túnel de Cloudflare o dirección propia.

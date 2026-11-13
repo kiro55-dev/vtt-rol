@@ -11,11 +11,17 @@ export interface Notificacion {
   largo: boolean;
   /** Algo a lo que hacer caso (no una simple noticia): se ve con el borde ámbar. */
   aviso: boolean;
+  /** Un enlace que se puede pulsar (se abre en el navegador del sistema). */
+  enlace?: { texto: string; url: string };
+  /** Lleva una «x» para cerrarla a mano (las que no se quitan solas la necesitan). */
+  cerrable: boolean;
 }
 
 export interface OpcionesNotificacion {
   largo?: boolean;
   aviso?: boolean;
+  cerrable?: boolean;
+  enlace?: { texto: string; url: string };
 }
 
 /** Lo que dura un aviso en pantalla. */
@@ -32,15 +38,20 @@ class Notificaciones {
   #relojes = new Map<number, ReturnType<typeof setTimeout>>();
   #siguiente = 1;
 
-  /** Enseña un aviso y lo quita solo a los `ms` (cada uno con su reloj). Devuelve su id. */
-  mostrar(texto: string, ms: number = DURACION_NOTIFICACION_MS, opciones: OpcionesNotificacion = {}): number {
+  /** Enseña un aviso y lo quita solo a los `ms` (cada uno con su reloj). `null`: no se quita solo (hay que cerrarlo). Devuelve su id. */
+  mostrar(texto: string, ms: number | null = DURACION_NOTIFICACION_MS, opciones: OpcionesNotificacion = {}): number {
     const id = this.#siguiente++;
-    this.lista = [...this.lista, { id, texto, largo: !!opciones.largo, aviso: !!opciones.aviso }];
+    this.lista = [
+      ...this.lista,
+      { id, texto, largo: !!opciones.largo, aviso: !!opciones.aviso, enlace: opciones.enlace, cerrable: opciones.cerrable ?? ms === null }
+    ];
     while (this.lista.length > MAX_NOTIFICACIONES) this.quitar(this.lista[0].id);
-    this.#relojes.set(
-      id,
-      setTimeout(() => this.quitar(id), ms)
-    );
+    if (ms !== null) {
+      this.#relojes.set(
+        id,
+        setTimeout(() => this.quitar(id), ms)
+      );
+    }
     return id;
   }
 
