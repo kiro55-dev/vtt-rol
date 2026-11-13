@@ -28,9 +28,11 @@ pub async fn abrir_sala(state: State<'_, AppState>) -> Result<EstadoSala, String
     Ok(red.estado(&est))
 }
 
+/// Cierra la sala avisando a los jugadores (ven que el host la cerró) antes de parar el servidor y el túnel.
 #[tauri::command]
-pub fn cerrar_sala(state: State<'_, AppState>) {
-    state.red.cerrar();
+pub async fn cerrar_sala(state: State<'_, AppState>) -> Result<(), String> {
+    state.red.cerrar_avisando().await;
+    Ok(())
 }
 
 /// Cómo se publica la sala en este equipo (`red.json`): túnel de Cloudflare o dirección propia.

@@ -45,6 +45,32 @@ async function conectado() {
 
 const peticion = (ws: WebSocketFalso) => ws.enviados.filter((m) => m.tipo === "Pedir").at(-1);
 
+describe("conexión del jugador: el host cierra la sala", () => {
+  beforeEach(() => vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] }));
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.unstubAllGlobals();
+  });
+
+  it("«sala cerrada» deja al jugador fuera con el motivo (como al expulsarlo) y no intenta volver a conectar", async () => {
+    const { c, ws } = await conectado();
+    expect(c.estado.tipo).toBe("dentro");
+    ws.recibir({ tipo: "SalaCerrada" });
+    expect(c.estado).toEqual({ tipo: "fuera", motivo: "El host ha cerrado la sala" });
+    // Luego el host cierra la conexión: no cuenta como una caída (no hay «Reconectando…» ni nuevos intentos)
+    ws.onclose?.();
+    vi.advanceTimersByTime(10_000);
+    expect(c.estado).toEqual({ tipo: "fuera", motivo: "El host ha cerrado la sala" });
+    expect(WebSocketFalso.ultimo).toBe(ws);
+  });
+
+  it("al expulsarlo pasa lo mismo, con su motivo", async () => {
+    const { c, ws } = await conectado();
+    ws.recibir({ tipo: "Rechazado", motivo: "El host te ha sacado de la sala" });
+    expect(c.estado).toEqual({ tipo: "fuera", motivo: "El host te ha sacado de la sala" });
+  });
+});
+
 describe("conexión del jugador: nombre que ya existe", () => {
   afterEach(() => vi.unstubAllGlobals());
 

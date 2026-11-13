@@ -1129,8 +1129,8 @@ fn vaciar_papelera(est: &mut EstadoPartida, almacen: &Almacen) {
 
 /// Al cerrar la ventana principal: se vacía la papelera y se guarda la partida.
 pub fn cerrar_partida(state: &AppState) {
-    // Los jugadores reciben «sala cerrada» y el túnel se para
-    state.red.cerrar();
+    // Los jugadores reciben «sala cerrada» (se espera un instante a que les llegue) y luego el túnel se para
+    tauri::async_runtime::block_on(state.red.cerrar_avisando());
     let mut est = state.lock();
     vaciar_papelera(&mut est, &state.almacen);
     if let Err(e) = estado::compactar(&state.almacen, &est) {

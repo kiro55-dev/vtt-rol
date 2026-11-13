@@ -60,6 +60,10 @@ const FALLOS_POR_MINUTO: usize = 20;
 /// Una conexión que vuelve antes de tanto (ms) de habérsele cerrado la anterior es una reconexión, no que «se unió»: lo mismo que
 /// el navegador insiste en reconectar (`REINTENTAR_DURANTE_MS` de `conexion.svelte.ts`).
 const VENTANA_RECONEXION_MS: u64 = 60_000;
+/// Al cerrar la sala, lo máximo que se espera a que el aviso «sala cerrada» salga hacia los jugadores, y la gracia que se da
+/// después para que llegue a la red antes de parar el servidor y el túnel.
+const ESPERA_AVISO_CIERRE: Duration = Duration::from_millis(1500);
+const GRACIA_AVISO_CIERRE: Duration = Duration::from_millis(150);
 /// Conexiones que pueden estar a la vez saludando o escribiendo su nombre (sin ser aún nadie).
 pub(crate) const MAX_SIN_IDENTIFICAR: usize = 16;
 
@@ -689,6 +693,31 @@ impl Red {
             }
             _ => false,
         }
+    }
+
+    /// Cierra la sala AVISANDO de verdad a los jugadores: les manda «sala cerrada» y espera (poco) a que el aviso haya
+    /// salido ANTES de parar el servidor y el túnel. Con `cerrar` a secas el aviso se encolaba y, un instante después,
+    /// el túnel se mataba o el programa terminaba: los jugadores veían una caída («Reconectando…») y no que el host
+    /// cerró la sala. Al cerrar la ventana y con el botón de la sala se usa esta.
+    pub async fn cerrar_avisando(&self) {
+        let avisados = {
+            let dentro = self.dentro();
+            let Some(s) = dentro.as_ref() else { return };
+            for c in s.conexiones.values() {
+                let _ = c.enviar.send(MensajeHost::SalaCerrada);
+            }
+            s.conexiones.len()
+        };
+        if avisados > 0 {
+            // Cada conexión se retira de `conexiones` al terminar de atender a su jugador, justo después de escribir el aviso
+            let limite = Instant::now() + ESPERA_AVISO_CIERRE;
+            while Instant::now() < limite && self.dentro().as_ref().is_some_and(|s| !s.conexiones.is_empty()) {
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+            // Y un instante para que el aviso (ya en la cola del socket o del canal) llegue a la red
+            tokio::time::sleep(GRACIA_AVISO_CIERRE).await;
+        }
+        self.cerrar();
     }
 
     /// Cierra la sala: avisa a los jugadores, para el servidor y el túnel.

@@ -792,6 +792,39 @@ mod tests {
         sala.eventos.lock().unwrap().iter().filter(|(e, _)| e == "jugador-unido").map(|(_, p)| p.clone()).collect()
     }
 
+    /// Al cerrar la sala (el botón o cerrar el programa) los jugadores reciben «sala cerrada»: se espera a que el aviso
+    /// haya salido ANTES de parar el servidor y el túnel (con `cerrar` a secas se encolaba y el túnel moría enseguida:
+    /// los jugadores veían una caída, no que el host cerró la sala).
+    #[tokio::test]
+    async fn cerrar_avisando_espera_a_que_el_aviso_salga_y_todos_los_jugadores_lo_reciben() {
+        let sala = sala_con_app("srv_cierre_avisa").await;
+        let (mut ana, _, _) = entrar(&sala, "Ana").await;
+        let (mut luis, _, _) = entrar(&sala, "Luis").await;
+        let t0 = std::time::Instant::now();
+        sala.red.cerrar_avisando().await;
+        assert!(!sala.red.esta_abierta(), "la sala queda cerrada");
+        assert!(t0.elapsed() < Duration::from_secs(3), "sin esperar de más");
+        // Cuando volvió, el aviso ya iba hacia los dos: se lee enseguida
+        for (nombre, c) in [("Ana", &mut ana), ("Luis", &mut luis)] {
+            let leido = tokio::time::timeout(Duration::from_millis(800), async {
+                loop {
+                    let m = leer(c).await;
+                    if m == MensajeHost::SalaCerrada {
+                        return m;
+                    }
+                }
+            })
+            .await;
+            assert!(leido.is_ok(), "{nombre} no recibió «sala cerrada»");
+        }
+
+        // Sin nadie conectado, cierra enseguida (no espera a nadie)
+        let vacia = sala_con_app("srv_cierre_vacia").await;
+        let t1 = std::time::Instant::now();
+        vacia.red.cerrar_avisando().await;
+        assert!(!vacia.red.esta_abierta() && t1.elapsed() < Duration::from_millis(500));
+    }
+
     /// Un navegador SIN token: se conecta, saluda y queda esperando que le pidan el nombre.
     async fn sin_token(sala: &Sala) -> Cliente {
         let (mut c, reto) = conectar_con_reto(sala.puerto, &sala.red.origenes[0]).await;
