@@ -18,6 +18,7 @@
   import { dibujarPing, dibujarRecorrido, pingVivo } from '$lib/marcasTablero';
   import { ajustesVista } from '$lib/ajustesVista.svelte';
   import { RecorridosAjenos } from '$lib/recorridosAjenos';
+  import { destinoDeLaFlecha, enterEsDelTablero } from '$lib/moverConFlecha';
   import {
     alRecibirAviso, enviarAviso, avisoPing, avisoRecorrido, avisoRecorridoBorrado, avisoArrastre, avisoArrastreFin
   } from '$lib/avisosTablero';
@@ -69,6 +70,10 @@
   /** @type {import("$lib/partida.svelte").Casilla[]} */
   let recorrido = $state.raw([]);
   let midiendo = false;
+  // La ficha desde la que se dibujó la flecha (la pulsada con el botón derecho): Enter la pone en la casilla final.
+  // Se ve marcada mientras dure la flecha y se pueda mover.
+  /** @type {number | null} */
+  let origenRecorrido = $state(null);
   // Las flechas de los demás (una por persona, cada una de su color), recibidas por aviso. `versionAjenos` avisa al
   // pintado de que cambiaron.
   const recorridosAjenos = new RecorridosAjenos();
@@ -276,6 +281,7 @@
         derechoSobreFicha = { x: e.clientX, y: e.clientY, idInstancia: ficha.id_instancia, salida, espejo: ctrl };
       } else {
         derechoSobreFicha = null;
+        origenRecorrido = null;
         cambiarRecorrido([salida]);
       }
       contenedor.setPointerCapture(e.pointerId);
@@ -303,6 +309,7 @@
         // Clic derecho sobre una ficha: la flecha empieza al salir de su casilla
         const d = derechoSobreFicha;
         if (!d || (aqui.x === d.salida.x && aqui.y === d.salida.y)) return;
+        origenRecorrido = d.idInstancia; // la flecha sale de una ficha: Enter la moverá hasta el final
         cambiarRecorrido(extenderRecorrido([d.salida], aqui));
         return;
       }
@@ -416,6 +423,7 @@
   /** @param {import("$lib/partida.svelte").Casilla[]} casillas */
   function cambiarRecorrido(casillas) {
     recorrido = casillas;
+    if (!casillas.length) origenRecorrido = null; // sin flecha, no hay ficha marcada
     const id = idMapa();
     if (id === null) return;
     recorridoPendiente = casillas.length ? avisoRecorrido(id, casillas, ajustesVista.colorFlecha) : avisoRecorridoBorrado(id);
@@ -423,6 +431,26 @@
     if (relojRecorrido) return; // ya hay un envío programado: llevará el último estado
     const espera = Math.max(0, MIN_ENTRE_RECORRIDOS_MS - (performance.now() - ultimoEnvioRecorrido));
     relojRecorrido = setTimeout(enviarRecorridoPendiente, espera);
+  }
+
+  // Enter con la flecha dibujada desde una ficha: la pone en la casilla final (como arrastrarla hasta allí). Los mismos
+  // permisos que al moverla a mano: la pantalla comprueba `partida.controla` y el host vuelve a comprobarlo.
+  /** @param {KeyboardEvent} e */
+  function alPulsarEnter(e) {
+    if (origenRecorrido === null || !enterEsDelTablero(e)) return;
+    const id = origenRecorrido;
+    const destino = destinoDeLaFlecha({
+      recorrido,
+      instancia: partida.instancias.find((i) => i.id_instancia === id),
+      idMapa: idMapa(),
+      controla: (i) => partida.controla(i)
+    });
+    if (!destino) return;
+    e.preventDefault();
+    midiendo = false; // por si aún se tiene el botón pulsado
+    derechoSobreFicha = null;
+    cambiarRecorrido([]); // la flecha se quita (y los demás lo saben)
+    void partida.moverInstancia(id, destino);
   }
 
   // Un aviso de otro jugador (llega por el evento "aviso-tablero"; ver $lib/avisosTablero)
@@ -562,6 +590,7 @@
       mapaDeLasMarcas = id;
       arrastreAjeno.limpiar();
       recorrido = [];
+      origenRecorrido = null;
       recorridosAjenos.limpiar();
       versionAjenos++;
       pings.length = 0;
@@ -608,7 +637,7 @@
   // Capa de fichas: depende de las instancias del mapa, la selección, la cámara y el arrastre en curso.
   let fichasPendientes = true;
   $effect(() => {
-    void [fichas, partida.idsSeleccionados, partida.idsFocoAjeno, partida.definiciones, cam, ancho, alto, dpr, casillas, arrastre.actual, arrastreAjeno.piezas];
+    void [fichas, origenRecorrido, partida.idsSeleccionados, partida.idsFocoAjeno, partida.definiciones, cam, ancho, alto, dpr, casillas, arrastre.actual, arrastreAjeno.piezas];
     void Object.values(partida.valoresPendientes); // la barra de vida y los radios siguen a la rueda
     // Las miniaturas se piden aquí y se leen para que, al llegar, se repinten las fichas
     const a = arrastre.actual;
@@ -656,6 +685,7 @@
       const enTransito = !!porDondePasa && (porDondePasa.x !== f.casilla.x || porDondePasa.y !== f.casilla.y);
       dibujarFicha(ctx, cam, casillas, enTransito ? { instancia: f.instancia, casilla: /** @type {any} */ (porDondePasa) } : f, imagen(f.instancia.base), {
         seleccionada: partida.estaSeleccionada(f.instancia.id_instancia),
+        marcadaParaMover: origenRecorrido === f.instancia.id_instancia && partida.controla(f.instancia),
         focoAjeno: partida.idsFocoAjeno.includes(f.instancia.id_instancia),
         apagada: partida.estaCaida(f.instancia),
         fantasma: enTransito
@@ -915,6 +945,8 @@
   });
 </script>
 
+<svelte:window onkeydown={alPulsarEnter} />
+
 <div
   class="tablero"
   class:arrastrando={panActivo}
@@ -923,7 +955,7 @@
   data-conserva-foco
   role="application"
   aria-label="Tablero de juego"
-  title={ayuda("Rueda: zoom\nArrastrar: mover la vista o una ficha (las que tienen foco, juntas)\nCtrl+clic: añadir o quitar del foco\nCtrl+arrastrar en el fondo: seleccionar con un recuadro\nDoble clic: centrar\nClic central: aviso\nArrastrar con botón derecho: medir\nClic derecho: rotar\nCtrl+clic derecho: rotar y espejar")}
+  title={ayuda("Rueda: zoom\nArrastrar: mover la vista o una ficha (las que tienen foco, juntas)\nArrastrar click derecho: Dibujar una flecha\nEnter cuando el origen de una flecha está sobre una instancia: mover la instancia\nCtrl+clic: añadir o quitar del foco\nCtrl+arrastrar en el fondo: seleccionar con un recuadro\nDoble clic: centrar\nClic central: aviso\nArrastrar con botón derecho: medir\nClic derecho: rotar\nCtrl+clic derecho: rotar y espejar")}
   onwheel={alRueda}
   onpointerdown={alPresionar}
   onpointermove={alMover}

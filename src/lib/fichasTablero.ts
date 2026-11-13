@@ -125,6 +125,8 @@ export function dibujarFicha(
   img: HTMLImageElement | null,
   opciones: {
     seleccionada?: boolean;
+    /** Es el origen de la flecha del botón derecho: Enter la moverá. Se ve con el mismo contorno discontinuo de una ficha marcada. */
+    marcadaParaMover?: boolean;
     focoAjeno?: boolean;
     apagada?: boolean;
     /** Otro la está arrastrando: se ve semitransparente por donde pasa */
@@ -187,14 +189,14 @@ export function dibujarFicha(
   ctx.strokeStyle = color;
   ctx.strokeRect(x + borde / 2, y + borde / 2, w - borde, h - borde);
 
-  if (opciones.focoAjeno && !opciones.seleccionada) {
+  if (opciones.focoAjeno && !opciones.seleccionada && !opciones.marcadaParaMover) {
     // El foco de otro jugador: contorno violeta, distinto al blanco del propio
     ctx.lineWidth = 2;
     ctx.strokeStyle = "#a855f7";
     ctx.setLineDash([2, 3]);
     ctx.strokeRect(x - 3, y - 3, w + 6, h + 6);
   }
-  if (opciones.seleccionada) {
+  if (opciones.seleccionada || opciones.marcadaParaMover) {
     ctx.lineWidth = 2;
     ctx.strokeStyle = "#fafafa";
     ctx.setLineDash([6, 4]);
