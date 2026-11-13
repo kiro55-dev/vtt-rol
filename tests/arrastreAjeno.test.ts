@@ -3,10 +3,10 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { AvisoTablero } from "$lib/avisosTablero";
 
-const arrastre = (piezas: [number, number, number][], id_mapa = 1): AvisoTablero => ({
-  Arrastre: { id_mapa, piezas: piezas.map(([id_instancia, x, y]) => ({ id_instancia, casilla: { x, y } })) }
+const arrastre = (piezas: [number, number, number][], id_mapa = 1, n?: number): AvisoTablero => ({
+  Arrastre: { id_mapa, piezas: piezas.map(([id_instancia, x, y]) => ({ id_instancia, casilla: { x, y } })), n }
 });
-const fin = (ids: number[], id_mapa = 1): AvisoTablero => ({ ArrastreFin: { id_mapa, ids_instancias: ids } });
+const fin = (ids: number[], id_mapa = 1, n?: number): AvisoTablero => ({ ArrastreFin: { id_mapa, ids_instancias: ids, n } });
 
 async function nuevo() {
   vi.resetModules();
@@ -28,6 +28,35 @@ describe("arrastre de otros", () => {
     store.recibir(arrastre([[1, 5, 5]]));
     expect(store.de(1, 1)).toEqual({ x: 5, y: 5 });
     expect(store.de(2, 1)).toEqual({ x: 4, y: 4 }); // las que no se mencionan siguen igual
+  });
+
+  it("por el canal sin orden, un aviso más viejo que el último visto se ignora (y uno sin número vale siempre)", async () => {
+    const { store } = await nuevo();
+    store.recibir(arrastre([[1, 2, 2]], 1, 5));
+    store.recibir(arrastre([[1, 9, 9]], 1, 3)); // llegó tarde: ya se vio el 5
+    expect(store.de(1, 1)).toEqual({ x: 2, y: 2 });
+    store.recibir(arrastre([[1, 4, 4]], 1, 6));
+    expect(store.de(1, 1)).toEqual({ x: 4, y: 4 });
+    store.recibir(arrastre([[1, 7, 7]])); // de quien aún no numera
+    expect(store.de(1, 1)).toEqual({ x: 7, y: 7 });
+  });
+
+  it("un arrastre retrasado que llega justo después de soltar no vuelve a poner la ficha; pasado un rato, otro que arrastre vale", async () => {
+    const { store, VENTANA_RETRASADOS_MS } = await nuevo();
+    store.recibir(arrastre([[1, 2, 2]], 1, 8));
+    store.recibir(fin([1], 1, 9));
+    store.recibir(arrastre([[1, 3, 3]], 1, 7)); // el 7 llegó después del fin (9)
+    expect(store.piezas[1].soltada).toBe(true);
+    expect(store.de(1, 1)).toEqual({ x: 2, y: 2 });
+    // Un fin viejo (número menor que lo último visto) no suelta a quien sigue arrastrando
+    store.recibir(arrastre([[2, 5, 5]], 1, 20));
+    store.recibir(fin([2], 1, 4));
+    expect(store.piezas[2].soltada).toBe(false);
+    // Otra pantalla arrastra la misma ficha más tarde: su cuenta empieza de nuevo y vale
+    vi.advanceTimersByTime(VENTANA_RETRASADOS_MS + 1);
+    store.recibir(arrastre([[1, 6, 6]], 1, 1));
+    expect(store.de(1, 1)).toEqual({ x: 6, y: 6 });
+    expect(store.piezas[1].soltada).toBe(false);
   });
 
   it("ignora los avisos que no son de arrastre", async () => {

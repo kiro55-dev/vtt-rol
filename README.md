@@ -37,6 +37,7 @@ disponible). Le das a abrir sala y compartes enlaces,
 Igual que la primera, pero el respaldo lo pones tú. Por ejemplo, con tailscale instalado, habilitar https certificates dentro de https://console.tailscale.com/admin/dns, y en una terminal ejecutar tailscale funnel http://127.0.0.1:8080 (la primera vez pedira confirmación), poner la url que se obtiene en el programa, y compartir la url que se proporciona a los jugadores y listo.
 
 2 Red local
-La clásica, mediante hamachi, tailscale o mi recomendación personal, radmin vpn, conectarses todo a una red local y poner ip del host más el puerto, como en minecraft. Si pide permisos de cortafuegos de la aplicación dadle a permitir o no funcionará
+La clásica, mediante hamachi, tailscale o mi recomendación personal, radmin vpn, conectarses todo a una red local y poner ip del host más el puerto, como en minecraft. Si pide permisos de cortafuegos de la aplicación dadle a permitir o no funcionará.
+El programa te devolverá probablemente varios enlaces, en de tu red local de verdad (casa), el de radmin, u otros programas de red en caso de tenerlo, usar el que interese. Puedes considerarlo como un escaneo automático.
 
 En una tercera etapa muy lejana se pensarán cosas como "Dungeon creator", muros que tapen visibilidad, pero no tengo claro que termine de encargar con la visión del programa, ya se verá.

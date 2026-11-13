@@ -13,6 +13,7 @@
 //  * La identidad de la sala (enlace, contraseña, jugadores recordados) está en `sala.json`, que es solo del
 //    host: no pasa por el estado ni por los deltas.
 pub mod comandos;
+pub mod codigo;
 pub mod config;
 pub mod pagina;
 pub mod imagenes;
@@ -21,6 +22,8 @@ pub mod protocolo;
 pub mod sala;
 pub mod servidor;
 pub mod transporte;
+pub mod trozos;
+pub mod webrtc;
 pub mod tunel;
 pub mod vista;
 
@@ -128,12 +131,27 @@ struct SalaAbierta {
     respaldo: config::Respaldo,
     /// En red local: las IPs de este equipo al abrir la sala (cada una con su enlace).
     lan: Vec<config::DireccionLan>,
+    /// Códigos de la conexión directa ya usados (su `n`): no se aceptan dos veces. Los últimos 256.
+    codigos_vistos: VecDeque<String>,
 }
 
 impl SalaAbierta {
     /// El fragmento del enlace (tras el `#`) con la identidad de la sala.
     fn fragmento(&self) -> String {
-        format!("s={}&k={}", self.sala.id, self.sala.secreto)
+        match self.huella() {
+            Some(f) => format!("s={}&k={}&f={f}", self.sala.id, self.sala.secreto),
+            None => format!("s={}&k={}", self.sala.id, self.sala.secreto),
+        }
+    }
+
+    /// Peer to peer (con Cloudflare o dirección propia de respaldo); en red local no hay conexión directa.
+    fn p2p(&self) -> bool {
+        !matches!(self.respaldo, config::Respaldo::Lan { .. })
+    }
+
+    /// La huella del certificado de la conexión directa, si la sala va en peer to peer.
+    fn huella(&self) -> Option<String> {
+        if self.p2p() { self.sala.huella() } else { None }
     }
 
     /// Los enlaces para los jugadores. Con el túnel de Cloudflare, a la página de GitHub Pages con `t`; con la
@@ -180,14 +198,21 @@ impl SalaAbierta {
                 v.push(format!("127.0.0.1:{puerto}"));
                 v
             }
-            _ => self.tunel.iter().cloned().collect(),
+            _ => {
+                let mut v: Vec<String> = self.tunel.iter().cloned().collect();
+                // Por la conexión directa, la prueba del token va atada a la huella del host
+                if let Some(f) = self.huella() {
+                    v.push(format!("webrtc:{f}"));
+                }
+                v
+            }
         }
     }
 
     /// Los orígenes de la página cuando la sirve la propia sala (el de GitHub Pages está en `Red::origenes`).
     fn origenes_propios(&self) -> Vec<String> {
         let esquema = if matches!(self.respaldo, config::Respaldo::Lan { .. }) { "http" } else { "https" };
-        self.direcciones().into_iter().map(|d| format!("{esquema}://{d}")).collect()
+        self.direcciones().into_iter().filter(|d| !d.starts_with("webrtc:")).map(|d| format!("{esquema}://{d}")).collect()
     }
 }
 
@@ -218,6 +243,8 @@ pub struct Red {
     limpiador: Mutex<Option<Limpiador>>,
     /// Conexiones que aún no son ningún jugador (ver `MAX_SIN_IDENTIFICAR`).
     sin_identificar: std::sync::atomic::AtomicUsize,
+    /// Conexiones directas (WebRTC) a medio hacer: ofertas contestadas cuyos canales aún no se han abierto.
+    peers_a_medias: std::sync::atomic::AtomicUsize,
 }
 
 /// Una plaza de conexión sin identificar; se libera sola al soltarla.
@@ -283,6 +310,7 @@ impl Red {
             borradores: Mutex::new(HashMap::new()),
             limpiador: Mutex::new(None),
             sin_identificar: std::sync::atomic::AtomicUsize::new(0),
+            peers_a_medias: std::sync::atomic::AtomicUsize::new(0),
         }
     }
 
@@ -443,7 +471,11 @@ impl Red {
                 return Ok(());
             }
             let dir = self.almacen.dir();
-            let sala = SalaGuardada::leer_o_crear(&dir)?;
+            let mut sala = SalaGuardada::leer_o_crear(&dir)?;
+            // Peer to peer: la identidad de la conexión directa (su huella va en el enlace)
+            if !matches!(respaldo, config::Respaldo::Lan { .. }) && sala.asegurar_certificado()? {
+                sala.guardar(&dir)?;
+            }
             *dentro = Some(SalaAbierta {
                 sala,
                 dir,
@@ -458,6 +490,7 @@ impl Red {
                 generacion,
                 respaldo: respaldo.clone(),
                 lan: Vec::new(),
+                codigos_vistos: VecDeque::new(),
             });
         }
         *bloquear(&self.ultimo_error) = None;
@@ -810,7 +843,8 @@ impl Red {
     /// La sala abierta sin túnel (solo el servidor local), para los tests del servidor.
     pub(crate) async fn abrir_local(self: &Arc<Self>) -> u16 {
         let dir = self.almacen.dir();
-        let sala = SalaGuardada::leer_o_crear(&dir).unwrap();
+        let mut sala = SalaGuardada::leer_o_crear(&dir).unwrap();
+        sala.asegurar_certificado().unwrap();
         *self.dentro() = Some(SalaAbierta {
             sala,
             dir,
@@ -825,6 +859,7 @@ impl Red {
             generacion: 0,
             respaldo: config::Respaldo::Cloudflare,
             lan: Vec::new(),
+            codigos_vistos: VecDeque::new(),
         });
         let (puerto, apagar) = servidor::arrancar(self.clone(), std::net::Ipv4Addr::LOCALHOST, 0).await.unwrap();
         self.dentro().as_mut().unwrap().apagar_servidor = Some(apagar);
@@ -848,6 +883,7 @@ impl Red {
             generacion: 0,
             respaldo: config::Respaldo::Cloudflare,
             lan: Vec::new(),
+            codigos_vistos: VecDeque::new(),
         });
     }
 
@@ -891,6 +927,13 @@ mod tests {
         let enlace = e.enlace.clone().unwrap();
         assert!(enlace.starts_with("https://mesa.mi-dominio.es/#s="), "{enlace}");
         assert!(!enlace.contains("t="), "{enlace}");
+        // Peer to peer: lleva la huella del certificado de la conexión directa, que se guarda en sala.json
+        let huella = enlace.split("&f=").nth(1).expect("lleva la huella").to_string();
+        assert_eq!(huella.len(), 43);
+        assert_eq!(SalaGuardada::leer_o_crear(&red.almacen.dir()).unwrap().huella().as_deref(), Some(huella.as_str()));
+        red.regenerar_enlace().unwrap();
+        let nuevo = red.estado(&EstadoPartida::default()).enlace.unwrap();
+        assert!(!nuevo.contains(&huella), "un enlace nuevo trae otra identidad: {nuevo}");
         assert_eq!(e.enlaces.len(), 1);
         assert!(red.acepta_origen("https://mesa.mi-dominio.es"), "su página");
         assert!(!red.acepta_origen("https://otro.es"));
@@ -912,8 +955,9 @@ mod tests {
         assert_eq!(e.enlaces.len(), lan.len(), "un enlace por cada IP del equipo");
         for (d, enlace) in lan.iter().zip(&e.enlaces) {
             assert_eq!(enlace.etiqueta, d.interfaz);
-            assert_eq!(enlace.url, format!("http://{}:{puerto}/", d.ip), "sin llave: solo ip y puerto");
+            assert_eq!(enlace.url, format!("http://{}:{puerto}/", d.ip), "sin llave ni huella: solo ip y puerto");
         }
+        assert!(SalaGuardada::leer_o_crear(&red.almacen.dir()).unwrap().certificado_dtls.is_none(), "en red local no hay conexión directa");
         // Escucha también fuera de 127.0.0.1 (en cualquier IP del equipo)
         if let Some(d) = lan.first() {
             assert!(tokio::net::TcpStream::connect((d.ip, puerto)).await.is_ok());
@@ -960,7 +1004,7 @@ mod tests {
 
     #[test]
     fn el_enlace_lleva_todo_tras_el_almohadilla_y_el_origen_se_saca_bien() {
-        let sala = SalaGuardada { id: "S".into(), secreto: "K".into(), hash_contrasena: None, tokens: vec![] };
+        let sala = SalaGuardada { id: "S".into(), secreto: "K".into(), hash_contrasena: None, tokens: vec![], certificado_dtls: None };
         assert_eq!(enlace("https://a.github.io/vtt-rol/", "x.trycloudflare.com", &sala), "https://a.github.io/vtt-rol/#t=x.trycloudflare.com&s=S&k=K");
         assert_eq!(origen("https://a.github.io/vtt-rol/"), "https://a.github.io");
         assert_eq!(origen("http://localhost:5173/"), "http://localhost:5173");

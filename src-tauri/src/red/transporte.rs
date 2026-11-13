@@ -31,6 +31,9 @@ pub enum Trama {
     Texto(String),
     /// Un trozo de imagen (ver `red::imagenes`).
     Binario(Vec<u8>),
+    /// Un mensaje del protocolo que puede perderse o llegar desordenado (el arrastre en vivo): por la conexión
+    /// directa va por el canal sin reintentos; por el WebSocket, como `Texto`.
+    Efimero(String),
 }
 
 /// La conexión con un jugador, vista como dos colas.
@@ -68,7 +71,7 @@ pub fn desde_websocket(socket: WebSocket) -> Transporte {
             tokio::select! {
                 t = salida.recv() => {
                     let mensaje = match t {
-                        Some(Trama::Texto(s)) => Message::Text(s.into()),
+                        Some(Trama::Texto(s) | Trama::Efimero(s)) => Message::Text(s.into()),
                         Some(Trama::Binario(b)) => Message::Binary(b.into()),
                         None => break, // se soltó el `Transporte`: se cierra
                     };

@@ -36,6 +36,7 @@ use crate::red::peticiones;
 use crate::red::protocolo::{MensajeCliente, MensajeHost, VERSION_PROTOCOLO};
 use crate::tablero_general::estado::DeltaPartida;
 use crate::tablero_general::modelos::Jugador;
+use crate::tablero_general::tablero::AvisoTablero;
 use crate::tablero_general::{jugadores, partida};
 
 const MAX_MENSAJE: usize = 512 * 1024;
@@ -97,7 +98,9 @@ type Receptor = mpsc::Receiver<Trama>;
 
 async fn enviar(tx: &Emisor, m: &MensajeHost) -> Result<(), ()> {
     let json = serde_json::to_string(m).map_err(|_| ())?;
-    transporte::enviar_trama(tx, Trama::Texto(json)).await
+    // El arrastre en vivo puede perderse o desordenarse (lleva su número): por la conexión directa va sin reintentos
+    let efimero = matches!(m, MensajeHost::Aviso { aviso: AvisoTablero::Arrastre { .. } });
+    transporte::enviar_trama(tx, if efimero { Trama::Efimero(json) } else { Trama::Texto(json) }).await
 }
 
 /// El siguiente mensaje del cliente (los trozos binarios se saltan). `None` si se cerró o mandó algo que no se
@@ -105,7 +108,7 @@ async fn enviar(tx: &Emisor, m: &MensajeHost) -> Result<(), ()> {
 async fn recibir(rx: &mut Receptor) -> Option<MensajeCliente> {
     loop {
         match rx.recv().await? {
-            Trama::Texto(t) => return serde_json::from_str(&t).ok(),
+            Trama::Texto(t) | Trama::Efimero(t) => return serde_json::from_str(&t).ok(),
             Trama::Binario(_) => continue,
         }
     }
@@ -117,7 +120,7 @@ async fn rechazar(tx: &Emisor, motivo: &str) {
 }
 
 /// Atiende a un jugador de principio a fin, venga por donde venga (`Transporte`).
-async fn atender(red: Arc<Red>, transporte: Transporte) {
+pub(crate) async fn atender(red: Arc<Red>, transporte: Transporte) {
     let Transporte { tx, mut rx } = transporte;
     // Mientras no es nadie ocupa una plaza: así no se pueden abrir cientos de conexiones que se quedan esperando
     let Some(plaza) = red.plaza_saludo() else {
@@ -221,7 +224,17 @@ async fn atender(red: Arc<Red>, transporte: Transporte) {
             }
             entrante = rx.recv() => match entrante {
                 // Lo que no se entiende se ignora
-                Some(Trama::Texto(t)) => match serde_json::from_str::<MensajeCliente>(&t) {
+                Some(Trama::Texto(t) | Trama::Efimero(t)) => match serde_json::from_str::<MensajeCliente>(&t) {
+                    // El arrastre en vivo: sin respuesta ni cola (no puede esperar detrás de una acción lenta), con
+                    // las mismas reglas que `avisar_tablero`. Si llega desordenado, lo arregla su número
+                    Ok(MensajeCliente::Aviso { aviso }) => {
+                        if limite.permite() {
+                            let (r, jugador) = (red.clone(), yo.id);
+                            tokio::task::spawn_blocking(move || {
+                                let _ = r.ejecutar_peticion(jugador, peticiones::Peticion::AvisarTablero { aviso });
+                            });
+                        }
+                    }
                     // Una acción pasa por el límite y por la cola
                     Ok(MensajeCliente::Pedir { id, peticion }) => {
                         let aceptada = limite.permite() && pedidas.try_send((id, peticion)).is_ok();
@@ -831,6 +844,29 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn el_arrastre_como_aviso_sin_respuesta_llega_a_los_demas_y_el_de_una_ficha_ajena_no() {
+        let sala = sala_con_app("srv_aviso").await;
+        let (mut ana, id, _) = entrar(&sala, "Ana").await;
+        let (mut luis, _, _) = entrar(&sala, "Luis").await;
+        poner_fichas(&sala, id); // la instancia 1 es de Ana; la 2, del host
+        vaciar(&mut ana).await;
+        vaciar(&mut luis).await;
+
+        let arrastre = |ficha: u16, n: u32| {
+            MensajeCliente::Aviso {
+                aviso: serde_json::from_value(json!({ "Arrastre": { "id_mapa": 1, "piezas": [{ "id_instancia": ficha, "casilla": { "x": 3, "y": 2 } }], "n": n } })).unwrap(),
+            }
+        };
+        // Una de una ficha ajena se descarta en silencio; la suya llega a Luis, con su número, sin respuesta para Ana
+        mandar(&mut ana, &arrastre(2, 1)).await;
+        mandar(&mut ana, &arrastre(1, 2)).await;
+        let MensajeHost::Aviso { aviso } = leer(&mut luis).await else { panic!("Luis no vio el arrastre") };
+        assert!(matches!(aviso, crate::tablero_general::tablero::AvisoTablero::Arrastre { n: 2, .. }), "{aviso:?}");
+        assert!(sala.eventos.lock().unwrap().iter().any(|(e, p)| e == "aviso-tablero" && p["Arrastre"]["piezas"][0]["id_instancia"] == 1 && p["Arrastre"]["n"] == 2), "el host lo ve");
+        assert!(!sala.eventos.lock().unwrap().iter().any(|(e, p)| e == "aviso-tablero" && p["Arrastre"]["piezas"][0]["id_instancia"] == 2), "el de la ajena no");
+    }
+
+    #[tokio::test]
     async fn el_arrastre_de_una_ficha_suya_lo_ven_el_host_y_los_demas_y_el_de_una_ajena_no() {
         let sala = sala_con_app("srv_arrastre").await;
         let (mut ana, id, _) = entrar(&sala, "Ana").await;
@@ -1071,7 +1107,7 @@ mod tests {
     async fn leer_mem(t: &mut Transporte) -> MensajeHost {
         loop {
             match tokio::time::timeout(Duration::from_secs(10), t.rx.recv()).await.expect("no llegó a tiempo").expect("cerrado") {
-                Trama::Texto(s) => return serde_json::from_str(&s).unwrap(),
+                Trama::Texto(s) | Trama::Efimero(s) => return serde_json::from_str(&s).unwrap(),
                 Trama::Binario(_) => continue,
             }
         }
@@ -1160,7 +1196,7 @@ mod tests {
         while listas.len() < ids.len() {
             let t = tokio::time::timeout(Duration::from_secs(10), j.rx.recv()).await.expect("no llegó a tiempo").expect("cerrado");
             match t {
-                Trama::Texto(s) => match serde_json::from_str::<MensajeHost>(&s).unwrap() {
+                Trama::Texto(s) | Trama::Efimero(s) => match serde_json::from_str::<MensajeHost>(&s).unwrap() {
                     MensajeHost::ImagenCabecera { id, mime, tam } => {
                         a_medias.insert(id, (mime, tam, Vec::new()));
                     }

@@ -6,7 +6,7 @@ use tauri::{Emitter, Manager};
 
 use red::comandos::{
     abrir_sala, asignar_propietario, cerrar_sala, estado_sala, eliminar_jugador, expulsar_jugador, guardar_config_red, obtener_config_red,
-    obtener_jugadores, poner_contrasena, quitar_propietario, regenerar_enlace,
+    obtener_jugadores, poner_contrasena, quitar_propietario, regenerar_enlace, responder_codigo_directo,
 };
 
 use tablero_general::almacen::Almacen;
@@ -140,6 +140,7 @@ pub fn run() {
             cerrar_sala,
             obtener_config_red,
             guardar_config_red,
+            responder_codigo_directo,
             regenerar_enlace,
             poner_contrasena,
             expulsar_jugador,

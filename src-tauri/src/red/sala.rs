@@ -64,6 +64,22 @@ pub struct SalaGuardada {
     pub hash_contrasena: Option<String>,
     #[serde(default)]
     pub tokens: Vec<TokenJugador>,
+    /// Certificado DTLS de la conexión directa (PEM de `rtc::RTCCertificate`, con su clave privada). Su huella va en
+    /// el enlace (`f`): el navegador solo acepta una respuesta firmada con él, así que nadie puede hacerse pasar por
+    /// el host. Se crea al abrir la sala en peer to peer y se renueva con «Generar enlace nuevo».
+    #[serde(default)]
+    pub certificado_dtls: Option<String>,
+}
+
+/// Un certificado DTLS nuevo (ECDSA P-256), en PEM.
+fn nuevo_certificado() -> Result<String, String> {
+    use rtc::crypto::{default_provider, SignatureScheme};
+    use rtc::peer_connection::certificate::{CertificateParams, RTCCertificate};
+    let proveedor = default_provider().map_err(|e| format!("cripto: {e:?}"))?;
+    let params = CertificateParams::new(vec!["openroll".to_owned()]).map_err(|e| format!("{e:?}"))?;
+    let c = RTCCertificate::generate(proveedor.crypto(), SignatureScheme::EcdsaP256Sha256, params)
+        .map_err(|e| format!("No se pudo crear el certificado de la conexión directa: {e}"))?;
+    c.serialize_pem().map_err(|e| e.to_string())
 }
 
 /// Texto aleatorio para enlaces y tokens (base64 de URL, sin relleno).
@@ -82,7 +98,7 @@ pub(crate) fn iguales(a: &str, b: &str) -> bool {
 
 impl SalaGuardada {
     pub fn nueva() -> Self {
-        SalaGuardada { id: aleatorio::<16>(), secreto: aleatorio::<16>(), hash_contrasena: None, tokens: Vec::new() }
+        SalaGuardada { id: aleatorio::<16>(), secreto: aleatorio::<16>(), hash_contrasena: None, tokens: Vec::new(), certificado_dtls: None }
     }
 
     /// La de la carpeta de la partida, o una nueva (que se guarda) si no hay o está rota.
@@ -114,6 +130,37 @@ impl SalaGuardada {
         self.id = aleatorio::<16>();
         self.secreto = aleatorio::<16>();
         self.tokens.clear();
+        // La identidad de la conexión directa también cambia (el enlace viejo lleva la huella vieja)
+        if self.certificado_dtls.is_some() {
+            self.certificado_dtls = nuevo_certificado().ok();
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // Conexión directa
+    // ------------------------------------------------------------------
+
+    /// Crea el certificado DTLS si aún no hay. Devuelve si lo ha creado (hay que guardar `sala.json`).
+    pub fn asegurar_certificado(&mut self) -> Result<bool, String> {
+        if self.certificado_dtls.is_some() {
+            return Ok(false);
+        }
+        self.certificado_dtls = Some(nuevo_certificado()?);
+        Ok(true)
+    }
+
+    /// El certificado, listo para WebRTC. `None` si no hay o no se puede leer.
+    pub fn certificado(&self) -> Option<rtc::peer_connection::certificate::RTCCertificate> {
+        let proveedor = rtc::crypto::default_provider().ok()?;
+        rtc::peer_connection::certificate::RTCCertificate::from_pem(self.certificado_dtls.as_deref()?, proveedor.crypto()).ok()
+    }
+
+    /// La huella SHA-256 del certificado en base64url (43 caracteres): la que va en el enlace como `f`.
+    pub fn huella(&self) -> Option<String> {
+        let proveedor = rtc::crypto::default_provider().ok()?;
+        let huellas = self.certificado()?.get_fingerprints(proveedor.crypto()).ok()?;
+        let hex: String = huellas.first()?.value.chars().filter(|c| c.is_ascii_hexdigit()).collect();
+        Some(URL_SAFE_NO_PAD.encode(hex::decode(hex).ok()?))
     }
 
     /// `id` y `secreto` del enlace que trae un jugador.
@@ -205,6 +252,22 @@ impl SalaGuardada {
 mod tests {
     use super::*;
     use crate::tablero_general::almacen::pruebas::dir_temporal;
+
+    #[test]
+    fn el_certificado_de_la_conexion_directa_se_guarda_y_cambia_con_un_enlace_nuevo() {
+        let dir = dir_temporal("sala_cert");
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut s = SalaGuardada::leer_o_crear(&dir).unwrap();
+        assert_eq!(s.huella(), None, "sin peer to peer no hay certificado");
+        assert!(s.asegurar_certificado().unwrap(), "se crea");
+        assert!(!s.asegurar_certificado().unwrap(), "y no se vuelve a crear");
+        let huella = s.huella().unwrap();
+        assert_eq!(huella.len(), 43, "SHA-256 en base64url");
+        s.guardar(&dir).unwrap();
+        assert_eq!(SalaGuardada::leer_o_crear(&dir).unwrap().huella(), Some(huella.clone()), "la misma al volver a abrir");
+        s.regenerar();
+        assert!(s.huella().is_some_and(|h| h != huella), "enlace nuevo, identidad nueva");
+    }
 
     #[test]
     fn se_crea_una_vez_y_se_vuelve_a_leer_igual() {

@@ -109,6 +109,11 @@ class Sala {
     await this.recargar();
   }
 
+  /** Conexión directa a mano: el código que pasa un jugador (su oferta) → el código de respuesta para devolverle. */
+  responderCodigo(codigo: string): Promise<string> {
+    return invoke<string>("responder_codigo_directo", { codigo });
+  }
+
   /** Cómo se publica la sala en este equipo. */
   leerConfig(): Promise<ConfigRed> {
     return invoke<ConfigRed>("obtener_config_red");

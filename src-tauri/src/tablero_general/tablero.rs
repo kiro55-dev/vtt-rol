@@ -217,9 +217,21 @@ pub enum AvisoTablero {
     Foco { ids_instancias: Vec<u16> },
     /// Alguien arrastra estas fichas y ahora pasan por esas casillas. La posición real se guarda solo al soltar
     /// (`mover_instancia(s)`); esto solo deja a los demás ver el camino. Se repite al cambiar de casilla.
-    Arrastre { id_mapa: u16, piezas: Vec<PiezaArrastrada> },
-    /// Esas fichas ya no se arrastran (se soltaron o se cancelaron).
-    ArrastreFin { id_mapa: u16, ids_instancias: Vec<u16> },
+    /// `n` crece con cada aviso de quien arrastra: por la conexión directa van sin orden ni reintentos (protocolo 7)
+    /// y quien los recibe ignora uno más viejo que el último que vio de esa ficha.
+    Arrastre {
+        id_mapa: u16,
+        piezas: Vec<PiezaArrastrada>,
+        #[serde(default)]
+        n: u32,
+    },
+    /// Esas fichas ya no se arrastran (se soltaron o se cancelaron). `n`: el número del último `Arrastre`.
+    ArrastreFin {
+        id_mapa: u16,
+        ids_instancias: Vec<u16>,
+        #[serde(default)]
+        n: u32,
+    },
 }
 
 impl AvisoTablero {
@@ -485,14 +497,14 @@ mod tests {
         assert!(AvisoTablero::RecorridoBorrado { id_mapa: 3 }.validar(&m).is_ok());
 
         let pieza = |id, x, y| PiezaArrastrada { id_instancia: id, casilla: c(x, y) };
-        let arrastre = |v: Vec<PiezaArrastrada>| AvisoTablero::Arrastre { id_mapa: 3, piezas: v };
+        let arrastre = |v: Vec<PiezaArrastrada>| AvisoTablero::Arrastre { id_mapa: 3, piezas: v, n: 1 };
         assert!(arrastre(vec![pieza(1, 0, 0), pieza(2, 19, 9)]).validar(&m).is_ok());
         assert!(arrastre(vec![]).validar(&m).is_err());
         assert!(arrastre(vec![pieza(1, 20, 0)]).validar(&m).is_err(), "fuera del mapa");
         assert!(arrastre(vec![pieza(1, 0, 0), pieza(1, 1, 0)]).validar(&m).is_err(), "repetida");
         assert!(arrastre((0..=MAX_PIEZAS_ARRASTRE as u16).map(|i| pieza(i, 0, 0)).collect()).validar(&m).is_err(), "demasiadas");
-        assert!(AvisoTablero::ArrastreFin { id_mapa: 3, ids_instancias: vec![1, 2] }.validar(&m).is_ok());
-        assert!(AvisoTablero::ArrastreFin { id_mapa: 3, ids_instancias: vec![0; MAX_PIEZAS_ARRASTRE + 1] }.validar(&m).is_err());
+        assert!(AvisoTablero::ArrastreFin { id_mapa: 3, ids_instancias: vec![1, 2], n: 1 }.validar(&m).is_ok());
+        assert!(AvisoTablero::ArrastreFin { id_mapa: 3, ids_instancias: vec![0; MAX_PIEZAS_ARRASTRE + 1], n: 1 }.validar(&m).is_err());
         assert_eq!(arrastre(vec![pieza(1, 0, 0)]).id_mapa(), Some(3));
         assert_eq!(ping(1, 1).id_mapa(), Some(3));
     }
@@ -522,11 +534,14 @@ mod tests {
         let borrado: AvisoTablero = serde_json::from_str(r#"{"RecorridoBorrado":{"id_mapa":3}}"#).unwrap();
         assert_eq!(borrado, AvisoTablero::RecorridoBorrado { id_mapa: 3 });
 
-        let arrastre = AvisoTablero::Arrastre { id_mapa: 3, piezas: vec![PiezaArrastrada { id_instancia: 7, casilla: c(4, 5) }] };
+        let arrastre = AvisoTablero::Arrastre { id_mapa: 3, piezas: vec![PiezaArrastrada { id_instancia: 7, casilla: c(4, 5) }], n: 9 };
         let json = serde_json::to_string(&arrastre).unwrap();
-        assert_eq!(json, r#"{"Arrastre":{"id_mapa":3,"piezas":[{"id_instancia":7,"casilla":{"x":4,"y":5}}]}}"#);
+        assert_eq!(json, r#"{"Arrastre":{"id_mapa":3,"piezas":[{"id_instancia":7,"casilla":{"x":4,"y":5}}],"n":9}}"#);
         assert_eq!(serde_json::from_str::<AvisoTablero>(&json).unwrap(), arrastre);
-        let fin = AvisoTablero::ArrastreFin { id_mapa: 3, ids_instancias: vec![7] };
-        assert_eq!(serde_json::to_string(&fin).unwrap(), r#"{"ArrastreFin":{"id_mapa":3,"ids_instancias":[7]}}"#);
+        let fin = AvisoTablero::ArrastreFin { id_mapa: 3, ids_instancias: vec![7], n: 9 };
+        assert_eq!(serde_json::to_string(&fin).unwrap(), r#"{"ArrastreFin":{"id_mapa":3,"ids_instancias":[7],"n":9}}"#);
+        // Uno de antes del protocolo 7 (sin `n`) se sigue leyendo
+        let viejo: AvisoTablero = serde_json::from_str(r#"{"ArrastreFin":{"id_mapa":3,"ids_instancias":[7]}}"#).unwrap();
+        assert_eq!(viejo, AvisoTablero::ArrastreFin { id_mapa: 3, ids_instancias: vec![7], n: 0 });
     }
 }

@@ -28,7 +28,7 @@ use crate::tablero_general::modelos::Jugador;
 use crate::tablero_general::tablero::AvisoTablero;
 
 /// Súbelo cuando cambie cualquier mensaje.
-pub const VERSION_PROTOCOLO: u32 = 6;
+pub const VERSION_PROTOCOLO: u32 = 7;
 
 /// Primer byte de un trozo binario: de una imagen que baja (host → jugador) o que sube (jugador → host).
 pub const TROZO_BAJADA: u8 = 1;
@@ -64,6 +64,9 @@ pub enum MensajeCliente {
     CancelarImagen { id: u32 },
     /// Va a subir una imagen de `tam` bytes en trozos binarios.
     SubirImagen { id: u32, ext: String, tam: usize },
+    /// Un aviso del tablero sin respuesta (el arrastre en vivo, protocolo 7): por la conexión directa va por el
+    /// canal sin orden ni reintentos. Las mismas reglas que pedirlo con `avisar_tablero`.
+    Aviso { aviso: AvisoTablero },
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]

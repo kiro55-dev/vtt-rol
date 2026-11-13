@@ -54,6 +54,37 @@ https://kiro55-dev.github.io/vtt-rol/#t=…&s=…&k=…
     No hay «generar enlace nuevo» (no hay llave que cambiar). **Sin cifrar**: la contraseña y el token viajan en
     claro dentro de esa red (Radmin, ZeroTier, Hamachi cifran entre sus equipos; una LAN normal no). Windows pide
     permiso al cortafuegos la primera vez.
+- **Conexión directa (peer to peer, WebRTC)**: la forma principal «Peer to peer» (con respaldo Cloudflare o tu
+  dirección propia). El jugador habla **directo** con el host, sin pasar por ningún servidor; el respaldo es el
+  WebSocket de siempre, para quien tenga una red que no lo permita (NAT estricto) o no quiera. Librería del host:
+  `webrtc` 0.21.1 (elegida en `experimentos/fase0-webrtc/`). En esta fase la señalización es **a mano**; los relés
+  automáticos son la fase siguiente.
+  - **Cómo se conecta**: si el enlace lleva la huella (`&f=…`) y el navegador puede (WebRTC, WebCrypto y una página
+    https), la página empieza en «Conexión directa»: el jugador copia **su código** (su oferta) y se lo pasa al
+    host; el host lo pega en «Configuración de sala» → «Conexión directa» → «Responder» y le devuelve **el suyo**; el
+    jugador lo pega y «Conectar». «Entrar por el respaldo» siempre está. Si la directa se cae, se sigue por el respaldo.
+  - **Códigos** (`red/codigo.rs` ↔ `src/lib/red/codigo.ts`): `base64url(nonce ‖ AES-256-GCM(deflate(JSON {tipo, sdp, t,
+    n})))` con clave HKDF-SHA256 del secreto del enlace. Un SDP lleva IPs: sin el enlace no se lee ni se fabrica uno
+    que el host acepte. El host rechaza los de más de 10 minutos, los repetidos y más de 8 a medias
+    (`webrtc::MAX_PEERS_A_MEDIAS`). Los dos lados descifran un código fijo hecho por el otro (tests).
+  - **Identidad del host**: `sala.json` guarda un certificado DTLS (`certificado_dtls`, solo del host; se renueva con
+    «Generar enlace nuevo»). Su huella SHA-256 va en el enlace (`f`, base64url de 43 caracteres) y el navegador **no
+    acepta una respuesta con otra** (`usarRespuesta`): quien viera el código no puede hacerse pasar por el host. La
+    prueba del token por esta vía va atada a `webrtc:<huella>` (`SalaAbierta::direcciones`).
+  - **Tres canales** (los abre el navegador): `juego` (fiable y ordenado: el protocolo en trozos de ≤ 16 KiB,
+    `red/trozos.rs` ↔ `trozos.ts`, tope de 512 KiB por mensaje), `imagenes` (fiable y ordenado: los trozos de imagen,
+    aparte para no retrasar al juego) y `arrastre` (**sin orden ni reintentos**: el arrastre en vivo; si se pierde uno,
+    el siguiente lo sustituye). Con la conexión directa se arma un `Transporte` y corre el **mismo `atender`**: saludo,
+    contraseña, permisos y topes son los mismos que por el túnel.
+  - **Protocolo 7**: `MensajeCliente::Aviso { aviso }` (el arrastre del jugador, sin respuesta ni cola) y
+    `AvisoTablero::Arrastre`/`ArrastreFin` con un número `n` creciente por pantalla; `arrastreAjeno` ignora uno más
+    viejo que el último visto (y un `Arrastre` retrasado justo tras soltar). Por el WebSocket todo va por el único canal.
+  - El host contesta en cuanto tiene el primer candidato público (`srflx`) + 300 ms, o a los 1,5 s, sin esperar a que
+    la recogida «termine» (en Linux a veces no llegaba a tiempo: fase 0). Tiempos ICE de 5 minutos (los 25 s de serie
+    cerraban antes de que el jugador pegara la respuesta). El firewall de Windows pedirá permiso para la red (UDP).
+  - En **red local** no hay conexión directa de este tipo: ya llegan directos por `http` (sin certificado, sin huella).
+  - **Privacidad**: en directo, host y jugador ven la IP pública del otro (los navegadores esconden las locales).
+    Quien no quiera, elige «Entrar por el respaldo».
 - **La página de los jugadores va dentro de la app** (`build-jugador/`, `bun run web:build:app`, raíz `/`; la
   incluyen `beforeDevCommand`/`beforeBuildCommand`). El servidor de la sala la sirve en `/` (`red/pagina.rs`, con
   `rust-embed`: en desarrollo la lee del disco, en release va en el ejecutable). Con la dirección propia o en red

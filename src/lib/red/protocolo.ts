@@ -5,7 +5,7 @@
 import type { AvisoTablero } from "$lib/avisosTablero";
 import type { DefinicionParametro, Entidad, Instancia, Mapa, Zona } from "$lib/partida.svelte";
 
-export const VERSION_PROTOCOLO = 6;
+export const VERSION_PROTOCOLO = 7;
 
 export interface Jugador {
   id: number;
@@ -60,7 +60,9 @@ export type MensajeCliente =
   | { tipo: "PedirImagen"; id: number; ruta: string; mini?: string }
   | { tipo: "CancelarImagen"; id: number }
   /** Va a subir `tam` bytes en trozos binarios. */
-  | { tipo: "SubirImagen"; id: number; ext: string; tam: number };
+  | { tipo: "SubirImagen"; id: number; ext: string; tam: number }
+  /** Un aviso del tablero sin respuesta (el arrastre en vivo): por la conexión directa va por el canal sin reintentos. */
+  | { tipo: "Aviso"; aviso: AvisoTablero };
 
 export type MensajeHost =
   | { tipo: "Reto"; reto: string }

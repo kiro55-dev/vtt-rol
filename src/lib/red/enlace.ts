@@ -20,6 +20,9 @@ export interface Enlace {
   mismoOrigen: boolean;
   /** `https`/`wss`. Solo es `false` en red local (página servida por `http`). */
   seguro: boolean;
+  /** Huella SHA-256 del certificado del host (base64url, 43 caracteres): con ella la conexión directa (WebRTC) sabe
+   *  que habla con el host de verdad. `null`: el enlace no ofrece conexión directa (red local, o uno antiguo). */
+  huella: string | null;
 }
 
 /**
@@ -29,6 +32,13 @@ export interface Enlace {
  */
 const RE_TUNEL = /^(?=.{1,253}(:\d{1,5})?$)[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)*(?::\d{1,5})?$/;
 const RE_CLAVE = /^[A-Za-z0-9_-]{16,64}$/;
+const RE_HUELLA = /^[A-Za-z0-9_-]{43}$/;
+
+/** La huella del enlace como la escribe el SDP: `AA:BB:…` en mayúsculas (32 bytes). */
+export function huellaSdp(huella: string): string {
+  const b = atob(huella.replace(/-/g, "+").replace(/_/g, "/") + "=");
+  return [...b].map((c) => c.charCodeAt(0).toString(16).padStart(2, "0").toUpperCase()).join(":");
+}
 
 /** Dónde está la página (`location`), para el enlace sin `t`. */
 export interface Ubicacion {
@@ -45,19 +55,23 @@ export function leerEnlace(hash: string, ubicacion?: Ubicacion): Enlace | null {
   if (t === null && !sala && !secreto && ubicacion) {
     const tunel = ubicacion.host.toLowerCase();
     if (!RE_TUNEL.test(tunel) || !/^https?:$/.test(ubicacion.protocol)) return null;
-    return { tunel, sala: `lan:${tunel}`, secreto: "", mismoOrigen: true, seguro: ubicacion.protocol === "https:" };
+    return { tunel, sala: `lan:${tunel}`, secreto: "", mismoOrigen: true, seguro: ubicacion.protocol === "https:", huella: null };
   }
   if (!RE_CLAVE.test(sala) || !RE_CLAVE.test(secreto)) return null;
+  // La huella es opcional (enlaces sin conexión directa), pero si viene tiene que estar bien formada
+  const f = p.get("f");
+  if (f !== null && !RE_HUELLA.test(f)) return null;
+  const huella = f;
   if (t !== null) {
     const tunel = t.toLowerCase();
     if (!RE_TUNEL.test(tunel)) return null;
-    return { tunel, sala, secreto, mismoOrigen: false, seguro: true };
+    return { tunel, sala, secreto, mismoOrigen: false, seguro: true, huella };
   }
   // Sin `t`: el host es quien sirve esta misma página
   if (!ubicacion) return null;
   const tunel = ubicacion.host.toLowerCase();
   if (!RE_TUNEL.test(tunel) || !/^https?:$/.test(ubicacion.protocol)) return null;
-  return { tunel, sala, secreto, mismoOrigen: true, seguro: ubicacion.protocol === "https:" };
+  return { tunel, sala, secreto, mismoOrigen: true, seguro: ubicacion.protocol === "https:", huella };
 }
 
 export function urlWebSocket(e: Enlace): string {

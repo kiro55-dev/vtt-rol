@@ -26,7 +26,7 @@ class WebSocketFalso {
   }
 }
 
-const ENLACE = { tunel: "x.trycloudflare.com", sala: "AbCdEfGhIjKlMnOpQrStUv", secreto: "0123456789abcdef_-XYZ", mismoOrigen: false, seguro: true };
+const ENLACE = { tunel: "x.trycloudflare.com", sala: "AbCdEfGhIjKlMnOpQrStUv", secreto: "0123456789abcdef_-XYZ", mismoOrigen: false, seguro: true, huella: null };
 
 async function conectado() {
   vi.resetModules();
@@ -107,6 +107,20 @@ describe("conexión del jugador: pedirle acciones al host", () => {
 
     void c.responder("avisar_tablero", { aviso: { Ping: { id_mapa: 1, casilla: { x: 1, y: 1 } } } });
     expect(peticion(ws).peticion.cmd).toBe("avisar_tablero");
+  });
+
+  it("el arrastre en vivo va como un `Aviso` sin respuesta (ni espera ni cola), con el número de orden", async () => {
+    const { c, ws } = await conectado();
+    const antes = ws.enviados.filter((m) => m.tipo === "Pedir").length;
+    const { avisoArrastre, avisoArrastreFin } = await import("$lib/avisosTablero");
+    const a = avisoArrastre(1, [{ id_instancia: 4, casilla: { x: 2, y: 3 } }]);
+    const f = avisoArrastreFin(1, [4]);
+    await expect(c.responder("avisar_tablero", { aviso: a })).resolves.toBeNull();
+    await expect(c.responder("avisar_tablero", { aviso: f })).resolves.toBeNull();
+    const avisos = ws.enviados.filter((m) => m.tipo === "Aviso");
+    expect(avisos.map((m) => m.aviso)).toEqual([a, f]);
+    expect("Arrastre" in a && "ArrastreFin" in f && f.ArrastreFin.n! > a.Arrastre.n!).toBe(true);
+    expect(ws.enviados.filter((m) => m.tipo === "Pedir").length).toBe(antes);
   });
 
   it("las lecturas no van al host: salen de la réplica, y lo que no está permitido se rechaza", async () => {

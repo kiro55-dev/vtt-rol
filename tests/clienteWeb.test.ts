@@ -2,7 +2,7 @@
 // los cambios del host y contestar con ella los comandos de la app) y la respuesta al reto (el mismo vector
 // fijo que en src-tauri/src/red/sala.rs).
 import { describe, expect, it } from "vitest";
-import { leerEnlace, urlImagen, urlWebSocket } from "$lib/red/enlace";
+import { huellaSdp, leerEnlace, urlImagen, urlWebSocket } from "$lib/red/enlace";
 import { aplicarCambios, NO_DISPONIBLE, PETICIONES, partesCambiadas, responder, rutaMiniatura, separarMiniatura, vistaVacia } from "$lib/red/replica";
 import { prueba } from "$lib/red/conexion.svelte";
 
@@ -16,13 +16,30 @@ describe("enlace", () => {
       sala: S,
       secreto: K,
       mismoOrigen: false,
-      seguro: true
+      seguro: true,
+      huella: null
     });
+  });
+
+  it("lee la huella del certificado del host (conexión directa) y rechaza una mal formada", () => {
+    const F = "A".repeat(43);
+    expect(leerEnlace(`#t=casa.trycloudflare.com&s=${S}&k=${K}&f=${F}`)?.huella).toBe(F);
+    expect(leerEnlace(`#s=${S}&k=${K}&f=${F}`, { host: "x.es", protocol: "https:" })?.huella).toBe(F);
+    for (const mala of ["corta", "A".repeat(44), "A".repeat(42) + "!"]) {
+      expect(leerEnlace(`#t=casa.trycloudflare.com&s=${S}&k=${K}&f=${mala}`), mala).toBeNull();
+    }
+  });
+
+  it("la huella del enlace se pasa a la forma del SDP (AA:BB:…)", () => {
+    // 32 bytes 0x00..0x1f en base64url
+    const bytes = Uint8Array.from({ length: 32 }, (_, i) => i);
+    const f = btoa(String.fromCharCode(...bytes)).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+    expect(huellaSdp(f)).toBe(Array.from(bytes, (b) => b.toString(16).padStart(2, "0").toUpperCase()).join(":"));
   });
 
   it("sin `t`, el host es quien sirve la página (dirección propia o red local), con su esquema", () => {
     const propia = leerEnlace(`#s=${S}&k=${K}`, { host: "kirem-2.tail12739.ts.net", protocol: "https:" })!;
-    expect(propia).toEqual({ tunel: "kirem-2.tail12739.ts.net", sala: S, secreto: K, mismoOrigen: true, seguro: true });
+    expect(propia).toEqual({ tunel: "kirem-2.tail12739.ts.net", sala: S, secreto: K, mismoOrigen: true, seguro: true, huella: null });
     expect(urlWebSocket(propia)).toBe("wss://kirem-2.tail12739.ts.net/ws");
     expect(urlImagen(propia, "SES", "imagenes/a.png")).toBe("/imagen?ruta=imagenes%2Fa.png&sesion=SES");
 
@@ -32,7 +49,7 @@ describe("enlace", () => {
 
     // Red local, como «abrir en LAN»: el enlace es solo ip y puerto, sin llave
     const sinLlave = leerEnlace("", { host: "26.1.2.3:8080", protocol: "http:" })!;
-    expect(sinLlave).toEqual({ tunel: "26.1.2.3:8080", sala: "lan:26.1.2.3:8080", secreto: "", mismoOrigen: true, seguro: false });
+    expect(sinLlave).toEqual({ tunel: "26.1.2.3:8080", sala: "lan:26.1.2.3:8080", secreto: "", mismoOrigen: true, seguro: false, huella: null });
     expect(leerEnlace("#s=corto", { host: "26.1.2.3:8080", protocol: "http:" }), "una llave a medias no vale").toBeNull();
     expect(leerEnlace(""), "sin saber dónde está la página").toBeNull();
     expect(leerEnlace(`#s=${S}&k=${K}`), "sin saber dónde está la página").toBeNull();

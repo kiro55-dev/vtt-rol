@@ -33,6 +33,12 @@ pub fn cerrar_sala(state: State<'_, AppState>) {
     state.red.cerrar();
 }
 
+/// Conexión directa a mano: el host pega el código del jugador (su oferta) y recibe el código de respuesta.
+#[tauri::command]
+pub async fn responder_codigo_directo(codigo: String, state: State<'_, AppState>) -> Result<String, String> {
+    crate::red::webrtc::responder(&state.red, &codigo).await
+}
+
 /// Cómo se publica la sala en este equipo (`red.json`): túnel de Cloudflare o dirección propia.
 #[tauri::command]
 pub fn obtener_config_red(state: State<'_, AppState>) -> crate::red::config::ConfigRed {

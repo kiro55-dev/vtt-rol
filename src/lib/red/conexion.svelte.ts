@@ -10,6 +10,11 @@
 //     ($lib/backend), y cada cambio se avisa con el evento `partida-cambiada` para que los stores relean.
 // Si se corta, se reintenta durante un minuto (p. ej. el móvil cambia de red).
 //
+// Por dónde habla: si el enlace lleva la huella del host (`f`) y el navegador puede, primero la conexión DIRECTA
+// (WebRTC, punto a punto, `webrtc.ts`): se pasa un código al host y se pega su respuesta. Si no se puede o no se quiere,
+// «Entrar por el respaldo»: el WebSocket de siempre (túnel, dirección propia o red local). Si la directa se cae,
+// se sigue por el respaldo para no cortar la partida. En los dos casos es un `TransporteCliente`.
+//
 // Imágenes: van por esta misma conexión (`ImagenesRed`). Los `<img>` de la app piden `<base>/__imagen?ruta=…`,
 // que contesta el Service Worker (src/service-worker.ts) preguntándole a esta página. Sin Service Worker (p. ej.
 // Firefox en ventana privada) se usa el respaldo HTTP de siempre (`/imagen?sesion=…` del túnel).
@@ -17,10 +22,12 @@ import { hmac } from "@noble/hashes/hmac.js";
 import { sha256 } from "@noble/hashes/sha2.js";
 import { bytesToHex } from "@noble/hashes/utils.js";
 import { emitirLocal, EVENTO_PARTIDA_CAMBIADA, instalarJugador } from "$lib/backend";
-import { EVENTO_AVISO } from "$lib/avisosTablero";
+import { EVENTO_AVISO, type AvisoTablero } from "$lib/avisosTablero";
 import { esJugador } from "$lib/modo";
 import { claveAlmacen, leerEnlace, urlImagen, urlWebSocket, type Enlace } from "./enlace";
 import { ImagenesRed, claveImagen } from "./imagenesRed";
+import { porWebSocket, type TransporteCliente } from "./transporte";
+import { crearDirecto, soportaDirecto, type Directo } from "./webrtc";
 import { VERSION_PROTOCOLO, type Jugador, type MensajeCliente, type MensajeHost, type VistaJugador } from "./protocolo";
 import { aplicarCambios, partesCambiadas, PETICIONES, responder, separarMiniatura, vistaVacia } from "./replica";
 
@@ -33,12 +40,17 @@ const ESPERA_SW_MS = 3000;
 
 export type EstadoConexion =
   | { tipo: "conectando" }
+  /** Conexión directa a mano: `codigo` es la oferta para pasarle al host (`null` mientras se prepara); `conectando`: ya
+   *  se pegó su respuesta y se está abriendo. */
+  | { tipo: "directo-a-mano"; codigo: string | null; error: string | null; conectando: boolean }
   | { tipo: "identificate"; pideContrasena: boolean; error: string | null; recordado: boolean }
   | { tipo: "dentro" }
   | { tipo: "reconectando" }
   | { tipo: "fuera"; motivo: string };
 
 const REINTENTAR_DURANTE_MS = 60_000;
+/** Pegada la respuesta del host, lo que se espera a que se abra la conexión directa antes de decir que no pudo. */
+const TIEMPO_ABRIR_DIRECTO_MS = 45_000;
 /** Lo que se espera la respuesta del host a una acción. */
 const TIEMPO_RESPUESTA_MS = 30_000;
 const MAX_COMANDOS_PERSONALES = 100;
@@ -83,7 +95,16 @@ export class Conexion {
   /** Acciones enviadas al host que aún no han tenido respuesta. */
   #pendientes = new Map<number, { ok: (v: unknown) => void; error: (e: unknown) => void; reloj: ReturnType<typeof setTimeout> }>();
   #siguiente = 1;
-  #ws: WebSocket | null = null;
+  /** Por dónde se habla ahora con el host (el WebSocket o la conexión directa). */
+  #t: TransporteCliente | null = null;
+  /** La conexión directa que se está haciendo o ya hecha. */
+  #directo: Directo | null = null;
+  /** Si se habla por la conexión directa (la prueba del token se ata a la huella del host y no a una dirección). */
+  #porDirecto = false;
+  /** Tras caerse la directa, solo se reconecta por el respaldo. */
+  #soloRespaldo = false;
+  /** Identifica el transporte actual: el cierre de uno anterior (p. ej. la directa, al pasar al respaldo) no cuenta. */
+  #idTransporte: symbol | null = null;
   #cortadoDesde: number | null = null;
   #final = false;
   #alPrimeraVista: (() => void) | null = null;
@@ -100,7 +121,7 @@ export class Conexion {
       {
         mensaje: (m) => this.#enviar(m),
         binario: (b) => {
-          if (this.#ws?.readyState === WebSocket.OPEN) this.#ws.send(b);
+          if (this.#t?.abierto()) this.#t.enviarBinario(b);
         },
         sitio: () => this.#sitio()
       },
@@ -146,12 +167,12 @@ export class Conexion {
     );
   }
 
-  /** Se cumple cuando el WebSocket tiene sitio para más (al subir una imagen). */
+  /** Se cumple cuando la conexión tiene sitio para más (al subir una imagen). */
   async #sitio(): Promise<void> {
-    while (this.#ws && this.#ws.readyState === WebSocket.OPEN && this.#ws.bufferedAmount > MAX_BUFER_SUBIDA) {
+    while (this.#t?.abierto() && this.#t.pendiente() > MAX_BUFER_SUBIDA) {
       await new Promise((r) => setTimeout(r, 20));
     }
-    if (this.#ws?.readyState !== WebSocket.OPEN) throw "Sin conexión con la sala";
+    if (!this.#t?.abierto()) throw "Sin conexión con la sala";
   }
 
   /**
@@ -161,6 +182,12 @@ export class Conexion {
   responder(cmd: string, args: Record<string, unknown>): Promise<unknown> {
     // El foco de un jugador es suyo: no se envía a nadie (ni al host)
     if (cmd === "avisar_tablero" && "Foco" in ((args.aviso as object) ?? {})) return Promise.resolve(null);
+    // El arrastre en vivo (protocolo 7): sin respuesta ni espera, y con orden propio. Por la conexión directa va por
+    // el canal que no reintenta ni ordena, así una pérdida no frena nada
+    if (cmd === "avisar_tablero" && ("Arrastre" in (args.aviso as object) || "ArrastreFin" in (args.aviso as object))) {
+      this.#enviar({ tipo: "Aviso", aviso: args.aviso as AvisoTablero });
+      return Promise.resolve(null);
+    }
     if (PETICIONES.has(cmd)) {
       if (cmd === "tirar_dado") this.#recordarComando(String(args.comando ?? ""));
       return this.pedir({ cmd, ...args });
@@ -193,7 +220,7 @@ export class Conexion {
 
   /** Pide una acción al host y espera su respuesta (el error del host llega tal cual, como texto). */
   pedir(peticion: Record<string, unknown>): Promise<unknown> {
-    if (this.estado.tipo !== "dentro" || this.#ws?.readyState !== WebSocket.OPEN) {
+    if (this.estado.tipo !== "dentro" || !this.#t?.abierto()) {
       return Promise.reject("Sin conexión con la sala");
     }
     const id = this.#siguiente++;
@@ -231,34 +258,94 @@ export class Conexion {
     return urlImagen(this.enlace, this.sesion, ruta, mini);
   }
 
+  /** Lo que llega del host, venga por donde venga. */
+  #oyentes(): import("./transporte").OyentesTransporte {
+    const id = Symbol("transporte");
+    this.#idTransporte = id;
+    return {
+      alTexto: (texto) => {
+        let m: MensajeHost;
+        try {
+          m = JSON.parse(texto);
+        } catch {
+          return;
+        }
+        if (this.imagenes.alMensaje(m)) return;
+        void this.#recibir(m);
+      },
+      alBinario: (datos) => this.imagenes.alBinario(datos),
+      alCerrar: () => {
+        if (this.#idTransporte !== id) return; // ya hay otro transporte: este no cuenta
+        this.#fallarPendientes("Sin conexión con la sala");
+        this.imagenes.cortar("Sin conexión con la sala");
+        if (this.#final) return;
+        this.#t = null;
+        if (this.#porDirecto) {
+          // Se cayó la directa: se sigue por el respaldo para no cortar la partida
+          this.#porDirecto = false;
+          this.#soloRespaldo = true;
+          this.#directo = null;
+        }
+        this.#reintentar();
+      }
+    };
+  }
+
+  /** Empieza a conectar: la directa si se puede (el enlace lleva la huella y el navegador sabe), si no el respaldo. */
   conectar() {
     this.#final = false;
-    const ws = new WebSocket(urlWebSocket(this.enlace));
-    ws.binaryType = "arraybuffer";
-    this.#ws = ws;
-    ws.onmessage = (e) => {
-      // Binario: un trozo de imagen
-      if (typeof e.data !== "string") {
-        if (e.data instanceof ArrayBuffer) this.imagenes.alBinario(e.data);
-        return;
+    if (this.#soloRespaldo || !this.enlace.huella || !soportaDirecto()) return this.conectarPorRespaldo();
+    void this.#prepararDirecto();
+  }
+
+  /** El WebSocket de siempre: túnel, dirección propia o red local. */
+  conectarPorRespaldo() {
+    this.#final = false;
+    this.#soloRespaldo = true;
+    // Primero el transporte nuevo (así el cierre del anterior ya no cuenta), luego se suelta el viejo
+    const oyentes = this.#oyentes();
+    const viejo = this.#directo;
+    this.#directo = null;
+    this.#porDirecto = false;
+    this.estado = { tipo: "conectando" };
+    viejo?.transporte.cerrar();
+    this.#t = porWebSocket(urlWebSocket(this.enlace), oyentes);
+  }
+
+  /** Abre los canales y saca el código de la oferta para pasárselo al host. */
+  async #prepararDirecto() {
+    this.estado = { tipo: "directo-a-mano", codigo: null, error: null, conectando: false };
+    try {
+      const d = await crearDirecto(this.enlace, this.#oyentes());
+      // Si mientras tanto eligió el respaldo, esto ya no vale
+      if (this.estado.tipo !== "directo-a-mano") return d.transporte.cerrar();
+      this.#directo = d;
+      this.#t = d.transporte;
+      this.estado = { tipo: "directo-a-mano", codigo: d.codigo, error: null, conectando: false };
+    } catch (err) {
+      this.estado = { tipo: "directo-a-mano", codigo: null, error: String(err), conectando: false };
+    }
+  }
+
+  /** El código de respuesta que pegó el jugador: se comprueba y se abre la conexión. */
+  async usarRespuesta(codigo: string) {
+    const d = this.#directo;
+    if (!d || this.estado.tipo !== "directo-a-mano") return;
+    const mio = this.estado.codigo;
+    try {
+      await d.usarRespuesta(codigo);
+    } catch (err) {
+      this.estado = { tipo: "directo-a-mano", codigo: mio, error: String(err), conectando: false };
+      return;
+    }
+    this.#porDirecto = true;
+    this.estado = { tipo: "directo-a-mano", codigo: mio, error: null, conectando: true };
+    setTimeout(() => {
+      if (this.#directo === d && this.estado.tipo === "directo-a-mano") {
+        this.estado = { tipo: "directo-a-mano", codigo: mio, error: "No se pudo conectar directo (¿cortafuegos o router estricto?). Entra por el respaldo.", conectando: false };
+        this.#porDirecto = false;
       }
-      let m: MensajeHost;
-      try {
-        m = JSON.parse(e.data);
-      } catch {
-        return;
-      }
-      if (this.imagenes.alMensaje(m)) return;
-      void this.#recibir(m);
-    };
-    ws.onclose = () => {
-      if (this.#ws !== ws) return;
-      this.#fallarPendientes("Sin conexión con la sala");
-      this.imagenes.cortar("Sin conexión con la sala");
-      if (this.#final) return;
-      this.#ws = null;
-      this.#reintentar();
-    };
+    }, TIEMPO_ABRIR_DIRECTO_MS);
   }
 
   /** Nombre y contraseña, cuando el host los pide. */
@@ -268,18 +355,22 @@ export class Conexion {
 
   cerrar() {
     this.#final = true;
-    this.#ws?.close();
+    this.#t?.cerrar();
   }
 
   #enviar(m: MensajeCliente) {
-    if (this.#ws?.readyState === WebSocket.OPEN) this.#ws.send(JSON.stringify(m));
+    if (!this.#t?.abierto()) return;
+    const texto = JSON.stringify(m);
+    // El arrastre en vivo puede perderse: por la conexión directa va por el canal sin reintentos
+    if (m.tipo === "Aviso" && "Arrastre" in m.aviso) this.#t.enviarEfimero(texto);
+    else this.#t.enviarTexto(texto);
   }
 
   #terminar(motivo: string) {
     this.#final = true;
     this.estado = { tipo: "fuera", motivo };
     void this.imagenes.terminar(motivo);
-    this.#ws?.close();
+    this.#t?.cerrar();
   }
 
   #reintentar() {
@@ -290,14 +381,16 @@ export class Conexion {
       return;
     }
     this.estado = { tipo: "reconectando" };
-    setTimeout(() => this.conectar(), 2000);
+    setTimeout(() => this.conectarPorRespaldo(), 2000);
   }
 
   async #recibir(m: MensajeHost) {
     switch (m.tipo) {
       case "Reto": {
         const token = leerToken(this.enlace.sala);
-        const p = token ? await prueba(token, m.reto, this.enlace.tunel) : undefined;
+        // La prueba va atada a por dónde se llegó: por la conexión directa, a la huella del host; si no, a su dirección
+        const atada = this.#porDirecto && this.enlace.huella ? `webrtc:${this.enlace.huella}` : this.enlace.tunel;
+        const p = token ? await prueba(token, m.reto, atada) : undefined;
         this.#enviar({ tipo: "Hola", version: VERSION_PROTOCOLO, sala: this.enlace.sala, secreto: this.enlace.secreto, prueba: p });
         return;
       }

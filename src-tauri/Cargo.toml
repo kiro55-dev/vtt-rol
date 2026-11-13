@@ -40,6 +40,15 @@ hmac = "0.12"
 hex = "0.4.3"
 rust-embed = "8.14.0"
 if-addrs = "0.15.0"
+# Conexión directa (fase 3): WebRTC del host, elegido en experimentos/fase0-webrtc
+webrtc = "0.21.1"
+rtc = "0.21.1"                     # el núcleo de webrtc-rs: el certificado DTLS de la sala
+async-trait = "0.1"
+bytes = "1"
+# Códigos a mano de la conexión directa: cifrados con el secreto del enlace y comprimidos
+aes-gcm = "0.10"
+hkdf = "0.12"
+flate2 = "1.1.11"
 
 # Read the optimization guideline for more details: https://tauri.app/concept/size/#cargo-configuration
 [profile.release]
@@ -50,7 +59,6 @@ panic = "abort"
 strip = true
 
 [target.'cfg(target_os = "macos")'.dependencies]
-flate2 = "1.1.11"
 tar = "0.4.46"
 
 [dev-dependencies]
