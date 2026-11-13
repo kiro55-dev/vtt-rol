@@ -67,11 +67,9 @@
     <BancoEntidades />
   </div>
 
-  {#if !esJugador}
-    <div class="pie">
-      <BotonAjustes {opciones} />
-    </div>
-  {/if}
+  <div class="pie">
+    <BotonAjustes {opciones} />
+  </div>
 </aside>
 
 {#if parametrosAbierto}
